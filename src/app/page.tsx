@@ -7,14 +7,10 @@ export default function Home() {
       <main className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
         {/* Header with Logo */}
         <div className="flex items-center justify-between mb-20">
-          <Link href="/" className="flex items-center gap-3">
-            <Image
-              src="/logo.png"
-              alt="Lyrtrip logo"
-              width={48}
-              height={48}
-              className="w-12 h-12"
-            />
+          <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+            <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-indigo-600 to-blue-600 flex items-center justify-center text-white font-bold text-xl">
+              LT
+            </div>
             <span className="text-2xl font-bold text-gray-900">Lyrtrip</span>
           </Link>
           <nav className="flex gap-6">

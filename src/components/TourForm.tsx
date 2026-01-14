@@ -5,7 +5,7 @@ import { useState } from 'react';
 
 interface TourFormProps {
   initialData?: Tour;
-  onSubmit: (data: Omit<Tour, 'id' | 'user_id' | 'created_at' | 'updated_at'>) => Promise<void>;
+  onSubmit?: (data: Omit<Tour, 'id' | 'user_id' | 'created_at' | 'updated_at'>) => Promise<void>;
   isLoading?: boolean;
 }
 
@@ -49,7 +49,9 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
     }
 
     try {
-      await onSubmit(formData);
+      if (onSubmit) {
+        await onSubmit(formData);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     }

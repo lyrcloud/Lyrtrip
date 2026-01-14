@@ -1,6 +1,5 @@
 'use client';
 
-import Image from 'next/image';
 import Link from 'next/link';
 
 /**
@@ -13,13 +12,9 @@ export default function Navigation() {
         <div className="flex items-center justify-between h-16">
           {/* Logo and Brand */}
           <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <Image
-              src="/logo.png"
-              alt="Lyrtrip logo"
-              width={40}
-              height={40}
-              className="w-10 h-10"
-            />
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-600 to-blue-600 flex items-center justify-center text-white font-bold text-sm">
+              LT
+            </div>
             <span className="text-xl font-bold text-gray-900">Lyrtrip</span>
           </Link>
 
