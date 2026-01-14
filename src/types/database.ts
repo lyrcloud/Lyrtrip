@@ -61,3 +61,33 @@ export interface Song {
   created_at: string;
   updated_at: string;
 }
+
+export interface Tour {
+  id: string;
+  user_id: string;
+  title: string;
+  description?: string;
+  artist?: string;
+  start_date: string;
+  end_date: string;
+  total_stops?: number;
+  budget?: number;
+  status: 'planning' | 'in-progress' | 'completed';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TourStop {
+  id: string;
+  tour_id: string;
+  venue_name: string;
+  city: string;
+  country: string;
+  date: string;
+  ticket_url?: string;
+  notes?: string;
+  latitude?: number;
+  longitude?: number;
+  created_at: string;
+  updated_at: string;
+}
