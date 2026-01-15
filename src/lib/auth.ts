@@ -54,3 +54,16 @@ export async function signOut() {
 export async function resetPassword(email: string) {
   return supabase.auth.resetPasswordForEmail(email);
 }
+export interface GoogleAutocompleteSuggestion {
+    placePrediction?: {
+        placeId: string;
+    };
+    mainText?: {
+        text: string;
+    } | string;
+    secondaryText?: {
+        text: string;
+    } | string;
+    placeId?: string;
+    id?: string;
+}

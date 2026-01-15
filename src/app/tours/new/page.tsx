@@ -1,11 +1,12 @@
 import Link from 'next/link';
 import TourForm from '@/components/TourForm';
+import type { Tour } from '@/types';
 
 /**
  * Create new tour page
  */
 export default function NewTourPage() {
-  const handleSubmit = async (data: any) => {
+  const handleSubmit = async (data: Omit<Tour, 'id' | 'user_id' | 'created_at' | 'updated_at'>) => {
     // TODO: Implement Supabase integration to save tour
     console.log('Saving new tour:', data);
     // After successful save, redirect to tours page
