@@ -1,0 +1,70 @@
+name: Deploy Lyrtrip to AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      domain_name:
+        description: Domain name to host.
+        required: true
+        default: lyrtrip.com
+      hosted_zone_id:
+        description: Optional Route 53 hosted zone ID. Leave blank to auto-detect.
+        required: false
+        default: ''
+      stack_name:
+        description: CloudFormation stack name.
+        required: true
+        default: lyrtrip-site
+      lambda_function_name:
+        description: Lambda function name.
+        required: true
+        default: Lyrtrip
+      aws_region:
+        description: AWS region. CloudFront certificates must be created in us-east-1.
+        required: true
+        default: us-east-1
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: lyrtrip-aws-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${{ secrets.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY }}
+      AWS_REGION: ${{ inputs.aws_region }}
+      STACK_NAME: ${{ inputs.stack_name }}
+      LAMBDA_FUNCTION_NAME: ${{ inputs.lambda_function_name }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Deploy AWS stack and static site
+        run: |
+          if [[ -n "${{ inputs.hosted_zone_id }}" ]]; then
+            ./infra/deploy.sh "${{ inputs.domain_name }}" "${{ inputs.hosted_zone_id }}"
+          else
+            ./infra/deploy.sh "${{ inputs.domain_name }}"
+          fi

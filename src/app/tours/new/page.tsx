@@ -1,3 +1,5 @@
+'use client';
+
 import Link from 'next/link';
 import TourForm from '@/components/TourForm';
 import type { Tour } from '@/types';

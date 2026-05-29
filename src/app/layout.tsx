@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 import HotelSearch from "@/components/HotelSearch";
 
+const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+
 export const metadata: Metadata = {
   title: "Lyrtrip",
   description: "Music trip planning application",
@@ -15,10 +17,12 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <script
-          src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=places&loading=async`}
-          async
-        />
+        {googleMapsApiKey ? (
+          <script
+            src={`https://maps.googleapis.com/maps/api/js?key=${googleMapsApiKey}&libraries=places&loading=async`}
+            async
+          />
+        ) : null}
       </head>
       <body>{children}</body>
     </html>

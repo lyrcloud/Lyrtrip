@@ -15,6 +15,7 @@ A music trip planning application built with [Next.js](https://nextjs.org), [Typ
 
 - Node.js 18+ and npm
 - A Supabase account and project
+- A Google Maps API key with the Maps JavaScript API and Places API enabled
 
 ### Setup
 
@@ -33,6 +34,7 @@ cp .env.local.example .env.local
 1. Add your Supabase credentials to `.env.local`:
    - `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase project URL
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Your Supabase anonymous key
+   - `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`: Your Google Maps browser API key
 
 2. Run the development server:
 
@@ -63,6 +65,30 @@ src/
 - `npm run start` - Start the production server
 - `npm run lint` - Run ESLint
 
+## AWS Deployment
+
+The production setup exports the Next.js frontend to static files for S3 and routes `/api/search` through Lambda behind CloudFront.
+
+### Cloud Deployment
+
+Use the **Deploy Lyrtrip to AWS** GitHub Actions workflow for a fully cloud-based deploy. Configure these repository secrets first:
+
+- `AWS_ROLE_TO_ASSUME` - IAM role ARN trusted by GitHub OIDC for this repository
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`
+
+To create the GitHub OIDC deploy role, open AWS CloudFormation in `us-east-1`, create a stack from `infra/github-oidc-role.yml`, and copy the `RoleArn` output into the repository secret `AWS_ROLE_TO_ASSUME`.
+
+Then run the workflow from GitHub Actions with `domain_name` set to `lyrtrip.com`.
+
+### Local Deployment
+
+```bash
+chmod +x infra/deploy.sh
+AWS_REGION=us-east-1 STACK_NAME=lyrtrip-site LAMBDA_FUNCTION_NAME=Lyrtrip ./infra/deploy.sh lyrtrip.com
+```
+
 ## Development Guidelines
 
 - Use TypeScript strictly (no `any` types without justification)
@@ -92,6 +118,7 @@ Remember to add environment variables to your hosting platform:
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`
 
 ## Resources
 

@@ -13,13 +13,13 @@ export interface LocationData {
     lng: number;
     address: string;
 }
-let sessionToken: Window['google']['maps']['places']['AutocompleteSessionToken'] | null = null;
+let sessionToken: google.maps.places.AutocompleteSessionToken | null = null;
 /**
  * Create or get a session token for autocomplete requests
  * Session tokens are used to group autocomplete queries and selections into sessions
  * for better analytics and cost optimization
  */
-function getSessionToken(): Window['google']['maps']['places']['AutocompleteSessionToken'] {
+function getSessionToken(): google.maps.places.AutocompleteSessionToken {
     if (!sessionToken) {
         sessionToken = new window.google.maps.places.AutocompleteSessionToken();
     }

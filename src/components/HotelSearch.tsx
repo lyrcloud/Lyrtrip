@@ -3,12 +3,6 @@
 import { useState, useRef, useEffect } from 'react';
 import Image from 'next/image';
 
-// Declare google namespace for type checking
-interface PlacesServiceRequest {
-  query: string;
-  type?: string;
-}
-
 interface PlacesResult {
   name?: string;
   formatted_address?: string;
@@ -17,32 +11,6 @@ interface PlacesResult {
   photos?: Array<{ getUrl: () => string }>;
   website?: string;
   formatted_phone_number?: string;
-}
-
-interface GoogleMapsOptions {
-  center: { lat: number; lng: number };
-  zoom: number;
-}
-
-declare global {
-  interface Window {
-    google: {
-      maps: {
-        places: {
-          PlacesService: new (map: unknown) => {
-            textSearch(
-              request: PlacesServiceRequest,
-              callback: (results: PlacesResult[], status: string) => void
-            ): void;
-          };
-          PlacesServiceStatus: {
-            OK: string;
-          };
-        };
-        Map: new (element: HTMLElement, options: GoogleMapsOptions) => unknown;
-      };
-    };
-  }
 }
 
 interface Hotel {
@@ -85,8 +53,7 @@ export default function HotelSearch({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
-  type HotelSearchService = InstanceType<typeof window.google.maps.places.PlacesService>;
-  const serviceRef = useRef<HotelSearchService | null>(null);
+  const serviceRef = useRef<google.maps.places.PlacesService | null>(null);
 
   useEffect(() => {
     // SSR safety: only run on client

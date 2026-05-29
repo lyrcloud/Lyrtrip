@@ -5,6 +5,10 @@ interface TourDetailsPageProps {
   params: Promise<{ id: string }>;
 }
 
+export function generateStaticParams() {
+  return [{ id: '1' }, { id: '2' }];
+}
+
 /**
  * Tour details page - view and edit a specific tour
  */
