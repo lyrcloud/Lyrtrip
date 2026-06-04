@@ -1,6 +1,6 @@
 /**
  * Database type definitions for Lyrtrip
- * These types correspond to tables in the Supabase database
+ * These types correspond to persisted Lyrtrip records.
  */
 
 export interface User {

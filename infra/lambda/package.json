@@ -1,0 +1,10 @@
+{
+  "name": "lyrtrip-lambda",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "aws-jwt-verify": "^5.1.1",
+    "mongodb": "^7.2.0"
+  }
+}

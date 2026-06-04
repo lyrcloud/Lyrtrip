@@ -1,104 +1,71 @@
 # Lyrtrip Setup Guide
 
-## Project Created Successfully
+Lyrtrip is configured for static AWS hosting with a Lambda API, Cognito authentication, and MongoDB Atlas persistence.
 
-Your Lyrtrip application has been initialized with Next.js 16, TypeScript, and Supabase integration.
+## What Is Set Up
 
-### What's Been Set Up
+- Next.js 16 with App Router and TypeScript
+- Tailwind CSS
+- Cognito email/password auth helpers
+- MongoDB-backed Lambda API routes
+- CloudFormation/SAM deployment for S3, CloudFront, and Lambda
+- TypeScript record definitions
+- Example auth and tour form components
 
-✅ **Next.js 16** with App Router and TypeScript  
-✅ **Tailwind CSS** for styling  
-✅ **Supabase** client library installed  
-✅ **Authentication utilities** created  
-✅ **Database type definitions** for common entities  
-✅ **Example AuthForm component** for authentication UI  
-✅ **ESLint** configuration for code quality  
+## Environment Variables
 
-### Project Structure
-
-```
-src/
-├── app/
-│   ├── layout.tsx       # Root layout
-│   └── page.tsx         # Home page
-├── components/
-│   └── AuthForm.tsx     # Authentication form component
-├── lib/
-│   ├── supabase.ts      # Supabase client initialization
-│   └── auth.ts          # Authentication helper functions
-└── types/
-    └── database.ts      # Database type definitions
-```
-
-### Next Steps
-
-1. **Set up Supabase Project**
-   - Create a new Supabase project at https://supabase.com
-   - Get your project URL and anonymous key
-
-2. **Configure Environment Variables**
-   ```bash
-   cp .env.local.example .env.local
-   ```
-   - Add your Supabase URL to `NEXT_PUBLIC_SUPABASE_URL`
-   - Add your Supabase anonymous key to `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-
-3. **Create Database Tables**
-   - In your Supabase project dashboard, create the following tables:
-     - `users` - User profiles
-     - `trips` - Music trips
-     - `venues` - Concert venues
-     - `playlists` - Trip playlists
-     - `songs` - Songs in playlists
-   - Reference `src/types/database.ts` for the expected schema
-
-4. **Run the Development Server**
-   ```bash
-   npm run dev
-   ```
-   - Open http://localhost:3000 in your browser
-   - The page will auto-refresh as you edit
-
-### Available Commands
+Create `.env.local` from `.env.local.example` and fill in:
 
 ```bash
-npm run dev       # Start development server
-npm run build     # Build for production
-npm run start     # Start production server
-npm run lint      # Check code quality with ESLint
+NEXT_PUBLIC_COGNITO_REGION=
+NEXT_PUBLIC_COGNITO_USER_POOL_CLIENT_ID=
+COGNITO_USER_POOL_ID=
+COGNITO_USER_POOL_CLIENT_ID=
+MONGODB_URI=
+MONGODB_DB_NAME=lyrtrip
+NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=
 ```
 
-### Key Features Included
+For deployed Lambda, also export `MONGODB_URI`, `MONGODB_DB_NAME`, `COGNITO_USER_POOL_ID`, and `COGNITO_USER_POOL_CLIENT_ID` before running `infra/deploy.sh`.
 
-- **Supabase Client**: Pre-configured and ready to use
-- **Authentication Functions**: Sign up, sign in, sign out, and password reset
-- **TypeScript Support**: Full type safety with database types
-- **Server Components**: Optimized for better performance
-- **Tailwind CSS**: Utility-first CSS framework for styling
+## Cognito
 
-### Important Files
+Create a Cognito User Pool and app client. The browser auth helper uses `USER_PASSWORD_AUTH`, so enable that auth flow on the app client. Do not configure a client secret for a browser app client.
 
-- `src/lib/supabase.ts` - Initialize and use Supabase client
-- `src/lib/auth.ts` - Authentication helper functions
-- `src/types/database.ts` - Database type definitions
-- `src/components/AuthForm.tsx` - Example authentication component
-- `.env.local.example` - Environment variables template
-- `README.md` - Project documentation
+## MongoDB Atlas
 
-### Deployment
+Create a MongoDB Atlas cluster and database named `lyrtrip` unless you set another `MONGODB_DB_NAME`. The Lambda currently writes tours to the `tours` collection.
 
-The app is ready to deploy to:
-- **Vercel** (recommended for Next.js)
-- **Netlify**
-- **Any Node.js hosting platform**
+For Lambda reliability, keep MongoDB client creation outside the request handler. The Lambda handler does this so warm invocations reuse the same MongoDB client.
 
-Remember to add environment variables to your hosting platform before deploying.
+## Deployment
 
-### Resources
+```bash
+npm install
+npm install --prefix infra/lambda --omit=dev
+npm run build
+```
 
-- [Next.js Docs](https://nextjs.org/docs)
-- [Supabase Docs](https://supabase.com/docs)
-- [TypeScript Handbook](https://www.typescriptlang.org/docs/handbook/)
-- [Tailwind CSS](https://tailwindcss.com/docs)
+For AWS deployment:
 
-Happy coding! 🎵🚀
+```bash
+chmod +x infra/deploy.sh
+ENABLE_ROUTE53=false \
+  ACM_CERTIFICATE_ARN=<certificate-arn-in-us-east-1> \
+  AWS_REGION=us-east-1 \
+  STACK_NAME=lyrtrip-site \
+  LAMBDA_FUNCTION_NAME=Lyrtrip \
+  MONGODB_URI=<mongodb-atlas-uri> \
+  MONGODB_DB_NAME=lyrtrip \
+  COGNITO_USER_POOL_ID=<user-pool-id> \
+  COGNITO_USER_POOL_CLIENT_ID=<app-client-id> \
+  ./infra/deploy.sh www.lyrtrip.com
+```
+
+## Important Files
+
+- `src/lib/auth.ts` - Cognito authentication helper functions
+- `src/lib/api.ts` - Browser API helper for Lambda routes
+- `infra/lambda/search.mjs` - Lambda handler for `/api/search` and `/api/tours`
+- `infra/template.yml` - S3, CloudFront, Lambda, and Function URL infrastructure
+- `.env.local.example` - Environment variable template

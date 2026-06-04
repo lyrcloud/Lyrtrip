@@ -1,4 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
 Description: Lyrtrip static frontend on S3/CloudFront with Lambda API and Route 53 alias.
 
 Parameters:
@@ -6,12 +7,60 @@ Parameters:
     Type: String
     Description: Fully qualified domain name, for example lyrtrip.example.com.
   HostedZoneId:
-    Type: AWS::Route53::HostedZone::Id
-    Description: Route 53 hosted zone ID for DomainName.
+    Type: String
+    Default: ""
+    Description: Route 53 hosted zone ID for DomainName. Leave blank if DNS is managed outside Route 53.
+  EnableRoute53:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+    Description: Whether the deployment should create a Route 53 record for the domain.
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: Optional existing ACM certificate ARN in us-east-1. Required when DNS is managed outside Route 53.
   FunctionName:
     Type: String
     Default: Lyrtrip
     Description: Lambda function name for the Lyrtrip API.
+  MongoDbUri:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: MongoDB Atlas connection string for the Lambda API.
+  MongoDbName:
+    Type: String
+    Default: lyrtrip
+    Description: MongoDB database name.
+  CognitoUserPoolId:
+    Type: String
+    Default: ""
+    Description: Cognito User Pool ID used to verify API JWTs.
+  CognitoUserPoolClientId:
+    Type: String
+    Default: ""
+    Description: Cognito app client ID used to verify API JWTs.
+
+Conditions:
+  UseRoute53:
+    Fn::Equals:
+      - !Ref EnableRoute53
+      - "true"
+  UseExistingCertificate:
+    Fn::Not:
+      - Fn::Equals:
+          - !Ref AcmCertificateArn
+          - ""
+  CreateCertificate:
+    Fn::And:
+      - Fn::Equals:
+          - !Ref AcmCertificateArn
+          - ""
+      - Fn::Equals:
+          - !Ref EnableRoute53
+          - "true"
 
 Resources:
   SiteBucket:
@@ -39,53 +88,10 @@ Resources:
             Condition:
               StringEquals:
                 AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
-
-  SearchFunctionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
-  SearchFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Ref FunctionName
-      Runtime: nodejs20.x
-      Handler: search.handler
-      Role: !GetAtt SearchFunctionRole.Arn
-      Code: infra/lambda
-      Timeout: 10
-
-  SearchFunctionUrl:
-    Type: AWS::Lambda::Url
-    Properties:
-      AuthType: NONE
-      TargetFunctionArn: !Ref SearchFunction
-      Cors:
-        AllowOrigins:
-          - '*'
-        AllowMethods:
-          - POST
-          - OPTIONS
-        AllowHeaders:
-          - content-type
-
-  SearchFunctionPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunctionUrl
-      FunctionName: !Ref SearchFunction
-      Principal: '*'
-      FunctionUrlAuthType: NONE
+                AWS:SourceAccount: !Ref AWS::AccountId
 
   Certificate:
+    Condition: CreateCertificate
     Type: AWS::CertificateManager::Certificate
     Properties:
       DomainName: !Ref DomainName
@@ -103,6 +109,48 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref FunctionName
+      Runtime: nodejs22.x
+      Handler: search.handler
+      CodeUri: lambda/
+      MemorySize: 512
+      Timeout: 15
+      Environment:
+        Variables:
+          MONGODB_URI: !Ref MongoDbUri
+          MONGODB_DB_NAME: !Ref MongoDbName
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClientId
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  ApiFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !GetAtt ApiFunction.Arn
+      Cors:
+        AllowHeaders:
+          - authorization
+          - content-type
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowOrigins:
+          - '*'
+
+  ApiFunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref ApiFunction
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -114,9 +162,14 @@ Resources:
         HttpVersion: http2and3
         IPV6Enabled: true
         ViewerCertificate:
-          AcmCertificateArn: !Ref Certificate
-          SslSupportMethod: sni-only
-          MinimumProtocolVersion: TLSv1.2_2021
+          Fn::If:
+            - UseExistingCertificate
+            - AcmCertificateArn: !Ref AcmCertificateArn
+              SslSupportMethod: sni-only
+              MinimumProtocolVersion: TLSv1.2_2021
+            - AcmCertificateArn: !Ref Certificate
+              SslSupportMethod: sni-only
+              MinimumProtocolVersion: TLSv1.2_2021
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200
@@ -130,11 +183,10 @@ Resources:
             OriginAccessControlId: !Ref OriginAccessControl
             S3OriginConfig: {}
           - Id: lambda-api
-            DomainName: !Select [2, !Split ['/', !GetAtt SearchFunctionUrl.FunctionUrl]]
+            DomainName: !Select [2, !Split ['/', !GetAtt ApiFunctionUrl.FunctionUrl]]
             CustomOriginConfig:
+              HTTPSPort: 443
               OriginProtocolPolicy: https-only
-              OriginSSLProtocols:
-                - TLSv1.2
         DefaultCacheBehavior:
           TargetOriginId: s3-site
           ViewerProtocolPolicy: redirect-to-https
@@ -148,24 +200,27 @@ Resources:
           Compress: true
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
         CacheBehaviors:
-          - PathPattern: /api/search
+          - PathPattern: /api/*
             TargetOriginId: lambda-api
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods:
               - GET
               - HEAD
               - OPTIONS
-              - PUT
               - POST
+              - PUT
               - PATCH
               - DELETE
             CachedMethods:
               - GET
               - HEAD
+              - OPTIONS
+            Compress: true
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
             OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
 
   DnsRecord:
+    Condition: UseRoute53
     Type: AWS::Route53::RecordSet
     Properties:
       HostedZoneId: !Ref HostedZoneId
@@ -184,7 +239,5 @@ Outputs:
     Value: !GetAtt Distribution.DomainName
   SiteUrl:
     Value: !Sub 'https://${DomainName}'
-  FunctionName:
-    Value: !Ref SearchFunction
-  FunctionUrl:
-    Value: !GetAtt SearchFunctionUrl.FunctionUrl
+  ApiUrl:
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl

@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { signIn, signUp } from '@/lib/auth';
-import type { AuthError } from '@supabase/supabase-js';
 
 interface AuthFormProps {
   mode?: 'signin' | 'signup';
@@ -36,7 +35,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         setPassword('');
       }
     } catch (err) {
-      const authError = err as AuthError;
+      const authError = err as Error;
       setError(authError.message || 'An error occurred');
     } finally {
       setLoading(false);

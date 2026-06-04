@@ -1,3 +1,6 @@
+import { CognitoJwtVerifier } from 'aws-jwt-verify';
+import { MongoClient, ObjectId } from 'mongodb';
+
 const mockData = {
   hotels: [
     { id: '1', name: 'Luxury Palace Hotel', description: '5-star hotel with ocean view', rating: 4.8, price: 250 },
@@ -51,22 +54,66 @@ const mockData = {
   ],
 };
 
+let mongoClientPromise;
+let verifier;
+
+function getMongoClient() {
+  if (!process.env.MONGODB_URI) {
+    throw new Error('MONGODB_URI is not configured.');
+  }
+
+  if (!mongoClientPromise) {
+    const client = new MongoClient(process.env.MONGODB_URI);
+    mongoClientPromise = client.connect();
+  }
+
+  return mongoClientPromise;
+}
+
+async function getDb() {
+  const client = await getMongoClient();
+  return client.db(process.env.MONGODB_DB_NAME || 'lyrtrip');
+}
+
+function getVerifier() {
+  if (!process.env.COGNITO_USER_POOL_ID || !process.env.COGNITO_USER_POOL_CLIENT_ID) {
+    throw new Error('Cognito JWT verification is not configured.');
+  }
+
+  if (!verifier) {
+    verifier = CognitoJwtVerifier.create({
+      userPoolId: process.env.COGNITO_USER_POOL_ID,
+      tokenUse: 'access',
+      clientId: process.env.COGNITO_USER_POOL_CLIENT_ID,
+    });
+  }
+
+  return verifier;
+}
+
+async function getAuthenticatedUser(event) {
+  const authorization = event.headers?.authorization || event.headers?.Authorization || '';
+  const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
+
+  if (!token) {
+    return null;
+  }
+
+  return getVerifier().verify(token);
+}
+
 const json = (statusCode, body) => ({
   statusCode,
   headers: {
     'content-type': 'application/json',
     'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'OPTIONS,POST',
-    'access-control-allow-headers': 'content-type',
+    'access-control-allow-methods': 'OPTIONS,GET,POST',
+    'access-control-allow-headers': 'authorization,content-type',
   },
   body: JSON.stringify(body),
 });
 
-export async function handler(event) {
-  if (event.requestContext?.http?.method === 'OPTIONS') {
-    return json(204, {});
-  }
-
+async function handleSearch(event) {
   try {
     const body = JSON.parse(event.body || '{}');
     const { service } = body;
@@ -93,5 +140,131 @@ export async function handler(event) {
   } catch (error) {
     console.error('Search API error:', error);
     return json(500, { error: 'Failed to process search request' });
+  }
+}
+
+function serializeTour(tour) {
+  return {
+    ...tour,
+    id: tour._id?.toString(),
+    _id: undefined,
+  };
+}
+
+async function listTours(event) {
+  const user = await getAuthenticatedUser(event);
+
+  if (!user) {
+    return json(401, { error: 'Authentication required' });
+  }
+
+  const db = await getDb();
+  const tours = await db
+    .collection('tours')
+    .find({ user_id: user.sub })
+    .sort({ created_at: -1 })
+    .toArray();
+
+  return json(200, {
+    success: true,
+    tours: tours.map(serializeTour),
+  });
+}
+
+async function createTour(event) {
+  const user = await getAuthenticatedUser(event);
+
+  if (!user) {
+    return json(401, { error: 'Authentication required' });
+  }
+
+  const body = JSON.parse(event.body || '{}');
+
+  if (!body.title || !body.start_date || !body.end_date) {
+    return json(400, { error: 'title, start_date, and end_date are required' });
+  }
+
+  const now = new Date().toISOString();
+  const tour = {
+    user_id: user.sub,
+    title: String(body.title),
+    artist: body.artist ? String(body.artist) : undefined,
+    description: body.description ? String(body.description) : undefined,
+    start_date: String(body.start_date),
+    end_date: String(body.end_date),
+    total_stops: Number(body.total_stops || 0),
+    budget: Number(body.budget || 0),
+    status: body.status || 'planning',
+    created_at: now,
+    updated_at: now,
+  };
+
+  const db = await getDb();
+  const result = await db.collection('tours').insertOne(tour);
+
+  return json(201, {
+    success: true,
+    tour: serializeTour({ ...tour, _id: result.insertedId }),
+  });
+}
+
+async function getTour(event, id) {
+  const user = await getAuthenticatedUser(event);
+
+  if (!user) {
+    return json(401, { error: 'Authentication required' });
+  }
+
+  if (!ObjectId.isValid(id)) {
+    return json(400, { error: 'Invalid tour id' });
+  }
+
+  const db = await getDb();
+  const tour = await db.collection('tours').findOne({
+    _id: new ObjectId(id),
+    user_id: user.sub,
+  });
+
+  if (!tour) {
+    return json(404, { error: 'Tour not found' });
+  }
+
+  return json(200, {
+    success: true,
+    tour: serializeTour(tour),
+  });
+}
+
+export async function handler(event) {
+  const method = event.requestContext?.http?.method || event.httpMethod;
+  const path = event.rawPath || event.path || '/';
+
+  if (method === 'OPTIONS') {
+    return json(204, {});
+  }
+
+  try {
+    if (path.endsWith('/api/search')) {
+      return handleSearch(event);
+    }
+
+    if (path.endsWith('/api/tours') && method === 'GET') {
+      return listTours(event);
+    }
+
+    if (path.endsWith('/api/tours') && method === 'POST') {
+      return createTour(event);
+    }
+
+    const tourMatch = path.match(/\/api\/tours\/([^/]+)$/);
+
+    if (tourMatch && method === 'GET') {
+      return getTour(event, tourMatch[1]);
+    }
+
+    return json(404, { error: 'Route not found' });
+  } catch (error) {
+    console.error('API error:', error);
+    return json(500, { error: 'Failed to process API request' });
   }
 }

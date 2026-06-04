@@ -15,7 +15,7 @@ export function generateStaticParams() {
 export default async function TourDetailsPage({ params }: TourDetailsPageProps) {
   const { id } = await params;
 
-  // Mock data - replace with actual Supabase query
+  // Mock data - replace with actual Lambda API query.
   const tour = {
     id,
     user_id: 'user-1',

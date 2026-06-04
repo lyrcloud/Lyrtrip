@@ -7,7 +7,7 @@ import TourCard from '@/components/TourCard';
  * Tours page - displays all tours for the user
  */
 export default function ToursPage() {
-  // Mock data - replace with actual data fetching from Supabase
+  // Mock data - replace with actual data fetching from the Lambda API.
   const tours = [
     {
       id: '1',

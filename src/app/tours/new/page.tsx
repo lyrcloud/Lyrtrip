@@ -2,16 +2,16 @@
 
 import Link from 'next/link';
 import TourForm from '@/components/TourForm';
-import type { Tour } from '@/types';
+import { createTour } from '@/lib/api';
+import type { Tour } from '@/types/database';
 
 /**
  * Create new tour page
  */
 export default function NewTourPage() {
   const handleSubmit = async (data: Omit<Tour, 'id' | 'user_id' | 'created_at' | 'updated_at'>) => {
-    // TODO: Implement Supabase integration to save tour
-    console.log('Saving new tour:', data);
-    // After successful save, redirect to tours page
+    await createTour(data);
+    window.location.href = '/tours';
   };
 
   return (
