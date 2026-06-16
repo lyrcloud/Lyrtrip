@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Dedicated Cognito User Pool for Lyrtrip (email/password + Google/Facebook/WeChat sign-in).
+
+Parameters:
+  DomainPrefix:
+    Type: String
+    Default: lyrtrip-auth
+    Description: Cognito Hosted UI domain prefix (becomes <prefix>.auth.<region>.amazoncognito.com).
+  ProductionSiteUrl:
+    Type: String
+    Default: https://www.lyrtrip.com
+    Description: Production site origin, used to build OAuth callback/logout URLs.
+  DevSiteUrl:
+    Type: String
+    Default: http://localhost:3000
+    Description: Local dev site origin, used to build OAuth callback/logout URLs.
+  GoogleClientId:
+    Type: String
+    Default: ""
+    Description: Google OAuth 2.0 web client ID. Leave blank to skip Google sign-in.
+  GoogleClientSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Google OAuth 2.0 web client secret.
+  FacebookAppId:
+    Type: String
+    Default: ""
+    Description: Facebook app ID. Leave blank to skip Facebook sign-in.
+  FacebookAppSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Facebook app secret.
+
+Conditions:
+  HasGoogle:
+    Fn::Not:
+      - Fn::Equals: [!Ref GoogleClientId, ""]
+  HasFacebook:
+    Fn::Not:
+      - Fn::Equals: [!Ref FacebookAppId, ""]
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: lyrtrip-users
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: picture
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: wechat_openid
+          AttributeDataType: String
+          Mutable: false
+          Required: false
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Ref DomainPrefix
+
+  GoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasGoogle
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleClientId
+        client_secret: !Ref GoogleClientSecret
+        authorize_scopes: 'email openid profile'
+      AttributeMapping:
+        email: email
+        name: name
+        picture: picture
+        username: sub
+
+  FacebookIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasFacebook
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: Facebook
+      ProviderType: Facebook
+      ProviderDetails:
+        client_id: !Ref FacebookAppId
+        client_secret: !Ref FacebookAppSecret
+        authorize_scopes: 'email public_profile'
+      AttributeMapping:
+        email: email
+        name: name
+        picture: picture
+        username: id
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: lyrtrip-web
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_CUSTOM_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        Fn::If:
+          - HasGoogle
+          - Fn::If:
+              - HasFacebook
+              - [COGNITO, !Ref GoogleIdentityProvider, !Ref FacebookIdentityProvider]
+              - [COGNITO, !Ref GoogleIdentityProvider]
+          - Fn::If:
+              - HasFacebook
+              - [COGNITO, !Ref FacebookIdentityProvider]
+              - [COGNITO]
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - !Sub '${DevSiteUrl}/auth/callback'
+        - !Sub '${ProductionSiteUrl}/auth/callback'
+      LogoutURLs:
+        - !Ref DevSiteUrl
+        - !Ref ProductionSiteUrl
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolArn:
+    Value: !GetAtt UserPool.Arn
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  HostedUiDomain:
+    Value: !Sub '${DomainPrefix}.auth.${AWS::Region}.amazoncognito.com'

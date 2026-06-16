@@ -18,6 +18,9 @@ MONGODB_URI="${MONGODB_URI:-}"
 MONGODB_DB_NAME="${MONGODB_DB_NAME:-lyrtrip}"
 COGNITO_USER_POOL_ID="${COGNITO_USER_POOL_ID:-}"
 COGNITO_USER_POOL_CLIENT_ID="${COGNITO_USER_POOL_CLIENT_ID:-}"
+WECHAT_APP_ID="${WECHAT_APP_ID:-}"
+WECHAT_APP_SECRET="${WECHAT_APP_SECRET:-}"
+WECHAT_AUTH_SHARED_SECRET="${WECHAT_AUTH_SHARED_SECRET:-}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-${STACK_NAME}-artifacts-${ACCOUNT_ID}-${REGION}}"
 PACKAGED_TEMPLATE="/tmp/${STACK_NAME}-packaged.yml"
@@ -87,7 +90,10 @@ aws cloudformation deploy \
     MongoDbUri="$MONGODB_URI" \
     MongoDbName="$MONGODB_DB_NAME" \
     CognitoUserPoolId="$COGNITO_USER_POOL_ID" \
-    CognitoUserPoolClientId="$COGNITO_USER_POOL_CLIENT_ID"
+    CognitoUserPoolClientId="$COGNITO_USER_POOL_CLIENT_ID" \
+    WeChatAppId="$WECHAT_APP_ID" \
+    WeChatAppSecret="$WECHAT_APP_SECRET" \
+    WeChatAuthSharedSecret="$WECHAT_AUTH_SHARED_SECRET"
 
 BUCKET_NAME="$(aws cloudformation describe-stacks \
   --region "$REGION" \

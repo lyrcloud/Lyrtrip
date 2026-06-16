@@ -1,5 +1,14 @@
+import { createHmac } from 'node:crypto';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { MongoClient, ObjectId } from 'mongodb';
+import {
+  AdminCreateUserCommand,
+  AdminGetUserCommand,
+  AdminInitiateAuthCommand,
+  AdminRespondToAuthChallengeCommand,
+  AdminUpdateUserAttributesCommand,
+  CognitoIdentityProviderClient,
+} from '@aws-sdk/client-cognito-identity-provider';
 
 const mockData = {
   hotels: [
@@ -112,6 +121,160 @@ const json = (statusCode, body) => ({
   },
   body: JSON.stringify(body),
 });
+
+let cognitoClient;
+
+function getCognitoClient() {
+  if (!cognitoClient) {
+    cognitoClient = new CognitoIdentityProviderClient({});
+  }
+  return cognitoClient;
+}
+
+function getWeChatConfig() {
+  const appId = process.env.WECHAT_APP_ID;
+  const appSecret = process.env.WECHAT_APP_SECRET;
+  const sharedSecret = process.env.WECHAT_AUTH_SHARED_SECRET;
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  const clientId = process.env.COGNITO_USER_POOL_CLIENT_ID;
+
+  if (!appId || !appSecret || !sharedSecret || !userPoolId || !clientId) {
+    throw new Error('WeChat sign-in is not fully configured.');
+  }
+
+  return { appId, appSecret, sharedSecret, userPoolId, clientId };
+}
+
+function challengeAnswerFor(openid, sharedSecret) {
+  return createHmac('sha256', sharedSecret).update(openid).digest('hex');
+}
+
+/**
+ * Exchange a WeChat OAuth code for tokens + profile, then bridge into a
+ * Cognito User Pool session via a silent CUSTOM_AUTH challenge. See
+ * infra/lambda/auth-challenge.mjs for the matching Lambda triggers.
+ */
+async function handleWeChatAuth(event) {
+  let config;
+  try {
+    config = getWeChatConfig();
+  } catch (error) {
+    return json(500, { error: error.message });
+  }
+
+  const body = JSON.parse(event.body || '{}');
+  const { code } = body;
+
+  if (!code) {
+    return json(400, { error: 'Missing WeChat authorization code.' });
+  }
+
+  const tokenResponse = await fetch(
+    `https://api.weixin.qq.com/sns/oauth2/access_token?appid=${config.appId}&secret=${config.appSecret}&code=${encodeURIComponent(code)}&grant_type=authorization_code`
+  );
+  const tokenBody = await tokenResponse.json();
+
+  if (!tokenBody.access_token || !tokenBody.openid) {
+    return json(400, { error: tokenBody.errmsg || 'WeChat code exchange failed.' });
+  }
+
+  const { access_token: wechatAccessToken, openid } = tokenBody;
+
+  const profileResponse = await fetch(
+    `https://api.weixin.qq.com/sns/userinfo?access_token=${wechatAccessToken}&openid=${openid}&lang=en`
+  );
+  const profileBody = await profileResponse.json();
+  const nickname = profileBody.nickname || undefined;
+  const avatar = profileBody.headimgurl || undefined;
+
+  const cognito = getCognitoClient();
+  const username = `wechat_${openid}`;
+
+  try {
+    await cognito.send(
+      new AdminGetUserCommand({ UserPoolId: config.userPoolId, Username: username })
+    );
+  } catch (error) {
+    if (error.name !== 'UserNotFoundException') {
+      console.error('AdminGetUser error:', error);
+      return json(500, { error: 'Failed to look up WeChat user.' });
+    }
+
+    await cognito.send(
+      new AdminCreateUserCommand({
+        UserPoolId: config.userPoolId,
+        Username: username,
+        MessageAction: 'SUPPRESS',
+        UserAttributes: [
+          { Name: 'email_verified', Value: 'false' },
+          { Name: 'custom:wechat_openid', Value: openid },
+          ...(nickname ? [{ Name: 'name', Value: nickname }] : []),
+          ...(avatar ? [{ Name: 'picture', Value: avatar }] : []),
+        ],
+      })
+    );
+  }
+
+  if (nickname || avatar) {
+    await cognito
+      .send(
+        new AdminUpdateUserAttributesCommand({
+          UserPoolId: config.userPoolId,
+          Username: username,
+          UserAttributes: [
+            ...(nickname ? [{ Name: 'name', Value: nickname }] : []),
+            ...(avatar ? [{ Name: 'picture', Value: avatar }] : []),
+          ],
+        })
+      )
+      .catch(error => console.error('AdminUpdateUserAttributes error:', error));
+  }
+
+  const initiateResponse = await cognito.send(
+    new AdminInitiateAuthCommand({
+      UserPoolId: config.userPoolId,
+      ClientId: config.clientId,
+      AuthFlow: 'CUSTOM_AUTH',
+      AuthParameters: { USERNAME: username },
+      ClientMetadata: { openid },
+    })
+  );
+
+  if (!initiateResponse.ChallengeName || !initiateResponse.Session) {
+    console.error('Unexpected AdminInitiateAuth response for WeChat bridge.');
+    return json(500, { error: 'WeChat sign-in is not fully configured.' });
+  }
+
+  const challengeResponse = await cognito.send(
+    new AdminRespondToAuthChallengeCommand({
+      UserPoolId: config.userPoolId,
+      ClientId: config.clientId,
+      ChallengeName: initiateResponse.ChallengeName,
+      Session: initiateResponse.Session,
+      ChallengeResponses: {
+        USERNAME: username,
+        ANSWER: challengeAnswerFor(openid, config.sharedSecret),
+      },
+    })
+  );
+
+  const result = challengeResponse.AuthenticationResult;
+
+  if (!result?.AccessToken) {
+    return json(401, { error: 'WeChat sign-in could not be completed.' });
+  }
+
+  return json(200, {
+    success: true,
+    tokens: {
+      accessToken: result.AccessToken,
+      idToken: result.IdToken,
+      refreshToken: result.RefreshToken,
+      expiresIn: result.ExpiresIn,
+    },
+    profile: { nickname, avatar },
+  });
+}
 
 async function handleSearch(event) {
   try {
@@ -246,6 +409,10 @@ export async function handler(event) {
   try {
     if (path.endsWith('/api/search')) {
       return handleSearch(event);
+    }
+
+    if (path.endsWith('/api/auth/wechat') && method === 'POST') {
+      return handleWeChatAuth(event);
     }
 
     if (path.endsWith('/api/tours') && method === 'GET') {

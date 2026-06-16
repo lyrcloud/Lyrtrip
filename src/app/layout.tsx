@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import HotelSearch from "@/components/HotelSearch";
+import Navigation from "@/components/Navigation";
+import { AuthProvider } from "@/context/AuthContext";
 
 const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
@@ -24,7 +26,12 @@ export default function RootLayout({
           />
         ) : null}
       </head>
-      <body>{children}</body>
+      <body>
+        <AuthProvider>
+          <Navigation />
+          {children}
+        </AuthProvider>
+      </body>
     </html>
   );
 }

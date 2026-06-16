@@ -44,6 +44,10 @@ cp .env.local.example .env.local
 - `MONGODB_URI`
 - `MONGODB_DB_NAME`
 - `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`
+- `NEXT_PUBLIC_COGNITO_DOMAIN` (Cognito Hosted UI domain, for Google/Facebook sign-in)
+- `NEXT_PUBLIC_WECHAT_APP_ID` (WeChat Open Platform app ID, for WeChat sign-in)
+
+See [SETUP_GUIDE.md](SETUP_GUIDE.md) for how to configure Google, Facebook, and WeChat sign-in end to end.
 
 4. Run the development server:
 

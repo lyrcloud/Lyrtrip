@@ -1,8 +1,10 @@
 import {
   CognitoIdentityProviderClient,
+  ConfirmSignUpCommand,
   ForgotPasswordCommand,
   GetUserCommand,
   InitiateAuthCommand,
+  ResendConfirmationCodeCommand,
   SignUpCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 
@@ -13,12 +15,18 @@ type StoredSession = {
   expiresAt?: number;
 };
 
+export type AuthProvider = 'cognito' | 'Google' | 'Facebook' | 'WeChat';
+
 export type AuthenticatedUser = {
   id: string;
   email?: string;
+  name?: string;
+  picture?: string;
+  provider?: AuthProvider;
 };
 
 const sessionStorageKey = 'lyrtrip:cognito-session';
+const pkceStorageKey = 'lyrtrip:pkce-verifier';
 
 function getConfig() {
   const region = process.env.NEXT_PUBLIC_COGNITO_REGION;
@@ -56,13 +64,42 @@ function clearStoredSession() {
   }
 }
 
-function userFromToken(token: string): AuthenticatedUser {
+function decodeJwt(token: string): Record<string, unknown> {
   const [, payload] = token.split('.');
-  const claims = JSON.parse(window.atob(payload)) as { sub: string; email?: string };
+  return JSON.parse(window.atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as Record<string, unknown>;
+}
+
+function providerFromIdentities(claims: Record<string, unknown>): AuthProvider {
+  const identities = claims.identities;
+
+  if (typeof identities === 'string') {
+    try {
+      const parsed = JSON.parse(identities) as Array<{ providerName?: string }>;
+      const providerName = parsed[0]?.providerName;
+      if (providerName === 'Google' || providerName === 'Facebook') {
+        return providerName;
+      }
+    } catch {
+      // ignore malformed identities claim
+    }
+  }
+
+  if (typeof claims['custom:wechat_openid'] === 'string') {
+    return 'WeChat';
+  }
+
+  return 'cognito';
+}
+
+function userFromToken(token: string): AuthenticatedUser {
+  const claims = decodeJwt(token);
 
   return {
-    id: claims.sub,
-    email: claims.email,
+    id: String(claims.sub),
+    email: typeof claims.email === 'string' ? claims.email : undefined,
+    name: typeof claims.name === 'string' ? claims.name : undefined,
+    picture: typeof claims.picture === 'string' ? claims.picture : undefined,
+    provider: providerFromIdentities(claims),
   };
 }
 
@@ -74,7 +111,9 @@ export async function getSession() {
 }
 
 /**
- * Get the current authenticated user
+ * Get the current authenticated user. Prefers locally decoded ID-token
+ * claims (name/picture/provider) and falls back to/merges with a live
+ * Cognito GetUser call for the canonical email and username.
  */
 export async function getUser(): Promise<AuthenticatedUser | null> {
   const session = getStoredSession();
@@ -83,6 +122,8 @@ export async function getUser(): Promise<AuthenticatedUser | null> {
     return null;
   }
 
+  const fromIdToken = session.idToken ? userFromToken(session.idToken) : null;
+
   try {
     const response = await getClient().send(
       new GetUserCommand({ AccessToken: session.accessToken })
@@ -90,32 +131,83 @@ export async function getUser(): Promise<AuthenticatedUser | null> {
     const email = response.UserAttributes?.find(attribute => attribute.Name === 'email')?.Value;
 
     return {
-      id: response.Username || userFromToken(session.accessToken).id,
-      email,
+      id: response.Username || fromIdToken?.id || userFromToken(session.accessToken).id,
+      email: email || fromIdToken?.email,
+      name: fromIdToken?.name,
+      picture: fromIdToken?.picture,
+      provider: fromIdToken?.provider,
     };
   } catch {
+    if (fromIdToken) {
+      return fromIdToken;
+    }
     clearStoredSession();
     return null;
   }
 }
 
 /**
- * Sign up a new user with email and password
+ * Sign up a new user with email and password. Cognito requires the
+ * returned confirmation code to be submitted via confirmSignUp before
+ * the account can sign in.
  */
-export async function signUp(email: string, password: string) {
+export async function signUp(email: string, password: string, name?: string) {
   try {
-    await getClient().send(
+    const result = await getClient().send(
       new SignUpCommand({
         ClientId: getConfig().clientId,
         Username: email,
         Password: password,
-        UserAttributes: [{ Name: 'email', Value: email }],
+        UserAttributes: [
+          { Name: 'email', Value: email },
+          ...(name ? [{ Name: 'name', Value: name }] : []),
+        ],
       })
     );
 
-    return { data: { user: null }, error: null };
+    return {
+      data: { user: null, confirmed: result.UserConfirmed ?? false },
+      error: null,
+    };
   } catch (error) {
-    return { data: { user: null }, error: error as Error };
+    return { data: { user: null, confirmed: false }, error: error as Error };
+  }
+}
+
+/**
+ * Confirm a newly created account with the code emailed by Cognito.
+ */
+export async function confirmSignUp(email: string, code: string) {
+  try {
+    await getClient().send(
+      new ConfirmSignUpCommand({
+        ClientId: getConfig().clientId,
+        Username: email,
+        ConfirmationCode: code,
+      })
+    );
+
+    return { error: null };
+  } catch (error) {
+    return { error: error as Error };
+  }
+}
+
+/**
+ * Resend the email confirmation code for an unconfirmed account.
+ */
+export async function resendConfirmationCode(email: string) {
+  try {
+    await getClient().send(
+      new ResendConfirmationCodeCommand({
+        ClientId: getConfig().clientId,
+        Username: email,
+      })
+    );
+
+    return { error: null };
+  } catch (error) {
+    return { error: error as Error };
   }
 }
 
@@ -187,6 +279,203 @@ export async function resetPassword(email: string) {
 export function getAccessToken() {
   return getStoredSession()?.accessToken || null;
 }
+
+// ---------------------------------------------------------------------------
+// Federated sign-in (Google / Facebook via Cognito Hosted UI, WeChat via a
+// custom Lambda bridge). These flows are full-page redirects rather than SDK
+// calls, since the static-exported frontend has no server runtime to host
+// confidential OAuth callbacks.
+// ---------------------------------------------------------------------------
+
+function getRedirectUri(path: string) {
+  return `${window.location.origin}${path}`;
+}
+
+function base64UrlEncode(bytes: ArrayBuffer | Uint8Array) {
+  const buffer = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let binary = '';
+  buffer.forEach(byte => {
+    binary += String.fromCharCode(byte);
+  });
+
+  return window
+    .btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function generateRandomString(length = 64) {
+  const bytes = new Uint8Array(length);
+  window.crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+async function generatePkcePair() {
+  const verifier = generateRandomString(64);
+  const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return { verifier, challenge: base64UrlEncode(digest) };
+}
+
+function getHostedUiDomain() {
+  const domain = process.env.NEXT_PUBLIC_COGNITO_DOMAIN;
+
+  if (!domain) {
+    throw new Error('Missing NEXT_PUBLIC_COGNITO_DOMAIN environment configuration.');
+  }
+
+  return domain;
+}
+
+/**
+ * Redirect to the Cognito Hosted UI for a federated identity provider
+ * ("Google" or "Facebook") that has been configured on the User Pool.
+ */
+export async function signInWithFederatedProvider(provider: 'Google' | 'Facebook') {
+  const { clientId } = getConfig();
+  const domain = getHostedUiDomain();
+  const { verifier, challenge } = await generatePkcePair();
+  const redirectUri = getRedirectUri('/auth/callback');
+
+  window.sessionStorage.setItem(pkceStorageKey, verifier);
+
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    identity_provider: provider,
+    scope: 'openid email profile',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+
+  window.location.href = `https://${domain}/oauth2/authorize?${params.toString()}`;
+}
+
+export const signInWithGoogle = () => signInWithFederatedProvider('Google');
+export const signInWithFacebook = () => signInWithFederatedProvider('Facebook');
+
+/**
+ * Exchange an authorization code returned by the Cognito Hosted UI
+ * (Google/Facebook sign-in) for a User Pool session.
+ */
+export async function completeFederatedSignIn(code: string) {
+  try {
+    const { clientId } = getConfig();
+    const domain = getHostedUiDomain();
+    const verifier = window.sessionStorage.getItem(pkceStorageKey) || '';
+    window.sessionStorage.removeItem(pkceStorageKey);
+
+    const response = await fetch(`https://${domain}/oauth2/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code,
+        redirect_uri: getRedirectUri('/auth/callback'),
+        code_verifier: verifier,
+      }),
+    });
+
+    const body = await response.json();
+
+    if (!response.ok || !body.access_token) {
+      throw new Error(body.error_description || body.error || 'Sign-in failed.');
+    }
+
+    const expiresAt = body.expires_in ? Date.now() + body.expires_in * 1000 : undefined;
+
+    setStoredSession({
+      accessToken: body.access_token,
+      idToken: body.id_token,
+      refreshToken: body.refresh_token,
+      expiresAt,
+    });
+
+    return { data: { user: userFromToken(body.id_token || body.access_token) }, error: null };
+  } catch (error) {
+    return { data: { user: null }, error: error as Error };
+  }
+}
+
+/**
+ * Redirect to WeChat's "Sign in with WeChat" web QR flow. WeChat is not a
+ * Cognito-native identity provider, so the returned authorization code is
+ * exchanged server-side by our own Lambda (see POST /api/auth/wechat),
+ * which bridges into the User Pool via a CUSTOM_AUTH challenge.
+ */
+export function signInWithWeChat() {
+  const appId = process.env.NEXT_PUBLIC_WECHAT_APP_ID;
+
+  if (!appId) {
+    throw new Error('Missing NEXT_PUBLIC_WECHAT_APP_ID environment configuration.');
+  }
+
+  const state = generateRandomString(16);
+  window.sessionStorage.setItem('lyrtrip:wechat-state', state);
+
+  const params = new URLSearchParams({
+    appid: appId,
+    redirect_uri: getRedirectUri('/auth/wechat/callback'),
+    response_type: 'code',
+    scope: 'snsapi_login',
+    state,
+  });
+
+  window.location.href = `https://open.weixin.qq.com/connect/qrconnect?${params.toString()}#wechat_redirect`;
+}
+
+/**
+ * Exchange a WeChat authorization code (via our Lambda API) for a User
+ * Pool session.
+ */
+export async function completeWeChatSignIn(code: string, state: string) {
+  try {
+    const expectedState = window.sessionStorage.getItem('lyrtrip:wechat-state');
+    window.sessionStorage.removeItem('lyrtrip:wechat-state');
+
+    if (!expectedState || expectedState !== state) {
+      throw new Error('Invalid WeChat sign-in state.');
+    }
+
+    const response = await fetch('/api/auth/wechat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+
+    const body = await response.json();
+
+    if (!response.ok || !body.success) {
+      throw new Error(body.error || 'WeChat sign-in failed.');
+    }
+
+    const { accessToken, idToken, refreshToken, expiresIn } = body.tokens;
+
+    setStoredSession({
+      accessToken,
+      idToken,
+      refreshToken,
+      expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : undefined,
+    });
+
+    return {
+      data: {
+        user: {
+          ...userFromToken(idToken || accessToken),
+          name: body.profile?.nickname || undefined,
+          picture: body.profile?.avatar || undefined,
+          provider: 'WeChat' as const,
+        },
+      },
+      error: null,
+    };
+  } catch (error) {
+    return { data: { user: null }, error: error as Error };
+  }
+}
+
 export interface GoogleAutocompleteSuggestion {
     placePrediction?: {
         placeId: string;

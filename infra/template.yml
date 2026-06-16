@@ -42,6 +42,20 @@ Parameters:
     Type: String
     Default: ""
     Description: Cognito app client ID used to verify API JWTs.
+  WeChatAppId:
+    Type: String
+    Default: ""
+    Description: WeChat Open Platform website app ID, used to exchange WeChat login codes.
+  WeChatAppSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: WeChat Open Platform website app secret.
+  WeChatAuthSharedSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Random shared secret used to bridge WeChat sign-in into a Cognito CUSTOM_AUTH challenge.
 
 Conditions:
   UseRoute53:
@@ -124,8 +138,43 @@ Resources:
           MONGODB_DB_NAME: !Ref MongoDbName
           COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
           COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClientId
+          WECHAT_APP_ID: !Ref WeChatAppId
+          WECHAT_APP_SECRET: !Ref WeChatAppSecret
+          WECHAT_AUTH_SHARED_SECRET: !Ref WeChatAuthSharedSecret
       Policies:
         - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminGetUser
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminUpdateUserAttributes
+                - cognito-idp:AdminInitiateAuth
+                - cognito-idp:AdminRespondToAuthChallenge
+              Resource: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
+
+  AuthChallengeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${FunctionName}-wechat-auth-challenge'
+      Runtime: nodejs22.x
+      Handler: auth-challenge.handler
+      CodeUri: lambda/
+      MemorySize: 128
+      Timeout: 5
+      Environment:
+        Variables:
+          WECHAT_AUTH_SHARED_SECRET: !Ref WeChatAuthSharedSecret
+      Policies:
+        - AWSLambdaBasicExecutionRole
+
+  AuthChallengeFunctionCognitoInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AuthChallengeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
 
   ApiFunctionUrl:
     Type: AWS::Lambda::Url
@@ -240,3 +289,6 @@ Outputs:
     Value: !Sub 'https://${DomainName}'
   ApiUrl:
     Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  AuthChallengeFunctionArn:
+    Value: !GetAtt AuthChallengeFunction.Arn
+    Description: Attach this to the Cognito User Pool's DefineAuthChallenge/CreateAuthChallenge/VerifyAuthChallengeResponse triggers (see SETUP_GUIDE.md).

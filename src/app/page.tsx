@@ -1,7 +1,5 @@
 'use client';
 
-import Image from "next/image";
-import Link from "next/link";
 import { useState, useEffect } from "react";
 import React from 'react';
 import LocationMap from '@/components/LocationMap';
@@ -117,25 +115,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Fixed Header */}
-      <header className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-md">
-        <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <Image
-              src="/logo.png"
-              alt="Lyrtrip logo"
-              width={120}
-              height={48}
-              priority
-              className="w-32 h-12 rounded-lg shadow-md hover:shadow-lg transition-shadow object-contain"
-            />
-          </Link>
-          <button className="px-6 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition-colors">
-            Sign In
-          </button>
-        </div>
-      </header>
-
       {/* Main Content */}
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-50">
         <main className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
