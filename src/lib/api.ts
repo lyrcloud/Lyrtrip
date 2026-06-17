@@ -3,6 +3,24 @@ import { getAccessToken } from './auth';
 
 type CreateTourInput = Omit<Tour, 'id' | 'user_id' | 'created_at' | 'updated_at'>;
 
+export interface HotelResult {
+  id: string;
+  name: string;
+  description: string;
+  rating?: number;
+  price?: number;
+  currency?: string;
+  unit?: string;
+  roomType?: string;
+  bedType?: string;
+}
+
+export interface HotelSearchParams {
+  destinationLocation: { lat: number; lng: number };
+  checkin?: string;
+  checkout?: string;
+}
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getAccessToken();
   const response = await fetch(path, {
@@ -32,4 +50,12 @@ export async function createTour(tour: CreateTourInput) {
 
 export async function listTours() {
   return apiFetch<{ success: boolean; tours: Tour[] }>('/api/tours');
+}
+
+export async function searchHotels(params: HotelSearchParams): Promise<HotelResult[]> {
+  const res = await apiFetch<{ success: boolean; results: HotelResult[] }>('/api/search', {
+    method: 'POST',
+    body: JSON.stringify({ service: 'hotels', ...params }),
+  });
+  return res.results;
 }
