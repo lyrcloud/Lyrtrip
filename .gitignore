@@ -20,6 +20,8 @@ infra/lambda/node_modules/
 
 # production
 /build
+/lyrtrip-project/
+*.zip
 
 # misc
 .DS_Store
