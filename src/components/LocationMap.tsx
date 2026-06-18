@@ -19,31 +19,20 @@ export default function LocationMap({ lat, lng, zoom = 12, title = 'Location' }:
     async function initMap() {
       if (!mapRef.current) return;
 
-      // Poll until the async-loaded Google Maps API is ready
-      let attempts = 0;
-      while (!(window as any).google?.maps && attempts < 50) {
-        await new Promise(r => setTimeout(r, 200));
-        attempts++;
-      }
-
-      if (!(window as any).google?.maps) {
-        if (mounted) setMapError('Google Maps failed to load. Check your API key.');
-        return;
-      }
-
-      if (!mounted || !mapRef.current) return;
-
       try {
-        const map = new window.google.maps.Map(mapRef.current, {
-          center: { lat, lng },
-          zoom,
-        });
+        const g = (window as any).google;
+        if (!g?.maps?.importLibrary) {
+          if (mounted) setMapError('Google Maps failed to load. Check your API key.');
+          return;
+        }
 
-        new window.google.maps.Marker({
-          position: { lat, lng },
-          map,
-          title,
-        });
+        const { Map } = await g.maps.importLibrary('maps') as google.maps.MapsLibrary;
+        const { Marker } = await g.maps.importLibrary('marker') as google.maps.MarkerLibrary;
+
+        if (!mounted || !mapRef.current) return;
+
+        const map = new Map(mapRef.current, { center: { lat, lng }, zoom });
+        new Marker({ position: { lat, lng }, map, title });
       } catch (err) {
         console.error('Map init error:', err);
         if (mounted) setMapError('Failed to initialize map.');

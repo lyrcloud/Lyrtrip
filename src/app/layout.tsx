@@ -21,7 +21,7 @@ export default function RootLayout({
       <head>
         {googleMapsApiKey ? (
           <script
-            src={`https://maps.googleapis.com/maps/api/js?key=${googleMapsApiKey}&libraries=places&loading=async`}
+            src={`https://maps.googleapis.com/maps/api/js?key=${googleMapsApiKey}&loading=async`}
             async
           />
         ) : null}
