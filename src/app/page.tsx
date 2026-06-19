@@ -85,6 +85,29 @@ interface LocationData {
   address: string;
 }
 
+interface UberRideEstimate {
+  productId: string;
+  name: string;
+  lowEstimate: number;
+  highEstimate: number;
+  currencyCode: string;
+  duration: number;
+  distance: number;
+  surgeMultiplier: number;
+  emoji: string;
+  seats: string;
+}
+
+interface RideDraft {
+  ride: UberRideEstimate;
+  pickupLat: number;
+  pickupLng: number;
+  dropoffLat: number;
+  dropoffLng: number;
+  pickupLabel: string;
+  dropoffLabel: string;
+}
+
 const mockData: Record<string, SearchResult[]> = {
   hotels: [
     { id: '1', name: 'Luxury Palace Hotel', description: '5-star hotel with ocean view', rating: 4.8, price: 250, unit: '/night' },
@@ -188,6 +211,16 @@ export default function Home() {
   const [flightPassengerName, setFlightPassengerName] = useState('');
   const [flightPassengers, setFlightPassengers] = useState(1);
 
+  const [uberDropoff, setUberDropoff] = useState<LocationData | null>(null);
+  const [uberPrices, setUberPrices] = useState<UberRideEstimate[]>([]);
+  const [uberPriceLoading, setUberPriceLoading] = useState(false);
+  const [uberPriceError, setUberPriceError] = useState<string | null>(null);
+  const [rideDraft, setRideDraft] = useState<RideDraft | null>(null);
+  const [riderName, setRiderName] = useState('');
+  const [riderEmail, setRiderEmail] = useState('');
+  const [rideBookingLoading, setRideBookingLoading] = useState(false);
+  const [rideBookingError, setRideBookingError] = useState<string | null>(null);
+
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -205,6 +238,23 @@ export default function Home() {
       setLocationLoading(false);
     }
   }, []);
+
+  // Fetch live Uber price estimates whenever the dropoff location changes
+  useEffect(() => {
+    if (!uberDropoff || locationLoading) return;
+    const lambdaBase = (process.env.NEXT_PUBLIC_UBER_LAMBDA_URL ?? '').replace(/\/$/, '');
+    if (!lambdaBase) return;
+    setUberPriceLoading(true);
+    setUberPriceError(null);
+    fetch(`${lambdaBase}/estimates?pickupLat=${userLocation.lat}&pickupLng=${userLocation.lng}&dropoffLat=${uberDropoff.lat}&dropoffLng=${uberDropoff.lng}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.rides?.length) setUberPrices(data.rides);
+        else setUberPriceError(data.error ?? 'No rides available for this route.');
+      })
+      .catch(() => setUberPriceError('Could not connect to Uber service.'))
+      .finally(() => setUberPriceLoading(false));
+  }, [uberDropoff, userLocation, locationLoading]);
 
   // After login redirect back with ?booking=pending — auto-trigger Stripe
   useEffect(() => {
@@ -232,6 +282,9 @@ export default function Home() {
     setActiveTab(tabId);
     setResults([]);
     setHasSearched(false);
+    setUberDropoff(null);
+    setUberPrices([]);
+    setUberPriceError(null);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -408,6 +461,40 @@ export default function Home() {
     setFlightPassengerName('');
     setFlightPassengers(1);
     router.push('/dashboard');
+  };
+
+  const confirmRideBooking = async () => {
+    if (!rideDraft || !riderName.trim()) return;
+    if (!user) { router.push('/login'); return; }
+
+    const lambdaBase = (process.env.NEXT_PUBLIC_UBER_LAMBDA_URL ?? '').replace(/\/$/, '');
+    if (!lambdaBase) return;
+
+    setRideBookingLoading(true);
+    setRideBookingError(null);
+    try {
+      const { ride, pickupLat, pickupLng, dropoffLat, dropoffLng, pickupLabel, dropoffLabel } = rideDraft;
+      const res = await fetch(`${lambdaBase}/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rideName: ride.name, productId: ride.productId,
+          lowEstimate: ride.lowEstimate, highEstimate: ride.highEstimate,
+          currencyCode: ride.currencyCode,
+          pickupLabel, dropoffLabel,
+          pickupLat, pickupLng, dropoffLat, dropoffLng,
+          riderName: riderName.trim(),
+          riderEmail: riderEmail.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.url) { window.location.href = data.url; return; }
+      setRideBookingError(data.error ?? 'Booking failed. Please try again.');
+    } catch {
+      setRideBookingError('Could not connect to booking service.');
+    } finally {
+      setRideBookingLoading(false);
+    }
   };
 
   const tabs = [
@@ -727,52 +814,79 @@ export default function Home() {
                 </div>
                 <ResultsGrid />
 
-                {/* Uber Rideshare — shown after search */}
+                {/* Uber Rideshare — shown after search with live prices */}
                 {hasSearched && (
                 <div className="mt-8 border-t border-gray-100 pt-6">
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-4">
                     <span className="w-6 h-6 bg-black rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold">U</span>
                     <h3 className="font-semibold text-gray-900">Ride with Uber</h3>
                     <span className="ml-auto text-xs text-gray-400">Powered by Uber</span>
                   </div>
-                  {formData.location ? (
-                    <p className="text-xs text-gray-500 mb-4">Pickup: <span className="font-medium text-gray-700">{formData.location}</span></p>
-                  ) : !locationLoading && !locationError ? (
-                    <p className="text-xs text-gray-500 mb-4">📍 Using your current location</p>
-                  ) : <div className="mb-4" />}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {[
-                      { name: 'UberX',        desc: 'Affordable everyday rides',        seats: '1–4', emoji: '🚗', from: 8  },
-                      { name: 'Uber Comfort',  desc: 'Newer cars with extra legroom',    seats: '1–4', emoji: '🛋️', from: 12 },
-                      { name: 'Uber Black',    desc: 'Premium black car service',        seats: '1–4', emoji: '🖤', from: 25 },
-                    ].map(ride => {
-                      const pickupParam = formData.location
-                        ? `&pickup[formatted_address]=${encodeURIComponent(formData.location)}`
+
+                  <div className="grid grid-cols-2 gap-4 mb-5">
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 mb-1">PICKUP</p>
+                      {formData.location
+                        ? <p className="text-sm text-gray-700 truncate">{formData.location}</p>
                         : !locationLoading && !locationError
-                          ? `&pickup[latitude]=${userLocation.lat}&pickup[longitude]=${userLocation.lng}`
-                          : '';
-                      const uberHref = `https://m.uber.com/ul/?action=setPickup&client_id=${uberClientId}${pickupParam}`;
-                      return (
-                        <div key={ride.name} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col">
+                          ? <p className="text-sm text-gray-700">📍 Your current location</p>
+                          : <p className="text-sm text-gray-400">Detecting…</p>}
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 mb-1">WHERE TO?</p>
+                      <LocationPicker
+                        onLocationSelect={(loc) => { setUberDropoff(loc); setUberPrices([]); }}
+                        placeholder="Enter destination"
+                      />
+                    </div>
+                  </div>
+
+                  {uberPriceLoading && <p className="text-sm text-gray-500 py-2">Fetching live prices…</p>}
+                  {uberPriceError   && <p className="text-sm text-red-500 py-2">{uberPriceError}</p>}
+
+                  {uberPrices.length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {uberPrices.map(ride => (
+                        <div key={ride.productId || ride.name} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col">
+                          <div className="flex items-start justify-between">
+                            <span className="text-2xl">{ride.emoji}</span>
+                            <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{ride.seats} seats</span>
+                          </div>
+                          <p className="font-bold text-gray-900 mt-2">{ride.name}</p>
+                          <p className="text-sm text-gray-500 mt-0.5 flex-1">
+                            {ride.distance?.toFixed(1)} mi · ~{Math.round((ride.duration ?? 0) / 60)} min
+                            {ride.surgeMultiplier > 1 && <span className="text-orange-500 font-semibold ml-1">⚡ {ride.surgeMultiplier}×</span>}
+                          </p>
+                          <p className="text-indigo-600 font-semibold text-sm mt-2">${ride.lowEstimate}–${ride.highEstimate}</p>
+                          <button
+                            onClick={() => { setRideDraft({ ride, pickupLat: userLocation.lat, pickupLng: userLocation.lng, dropoffLat: uberDropoff!.lat, dropoffLng: uberDropoff!.lng, pickupLabel: formData.location || 'Current location', dropoffLabel: uberDropoff!.address }); setRiderName(''); setRiderEmail(''); setRideBookingError(null); }}
+                            className="mt-3 w-full py-2 rounded-lg bg-black text-white text-sm font-semibold hover:bg-gray-800 transition"
+                          >
+                            Book ${ride.lowEstimate}–${ride.highEstimate}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : !uberDropoff && !uberPriceLoading && (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {[
+                        { name: 'UberX',        desc: 'Affordable everyday rides',     seats: '1–4', emoji: '🚗' },
+                        { name: 'Uber Comfort',  desc: 'Newer cars with extra legroom', seats: '1–4', emoji: '🛋️' },
+                        { name: 'Uber Black',    desc: 'Premium black car service',     seats: '1–4', emoji: '🖤' },
+                      ].map(ride => (
+                        <div key={ride.name} className="bg-white border border-dashed border-gray-300 rounded-xl p-4 flex flex-col opacity-60">
                           <div className="flex items-start justify-between">
                             <span className="text-2xl">{ride.emoji}</span>
                             <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{ride.seats} seats</span>
                           </div>
                           <p className="font-bold text-gray-900 mt-2">{ride.name}</p>
                           <p className="text-sm text-gray-500 mt-0.5 flex-1">{ride.desc}</p>
-                          <p className="text-indigo-600 font-semibold text-sm mt-2">From ${ride.from}</p>
-                          <a
-                            href={uberHref}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="mt-3 block w-full text-center py-2 rounded-lg bg-black text-white text-sm font-semibold hover:bg-gray-800 transition"
-                          >
-                            Request {ride.name}
-                          </a>
+                          <p className="text-gray-400 text-sm mt-2">Enter destination for live price</p>
+                          <div className="mt-3 w-full text-center py-2 rounded-lg bg-gray-200 text-gray-500 text-sm font-semibold cursor-not-allowed">Add Destination ↑</div>
                         </div>
-                      );
-                    })}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 )}
               </div>
@@ -1151,6 +1265,68 @@ export default function Home() {
             </div>
           );
         })()}
+
+        {/* Uber ride booking modal */}
+        {rideDraft && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <span className="w-7 h-7 bg-black rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0">U</span>
+                <h2 className="text-xl font-bold text-gray-900">Book Uber Ride</h2>
+                <span className="ml-auto text-2xl">{rideDraft.ride.emoji}</span>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm text-gray-700 space-y-1">
+                <p><span className="font-semibold">{rideDraft.ride.name}</span> · {rideDraft.ride.seats} seats</p>
+                <p>📍 <span className="font-medium">From:</span> {rideDraft.pickupLabel}</p>
+                <p>🏁 <span className="font-medium">To:</span> {rideDraft.dropoffLabel}</p>
+                {rideDraft.ride.distance != null && (
+                  <p>🛣️ {rideDraft.ride.distance.toFixed(1)} mi · ~{Math.round((rideDraft.ride.duration ?? 0) / 60)} min</p>
+                )}
+                {rideDraft.ride.surgeMultiplier > 1 && (
+                  <p className="text-orange-500 font-semibold">⚡ Surge: {rideDraft.ride.surgeMultiplier}× active</p>
+                )}
+              </div>
+
+              <div className="space-y-3 mb-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
+                  <input type="text" value={riderName} onChange={e => setRiderName(e.target.value)} placeholder="Your name"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Email <span className="text-gray-400 font-normal">(for receipt)</span></label>
+                  <input type="email" value={riderEmail} onChange={e => setRiderEmail(e.target.value)} placeholder="you@email.com"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black" />
+                </div>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm">
+                <div className="flex justify-between text-gray-600 mb-1">
+                  <span>Estimated fare</span>
+                  <span>${rideDraft.ride.lowEstimate}–${rideDraft.ride.highEstimate}</span>
+                </div>
+                <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2">
+                  <span>You pay now</span>
+                  <span>~${Math.round((rideDraft.ride.lowEstimate + rideDraft.ride.highEstimate) / 2)}</span>
+                </div>
+              </div>
+
+              {rideBookingError && <p className="text-red-500 text-sm mb-3">{rideBookingError}</p>}
+
+              <div className="flex gap-3">
+                <button onClick={() => setRideDraft(null)}
+                  className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">
+                  Cancel
+                </button>
+                <button onClick={confirmRideBooking} disabled={!riderName.trim() || rideBookingLoading}
+                  className="flex-1 py-2 bg-black text-white rounded-lg font-semibold hover:bg-gray-800 disabled:bg-gray-300 transition">
+                  {rideBookingLoading ? 'Processing…' : user ? 'Pay via Stripe →' : 'Sign in to Book'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <footer className="mt-16 border-t border-gray-200 pt-8">

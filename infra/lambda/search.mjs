@@ -781,6 +781,125 @@ async function handleStripeCheckout(event) {
   return json(200, { url: session.url, sessionId: session.id });
 }
 
+// ---------------------------------------------------------------------------
+// Uber Rides API
+// ---------------------------------------------------------------------------
+
+const UBER_BASE = 'https://api.uber.com/v1.2';
+const UBER_CLIENT_ID_DEFAULT = 'xuJjFMaEj4AfL-2TP-ql-6bKkA8sMPAB';
+
+const RIDE_META = {
+  'UberX':        { emoji: '🚗', seats: '1–4' },
+  'Uber Comfort': { emoji: '🛋️', seats: '1–4' },
+  'UberXL':       { emoji: '🚐', seats: '1–6' },
+  'Uber Black':   { emoji: '🖤', seats: '1–4' },
+  'UberSUV':      { emoji: '🚙', seats: '1–6' },
+};
+
+async function handleUberEstimates(event) {
+  const token = process.env.UBER_SERVER_TOKEN;
+  if (!token) return json(500, { error: 'Uber is not configured on this server' });
+
+  const qs = event.queryStringParameters ?? {};
+  const { pickupLat, pickupLng, dropoffLat, dropoffLng } = qs;
+  if (!pickupLat || !pickupLng || !dropoffLat || !dropoffLng) {
+    return json(400, { error: 'Missing required coordinates: pickupLat, pickupLng, dropoffLat, dropoffLng' });
+  }
+
+  const priceParams = new URLSearchParams({
+    start_latitude:  pickupLat,
+    start_longitude: pickupLng,
+    end_latitude:    dropoffLat,
+    end_longitude:   dropoffLng,
+  });
+  const headers = { Authorization: `Token ${token}` };
+
+  const [priceRes, productRes] = await Promise.all([
+    fetch(`${UBER_BASE}/estimates/price?${priceParams}`, { headers }),
+    fetch(`${UBER_BASE}/products?latitude=${pickupLat}&longitude=${pickupLng}`, { headers }),
+  ]);
+
+  if (!priceRes.ok) {
+    const errText = await priceRes.text();
+    console.error('Uber price estimates error:', priceRes.status, errText);
+    return json(priceRes.status, { error: `Uber API returned ${priceRes.status}` });
+  }
+
+  const priceData   = await priceRes.json();
+  const productData = productRes.ok ? await productRes.json() : { products: [] };
+
+  const productIdMap = {};
+  for (const p of (productData.products ?? [])) productIdMap[p.display_name] = p.product_id;
+
+  const rides = (priceData.prices ?? []).map(p => ({
+    productId:       productIdMap[p.display_name] ?? '',
+    name:            p.display_name,
+    lowEstimate:     p.low_estimate,
+    highEstimate:    p.high_estimate,
+    currencyCode:    p.currency_code ?? 'USD',
+    duration:        p.duration,
+    distance:        p.distance,
+    surgeMultiplier: p.surge_multiplier ?? 1,
+    emoji:           RIDE_META[p.display_name]?.emoji ?? '🚗',
+    seats:           RIDE_META[p.display_name]?.seats ?? '1–4',
+  }));
+
+  return json(200, { rides });
+}
+
+async function handleUberCheckout(event) {
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) return json(500, { error: 'Stripe is not configured' });
+
+  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
+  const body   = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
+  const {
+    rideName, productId, lowEstimate, highEstimate, currencyCode,
+    pickupLabel, dropoffLabel,
+    pickupLat, pickupLng, dropoffLat, dropoffLng,
+    riderEmail,
+  } = body;
+
+  const fareAmount = Math.round(((Number(lowEstimate) + Number(highEstimate)) / 2) * 100);
+  const clientId   = process.env.UBER_CLIENT_ID ?? UBER_CLIENT_ID_DEFAULT;
+
+  const uberDeepLink =
+    `https://m.uber.com/ul/?action=setPickup&client_id=${clientId}` +
+    `&pickup[latitude]=${pickupLat}&pickup[longitude]=${pickupLng}` +
+    `&dropoff[latitude]=${dropoffLat}&dropoff[longitude]=${dropoffLng}` +
+    (productId ? `&product_id=${encodeURIComponent(productId)}` : '');
+
+  const successUrl =
+    `https://www.lyrtrip.com/booking/success?session_id={CHECKOUT_SESSION_ID}` +
+    `&type=uber` +
+    `&rid=${encodeURIComponent(rideName ?? '')}` +
+    `&pickup=${encodeURIComponent(pickupLabel ?? '')}` +
+    `&dropoff=${encodeURIComponent(dropoffLabel ?? '')}` +
+    `&plat=${pickupLat}&plng=${pickupLng}&dlat=${dropoffLat}&dlng=${dropoffLng}`;
+
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    payment_method_types: ['card'],
+    line_items: [{
+      price_data: {
+        currency:     (currencyCode ?? 'usd').toLowerCase(),
+        unit_amount:  fareAmount,
+        product_data: {
+          name:        `${rideName} — Uber Ride`,
+          description: `${pickupLabel} → ${dropoffLabel}`,
+        },
+      },
+      quantity: 1,
+    }],
+    metadata: { type: 'uber_ride', rideName: rideName ?? '', pickupLabel: pickupLabel ?? '', dropoffLabel: dropoffLabel ?? '', uberDeepLink },
+    customer_email: riderEmail || undefined,
+    success_url: successUrl,
+    cancel_url:  'https://www.lyrtrip.com/booking/cancel',
+  });
+
+  return json(200, { url: session.url });
+}
+
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -791,11 +910,13 @@ export async function handler(event) {
   if (method === 'OPTIONS') return json(204, {});
 
   try {
-    if (path.endsWith('/api/search'))                                       return handleSearch(event);
-    if (path.endsWith('/api/auth/wechat')      && method === 'POST')        return handleWeChatAuth(event);
-    if (path.endsWith('/api/stripe-checkout')  && method === 'POST')        return handleStripeCheckout(event);
-    if (path.endsWith('/api/tours')            && method === 'GET')         return listTours(event);
-    if (path.endsWith('/api/tours')            && method === 'POST')        return createTour(event);
+    if (path.endsWith('/api/search'))                                        return handleSearch(event);
+    if (path.endsWith('/api/auth/wechat')       && method === 'POST')        return handleWeChatAuth(event);
+    if (path.endsWith('/api/stripe-checkout')   && method === 'POST')        return handleStripeCheckout(event);
+    if (path.includes('/api/uber/estimates')    && method === 'GET')         return handleUberEstimates(event);
+    if (path.includes('/api/uber/checkout')     && method === 'POST')        return handleUberCheckout(event);
+    if (path.endsWith('/api/tours')             && method === 'GET')         return listTours(event);
+    if (path.endsWith('/api/tours')             && method === 'POST')        return createTour(event);
 
     const tourMatch = path.match(/\/api\/tours\/([^/]+)$/);
     if (tourMatch && method === 'GET') return getTour(event, tourMatch[1]);

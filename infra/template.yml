@@ -61,6 +61,15 @@ Parameters:
     NoEcho: true
     Default: ""
     Description: Stripe secret key (sk_live_... or sk_test_...) used by the checkout Lambda.
+  UberServerToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Uber server token (V4Pv32...) for price-estimates API (no OAuth required).
+  UberClientId:
+    Type: String
+    Default: "xuJjFMaEj4AfL-2TP-ql-6bKkA8sMPAB"
+    Description: Uber OAuth client ID used to build deep-links.
 
 Conditions:
   UseRoute53:
@@ -147,6 +156,8 @@ Resources:
           WECHAT_APP_SECRET: !Ref WeChatAppSecret
           WECHAT_AUTH_SHARED_SECRET: !Ref WeChatAuthSharedSecret
           STRIPE_SECRET_KEY: !Ref StripeSecretKey
+          UBER_SERVER_TOKEN: !Ref UberServerToken
+          UBER_CLIENT_ID: !Ref UberClientId
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:
