@@ -854,13 +854,15 @@ async function handleUberCheckout(event) {
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
   const body   = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
   const {
-    rideName, productId, lowEstimate, highEstimate, currencyCode,
+    rideName, productId, lowEstimate, highEstimate, serviceFee, currencyCode,
     pickupLabel, dropoffLabel,
     pickupLat, pickupLng, dropoffLat, dropoffLng,
     riderEmail,
   } = body;
 
-  const fareAmount = Math.round(((Number(lowEstimate) + Number(highEstimate)) / 2) * 100);
+  const baseFare   = Math.round(((Number(lowEstimate) + Number(highEstimate)) / 2) * 100);
+  const feeCents   = serviceFee ? Math.round(Number(serviceFee) * 100) : Math.max(200, Math.round(baseFare * 0.1));
+  const fareAmount = baseFare + feeCents;
   const clientId   = process.env.UBER_CLIENT_ID ?? UBER_CLIENT_ID_DEFAULT;
 
   const uberDeepLink =

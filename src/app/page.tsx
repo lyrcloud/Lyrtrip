@@ -212,6 +212,8 @@ export default function Home() {
   const [flightPassengers, setFlightPassengers] = useState(1);
 
   const [uberDropoff, setUberDropoff] = useState<LocationData | null>(null);
+  const [uberPickupText, setUberPickupText] = useState('');
+  const [uberCity, setUberCity] = useState('');
   const [uberPrices, setUberPrices] = useState<UberRideEstimate[]>([]);
   const [uberPriceLoading, setUberPriceLoading] = useState(false);
   const [uberPriceError, setUberPriceError] = useState<string | null>(null);
@@ -239,9 +241,26 @@ export default function Home() {
     }
   }, []);
 
-  // Fetch live Uber price estimates whenever the dropoff location changes
+  // Reverse-geocode GPS to get a city label for the Uber header
   useEffect(() => {
-    if (!uberDropoff || locationLoading) return;
+    if (locationLoading || locationError) return;
+    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+    if (!apiKey) return;
+    fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${userLocation.lat},${userLocation.lng}&result_type=locality|administrative_area_level_1&key=${apiKey}`)
+      .then(r => r.json())
+      .then(data => {
+        const comps = data.results?.[0]?.address_components ?? [];
+        const city    = comps.find((c: {types: string[]}) => c.types.includes('locality'))?.long_name;
+        const state   = comps.find((c: {types: string[]}) => c.types.includes('administrative_area_level_1'))?.short_name;
+        const country = comps.find((c: {types: string[]}) => c.types.includes('country'))?.short_name;
+        const label = [city ?? state, country].filter(Boolean).join(', ');
+        if (label) setUberCity(label);
+      })
+      .catch(() => {});
+  }, [userLocation, locationLoading, locationError]);
+
+  const handleFetchUberPrices = () => {
+    if (!uberDropoff) return;
     const lambdaBase = (process.env.NEXT_PUBLIC_UBER_LAMBDA_URL ?? '').replace(/\/$/, '');
     if (!lambdaBase) return;
     setUberPriceLoading(true);
@@ -254,7 +273,7 @@ export default function Home() {
       })
       .catch(() => setUberPriceError('Could not connect to Uber service.'))
       .finally(() => setUberPriceLoading(false));
-  }, [uberDropoff, userLocation, locationLoading]);
+  };
 
   // After login redirect back with ?booking=pending — auto-trigger Stripe
   useEffect(() => {
@@ -285,6 +304,7 @@ export default function Home() {
     setUberDropoff(null);
     setUberPrices([]);
     setUberPriceError(null);
+    setUberPickupText('');
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -474,12 +494,15 @@ export default function Home() {
     setRideBookingError(null);
     try {
       const { ride, pickupLat, pickupLng, dropoffLat, dropoffLng, pickupLabel, dropoffLabel } = rideDraft;
+      const baseFare   = Math.round((ride.lowEstimate + ride.highEstimate) / 2);
+      const serviceFee = Math.max(2, Math.round(baseFare * 0.1));
       const res = await fetch(`${lambdaBase}/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           rideName: ride.name, productId: ride.productId,
           lowEstimate: ride.lowEstimate, highEstimate: ride.highEstimate,
+          serviceFee,
           currencyCode: ride.currencyCode,
           pickupLabel, dropoffLabel,
           pickupLat, pickupLng, dropoffLat, dropoffLng,
@@ -814,77 +837,100 @@ export default function Home() {
                 </div>
                 <ResultsGrid />
 
-                {/* Uber Rideshare — shown after search with live prices */}
+                {/* Uber Rideshare — Uber-style search UI shown after search */}
                 {hasSearched && (
                 <div className="mt-8 border-t border-gray-100 pt-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="w-6 h-6 bg-black rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold">U</span>
-                    <h3 className="font-semibold text-gray-900">Ride with Uber</h3>
-                    <span className="ml-auto text-xs text-gray-400">Powered by Uber</span>
+                  {/* City header */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                      <span>📍</span>
+                      <span>{uberCity || 'Detecting location…'}</span>
+                      {uberCity && (
+                        <button onClick={() => setUberCity('')} className="text-xs text-black underline hover:no-underline ml-1">
+                          Change city
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-6 h-6 bg-black rounded-full flex items-center justify-center text-white text-xs font-bold">U</span>
+                      <span className="text-xs text-gray-400">Powered by Uber</span>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4 mb-5">
-                    <div>
-                      <p className="text-xs font-medium text-gray-500 mb-1">PICKUP</p>
-                      {formData.location
-                        ? <p className="text-sm text-gray-700 truncate">{formData.location}</p>
-                        : !locationLoading && !locationError
-                          ? <p className="text-sm text-gray-700">📍 Your current location</p>
-                          : <p className="text-sm text-gray-400">Detecting…</p>}
-                    </div>
-                    <div>
-                      <p className="text-xs font-medium text-gray-500 mb-1">WHERE TO?</p>
-                      <LocationPicker
-                        onLocationSelect={(loc) => { setUberDropoff(loc); setUberPrices([]); }}
-                        placeholder="Enter destination"
+                  <h3 className="text-xl font-bold text-gray-900 mb-3">Request a ride</h3>
+
+                  <button className="mb-4 px-4 py-2 bg-gray-100 rounded-full text-sm font-medium text-gray-700 hover:bg-gray-200 transition">
+                    🕐 Pickup now ▾
+                  </button>
+
+                  {/* Location inputs */}
+                  <div className="space-y-2 mb-4">
+                    <div className="flex items-center gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50">
+                      <span className="w-3 h-3 rounded-full bg-black shrink-0" />
+                      <input
+                        type="text"
+                        value={uberPickupText}
+                        onChange={e => setUberPickupText(e.target.value)}
+                        placeholder={!locationLoading && !locationError ? '📍 Using your current location' : 'Enter location'}
+                        className="flex-1 bg-transparent text-sm text-gray-800 outline-none placeholder-gray-400"
                       />
                     </div>
+                    <div className="flex items-center gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50">
+                      <span className="w-3 h-3 rounded-sm bg-black shrink-0" />
+                      <div className="flex-1">
+                        <LocationPicker
+                          onLocationSelect={(loc) => { setUberDropoff(loc); setUberPrices([]); setUberPriceError(null); }}
+                          placeholder="Enter destination"
+                        />
+                      </div>
+                    </div>
                   </div>
 
-                  {uberPriceLoading && <p className="text-sm text-gray-500 py-2">Fetching live prices…</p>}
-                  {uberPriceError   && <p className="text-sm text-red-500 py-2">{uberPriceError}</p>}
+                  {uberPriceError && <p className="text-sm text-red-500 mb-3">{uberPriceError}</p>}
 
-                  {uberPrices.length > 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {uberPrices.map(ride => (
-                        <div key={ride.productId || ride.name} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col">
-                          <div className="flex items-start justify-between">
-                            <span className="text-2xl">{ride.emoji}</span>
-                            <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{ride.seats} seats</span>
+                  <button
+                    onClick={handleFetchUberPrices}
+                    disabled={!uberDropoff || uberPriceLoading}
+                    className="w-full py-3 bg-black text-white font-bold rounded-xl hover:bg-gray-800 disabled:bg-gray-300 transition mb-5"
+                  >
+                    {uberPriceLoading ? 'Getting prices…' : 'See prices'}
+                  </button>
+
+                  {/* Live price results */}
+                  {uberPrices.length > 0 && (
+                    <div className="space-y-3">
+                      {uberPrices.map(ride => {
+                        const baseFare   = Math.round((ride.lowEstimate + ride.highEstimate) / 2);
+                        const serviceFee = Math.max(2, Math.round(baseFare * 0.1));
+                        return (
+                          <div key={ride.productId || ride.name} className="flex items-center bg-white border border-gray-200 rounded-xl px-4 py-3 hover:shadow-md transition">
+                            <span className="text-3xl mr-3">{ride.emoji}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="font-bold text-gray-900">{ride.name}</p>
+                                <span className="text-xs text-gray-400">{ride.seats} seats</span>
+                                {ride.surgeMultiplier > 1 && <span className="text-xs text-orange-500 font-semibold">⚡ {ride.surgeMultiplier}×</span>}
+                              </div>
+                              <p className="text-sm text-gray-500">
+                                {ride.distance?.toFixed(1)} mi · ~{Math.round((ride.duration ?? 0) / 60)} min
+                              </p>
+                            </div>
+                            <div className="text-right shrink-0 ml-3">
+                              <p className="font-bold text-gray-900">${ride.lowEstimate}–${ride.highEstimate}</p>
+                              <p className="text-xs text-gray-400">+${serviceFee} fee</p>
+                              <button
+                                onClick={() => {
+                                  setRideDraft({ ride, pickupLat: userLocation.lat, pickupLng: userLocation.lng, dropoffLat: uberDropoff!.lat, dropoffLng: uberDropoff!.lng, pickupLabel: uberPickupText || 'Current location', dropoffLabel: uberDropoff!.address });
+                                  setRiderName(''); setRiderEmail(''); setRideBookingError(null);
+                                }}
+                                className="mt-1 px-4 py-1.5 bg-black text-white text-sm font-semibold rounded-lg hover:bg-gray-800 transition"
+                              >
+                                Book
+                              </button>
+                            </div>
                           </div>
-                          <p className="font-bold text-gray-900 mt-2">{ride.name}</p>
-                          <p className="text-sm text-gray-500 mt-0.5 flex-1">
-                            {ride.distance?.toFixed(1)} mi · ~{Math.round((ride.duration ?? 0) / 60)} min
-                            {ride.surgeMultiplier > 1 && <span className="text-orange-500 font-semibold ml-1">⚡ {ride.surgeMultiplier}×</span>}
-                          </p>
-                          <p className="text-indigo-600 font-semibold text-sm mt-2">${ride.lowEstimate}–${ride.highEstimate}</p>
-                          <button
-                            onClick={() => { setRideDraft({ ride, pickupLat: userLocation.lat, pickupLng: userLocation.lng, dropoffLat: uberDropoff!.lat, dropoffLng: uberDropoff!.lng, pickupLabel: formData.location || 'Current location', dropoffLabel: uberDropoff!.address }); setRiderName(''); setRiderEmail(''); setRideBookingError(null); }}
-                            className="mt-3 w-full py-2 rounded-lg bg-black text-white text-sm font-semibold hover:bg-gray-800 transition"
-                          >
-                            Book ${ride.lowEstimate}–${ride.highEstimate}
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : !uberDropoff && !uberPriceLoading && (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {[
-                        { name: 'UberX',        desc: 'Affordable everyday rides',     seats: '1–4', emoji: '🚗' },
-                        { name: 'Uber Comfort',  desc: 'Newer cars with extra legroom', seats: '1–4', emoji: '🛋️' },
-                        { name: 'Uber Black',    desc: 'Premium black car service',     seats: '1–4', emoji: '🖤' },
-                      ].map(ride => (
-                        <div key={ride.name} className="bg-white border border-dashed border-gray-300 rounded-xl p-4 flex flex-col opacity-60">
-                          <div className="flex items-start justify-between">
-                            <span className="text-2xl">{ride.emoji}</span>
-                            <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{ride.seats} seats</span>
-                          </div>
-                          <p className="font-bold text-gray-900 mt-2">{ride.name}</p>
-                          <p className="text-sm text-gray-500 mt-0.5 flex-1">{ride.desc}</p>
-                          <p className="text-gray-400 text-sm mt-2">Enter destination for live price</p>
-                          <div className="mt-3 w-full text-center py-2 rounded-lg bg-gray-200 text-gray-500 text-sm font-semibold cursor-not-allowed">Add Destination ↑</div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -1301,16 +1347,27 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm">
-                <div className="flex justify-between text-gray-600 mb-1">
-                  <span>Estimated fare</span>
-                  <span>${rideDraft.ride.lowEstimate}–${rideDraft.ride.highEstimate}</span>
-                </div>
-                <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2">
-                  <span>You pay now</span>
-                  <span>~${Math.round((rideDraft.ride.lowEstimate + rideDraft.ride.highEstimate) / 2)}</span>
-                </div>
-              </div>
+              {(() => {
+                const baseFare   = Math.round((rideDraft.ride.lowEstimate + rideDraft.ride.highEstimate) / 2);
+                const serviceFee = Math.max(2, Math.round(baseFare * 0.1));
+                const total      = baseFare + serviceFee;
+                return (
+                  <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm space-y-1">
+                    <div className="flex justify-between text-gray-600">
+                      <span>Uber fare (est.)</span>
+                      <span>${rideDraft.ride.lowEstimate}–${rideDraft.ride.highEstimate}</span>
+                    </div>
+                    <div className="flex justify-between text-gray-600">
+                      <span>Lyrtrip service fee</span>
+                      <span>${serviceFee}</span>
+                    </div>
+                    <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1">
+                      <span>Total charged now</span>
+                      <span>~${total}</span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {rideBookingError && <p className="text-red-500 text-sm mb-3">{rideBookingError}</p>}
 
