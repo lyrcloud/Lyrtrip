@@ -28,6 +28,12 @@ const providerLabel: Record<string, string> = {
   cognito: 'Signed in with email',
 };
 
+const UBER_RIDES = [
+  { name: 'UberX',       desc: 'Affordable everyday rides',     seats: '1–4', emoji: '🚗', from: 8  },
+  { name: 'Uber Comfort', desc: 'Newer cars with extra legroom', seats: '1–4', emoji: '🛋️', from: 12 },
+  { name: 'Uber Black',  desc: 'Premium black car service',     seats: '1–4', emoji: '🖤', from: 25 },
+];
+
 export default function DashboardPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
@@ -37,6 +43,20 @@ export default function DashboardPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [payingId, setPayingId] = useState<string | null>(null);
   const [payError, setPayError] = useState<string | null>(null);
+  const [uberPickup, setUberPickup] = useState('');
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationReady, setLocationReady] = useState(false);
+
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        pos => { setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setLocationReady(true); },
+        () => setLocationReady(true)
+      );
+    } else {
+      setLocationReady(true);
+    }
+  }, []);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -116,7 +136,7 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Profile header */}
-      <div className="bg-gradient-to-br from-indigo-600 to-blue-600">
+      <div className="bg-linear-to-br from-indigo-600 to-blue-600">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-10">
           <div className="flex items-center gap-4">
             {user.picture ? (
@@ -174,6 +194,58 @@ export default function DashboardPage() {
           >
             View all tours
           </Link>
+        </div>
+
+        {/* Book a Ride with Uber */}
+        <div className="mb-8 bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="w-7 h-7 bg-black rounded-full shrink-0 flex items-center justify-center text-white text-sm font-bold">U</span>
+            <h2 className="text-lg font-semibold text-gray-900">Book a Ride</h2>
+            <span className="ml-auto text-xs text-gray-400">Powered by Uber</span>
+          </div>
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Pickup Location</label>
+            <input
+              type="text"
+              value={uberPickup}
+              onChange={e => setUberPickup(e.target.value)}
+              placeholder={locationReady && userLocation ? '📍 Using your current location' : 'City or address'}
+              className="w-full md:w-80 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent"
+            />
+            {!uberPickup && locationReady && userLocation && (
+              <p className="mt-1 text-xs text-gray-400">Auto-detected · type to override</p>
+            )}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {UBER_RIDES.map(ride => {
+              const uberClientId = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
+              const pickupParam = uberPickup
+                ? `&pickup[formatted_address]=${encodeURIComponent(uberPickup)}`
+                : locationReady && userLocation
+                  ? `&pickup[latitude]=${userLocation.lat}&pickup[longitude]=${userLocation.lng}`
+                  : '';
+              const uberHref = `https://m.uber.com/ul/?action=setPickup&client_id=${uberClientId}${pickupParam}`;
+              return (
+                <div key={ride.name} className="border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col">
+                  <div className="flex items-start justify-between">
+                    <span className="text-2xl">{ride.emoji}</span>
+                    <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{ride.seats} seats</span>
+                  </div>
+                  <p className="font-bold text-gray-900 mt-2">{ride.name}</p>
+                  <p className="text-sm text-gray-500 mt-0.5 flex-1">{ride.desc}</p>
+                  <p className="text-indigo-600 font-semibold text-sm mt-2">From ${ride.from}</p>
+                  <a
+                    href={uberHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-3 block w-full text-center py-2 rounded-lg bg-black text-white text-sm font-semibold hover:bg-gray-800 transition"
+                  >
+                    Request {ride.name}
+                  </a>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* My Bookings */}

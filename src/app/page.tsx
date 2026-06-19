@@ -727,20 +727,30 @@ export default function Home() {
                 </div>
                 <ResultsGrid />
 
-                {/* Uber Rideshare */}
+                {/* Uber Rideshare — shown after search */}
+                {hasSearched && (
                 <div className="mt-8 border-t border-gray-100 pt-6">
-                  <div className="flex items-center gap-2 mb-4">
+                  <div className="flex items-center gap-2 mb-1">
                     <span className="w-6 h-6 bg-black rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold">U</span>
                     <h3 className="font-semibold text-gray-900">Ride with Uber</h3>
                     <span className="ml-auto text-xs text-gray-400">Powered by Uber</span>
                   </div>
+                  {formData.location ? (
+                    <p className="text-xs text-gray-500 mb-4">Pickup: <span className="font-medium text-gray-700">{formData.location}</span></p>
+                  ) : !locationLoading && !locationError ? (
+                    <p className="text-xs text-gray-500 mb-4">📍 Using your current location</p>
+                  ) : <div className="mb-4" />}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {[
                       { name: 'UberX',        desc: 'Affordable everyday rides',        seats: '1–4', emoji: '🚗', from: 8  },
                       { name: 'Uber Comfort',  desc: 'Newer cars with extra legroom',    seats: '1–4', emoji: '🛋️', from: 12 },
                       { name: 'Uber Black',    desc: 'Premium black car service',        seats: '1–4', emoji: '🖤', from: 25 },
                     ].map(ride => {
-                      const pickupParam = formData.location ? `&pickup[formatted_address]=${encodeURIComponent(formData.location)}` : '';
+                      const pickupParam = formData.location
+                        ? `&pickup[formatted_address]=${encodeURIComponent(formData.location)}`
+                        : !locationLoading && !locationError
+                          ? `&pickup[latitude]=${userLocation.lat}&pickup[longitude]=${userLocation.lng}`
+                          : '';
                       const uberHref = `https://m.uber.com/ul/?action=setPickup&client_id=${uberClientId}${pickupParam}`;
                       return (
                         <div key={ride.name} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col">
@@ -764,6 +774,7 @@ export default function Home() {
                     })}
                   </div>
                 </div>
+                )}
               </div>
             )}
 
@@ -857,28 +868,51 @@ export default function Home() {
                   {searchBtn('dash')}
                 </div>
 
-                {/* Uber Eats */}
-                <div className="mb-4 rounded-xl border border-green-200 bg-green-50 p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-6 h-6 bg-[#06C167] rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold">U</span>
-                      <span className="font-bold text-gray-900">Uber Eats</span>
-                    </div>
-                    <p className="text-sm text-gray-600 mt-1">Order food delivery from thousands of local restaurants</p>
-                  </div>
-                  <a
-                    href={formData.cuisine
-                      ? `https://www.ubereats.com/search?q=${encodeURIComponent(formData.cuisine)}`
-                      : 'https://www.ubereats.com/'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="shrink-0 px-5 py-2.5 bg-[#06C167] text-white text-sm font-semibold rounded-lg hover:bg-[#05a857] transition"
-                  >
-                    Open Uber Eats →
-                  </a>
-                </div>
-
                 <ResultsGrid />
+
+                {/* Uber Eats — shown after search */}
+                {hasSearched && (
+                <div className="mt-8 border-t border-gray-100 pt-6">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="w-6 h-6 bg-[#06C167] rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold">U</span>
+                    <h3 className="font-semibold text-gray-900">Order with Uber Eats</h3>
+                    <span className="ml-auto text-xs text-gray-400">Powered by Uber Eats</span>
+                  </div>
+                  {formData.location ? (
+                    <p className="text-xs text-gray-500 mb-4">Delivering to: <span className="font-medium text-gray-700">{formData.location}</span></p>
+                  ) : !locationLoading && !locationError ? (
+                    <p className="text-xs text-gray-500 mb-4">📍 Using your current location</p>
+                  ) : <div className="mb-4" />}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {[
+                      { name: 'Restaurants',  desc: 'Food from thousands of local restaurants', emoji: '🍽️', q: formData.cuisine || 'restaurant' },
+                      { name: 'Grocery',      desc: 'Fresh groceries & everyday essentials',    emoji: '🛒', q: 'grocery' },
+                      { name: 'Pickup',       desc: 'Order ahead and skip the wait',            emoji: '🍱', q: formData.cuisine || 'pickup' },
+                    ].map(opt => {
+                      const locParam = formData.location
+                        ? `&address=${encodeURIComponent(formData.location)}`
+                        : !locationLoading && !locationError
+                          ? `&lat=${userLocation.lat}&lng=${userLocation.lng}`
+                          : '';
+                      return (
+                      <div key={opt.name} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col">
+                        <span className="text-2xl">{opt.emoji}</span>
+                        <p className="font-bold text-gray-900 mt-2">{opt.name}</p>
+                        <p className="text-sm text-gray-500 mt-0.5 flex-1">{opt.desc}</p>
+                        <a
+                          href={`https://www.ubereats.com/search?q=${encodeURIComponent(opt.q)}${locParam}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-3 block w-full text-center py-2 rounded-lg bg-[#06C167] text-white text-sm font-semibold hover:bg-[#05a857] transition"
+                        >
+                          Order {opt.name}
+                        </a>
+                      </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                )}
               </div>
             )}
 
