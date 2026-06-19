@@ -820,26 +820,7 @@ export default function Home() {
             {/* Car */}
             {activeTab === 'car' && (
               <div>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Pickup Location</label>
-                    <input type="text" name="location" value={formData.location} onChange={handleInputChange} placeholder="City or airport" className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Pickup Date</label>
-                    <input type="date" name="pickupDate" value={formData.pickupDate} onChange={handleInputChange} className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Return Date</label>
-                    <input type="date" name="returnDate" value={formData.returnDate} onChange={handleInputChange} className={inputClass} />
-                  </div>
-                  {searchBtn('car')}
-                </div>
-                <ResultsGrid />
-
-                {/* Uber Rideshare — Uber-style search UI shown after search */}
-                {hasSearched && (
-                <div className="mt-8 border-t border-gray-100 pt-6">
+                <div>
                   {/* City header */}
                   <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2 text-sm text-gray-500">
@@ -934,7 +915,6 @@ export default function Home() {
                     </div>
                   )}
                 </div>
-                )}
               </div>
             )}
 
