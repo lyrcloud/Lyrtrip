@@ -6,6 +6,7 @@
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1061.0",
     "aws-jwt-verify": "^5.1.1",
-    "mongodb": "^7.2.0"
+    "mongodb": "^7.2.0",
+    "stripe": "^22.2.1"
   }
 }

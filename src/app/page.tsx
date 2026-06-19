@@ -2,9 +2,31 @@
 
 import { useState, useEffect } from "react";
 import React from 'react';
+import { useRouter } from 'next/navigation';
 import LocationMap from '@/components/LocationMap';
 import LocationPicker from '@/components/LocationPicker';
-import { searchHotels } from '@/lib/api';
+import { saveBooking, calcNights, PRICE_PER_NIGHT } from '@/lib/bookings';
+import { useAuth } from '@/context/AuthContext';
+
+interface FlightLeg {
+  airline: string;
+  airlineLogo: string;
+  flightNumber: string;
+  departure: { airport: string; name: string; time: string };
+  arrival: { airport: string; name: string; time: string };
+  duration: number;
+  airplane: string;
+  travelClass: string;
+  legroom?: string;
+  extensions: string[];
+}
+
+interface FlightLayover {
+  name: string;
+  id: string;
+  duration: number;
+  overnight?: boolean;
+}
 
 interface SearchResult {
   id: string;
@@ -14,6 +36,40 @@ interface SearchResult {
   rating?: number;
   unit?: string;
   currency?: string;
+  priceLevel?: string;
+  pricePerNight?: number;
+  imageUrl?: string;
+  link?: string;
+  checkIn?: string;
+  checkOut?: string;
+  reviewCount?: number;
+  amenities?: string[];
+  hotelClass?: number;
+  // flight-specific
+  type?: 'flight';
+  isBest?: boolean;
+  totalDuration?: number;
+  legs?: FlightLeg[];
+  layovers?: FlightLayover[];
+  extensions?: string[];
+  bookingToken?: string;
+  airlineLogo?: string;
+}
+
+function fmtDuration(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function fmtTime(datetime: string): string {
+  return datetime?.split(' ')[1] ?? datetime ?? '';
+}
+
+interface BookingDraft {
+  hotel: SearchResult;
+  checkin: string;
+  checkout: string;
 }
 
 interface LocationData {
@@ -79,7 +135,11 @@ function searchService(service: string): Promise<SearchResult[]> {
   return new Promise(resolve => setTimeout(() => resolve(mockData[service] ?? []), 400));
 }
 
+const PENDING_BOOKING_KEY = 'lyrtrip_pending_booking';
+
 export default function Home() {
+  const { user } = useAuth();
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState('hotels');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -113,6 +173,10 @@ export default function Home() {
   const [userLocation, setUserLocation] = useState({ lat: 40.7128, lng: -74.0060 });
   const [locationLoading, setLocationLoading] = useState(true);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
+  const [bookingName, setBookingName] = useState('');
+  const [bookingGuests, setBookingGuests] = useState(1);
+  const [bookingSuccess, setBookingSuccess] = useState(false);
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -131,6 +195,28 @@ export default function Home() {
       setLocationLoading(false);
     }
   }, []);
+
+  // After login redirect back with ?booking=pending — auto-trigger Stripe
+  useEffect(() => {
+    if (!user) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('booking') !== 'pending') return;
+    const raw = sessionStorage.getItem(PENDING_BOOKING_KEY);
+    if (!raw) return;
+    try {
+      const draft: BookingDraft = JSON.parse(raw);
+      sessionStorage.removeItem(PENDING_BOOKING_KEY);
+      // Strip the query param without a reload
+      window.history.replaceState({}, '', '/');
+      setActiveTab('hotels');
+      // Small delay so the tab renders before we open the modal
+      setTimeout(() => {
+        setBookingDraft(draft);
+        setBookingName('');
+        setBookingGuests(1);
+      }, 100);
+    } catch { /* ignore */ }
+  }, [user]);
 
   const switchTab = (tabId: string) => {
     setActiveTab(tabId);
@@ -151,16 +237,51 @@ export default function Home() {
     }));
   };
 
+  const searchHotelsViaApi = async (): Promise<SearchResult[]> => {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service:     'hotels',
+        destination: formData.destination || formData.destinationLocation?.address || '',
+        checkin:     formData.checkin  || null,
+        checkout:    formData.checkout || null,
+        guests:      1,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Hotel search failed');
+    return (data.results ?? []) as SearchResult[];
+  };
+
+  const searchFlightsViaApi = async (): Promise<SearchResult[]> => {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service:    'flights',
+        from:       formData.from,
+        to:         formData.to,
+        depart:     formData.depart || null,
+        returnDate: formData.return || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Flight search failed');
+    return (data.results ?? []) as SearchResult[];
+  };
+
   const handleSearch = async (service: string) => {
     setLoading(true);
     setHasSearched(true);
     try {
-      if (service === 'hotels' && formData.destinationLocation) {
-        const data = await searchHotels({
-          destinationLocation: formData.destinationLocation,
-          checkin: formData.checkin || undefined,
-          checkout: formData.checkout || undefined,
-        });
+      if (service === 'hotels') {
+        const data = await searchHotelsViaApi();
+        setResults(data);
+      } else if (service === 'flights') {
+        const data = await searchFlightsViaApi();
         setResults(data);
       } else {
         const data = await searchService(service);
@@ -172,6 +293,65 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const confirmBooking = async () => {
+    if (!bookingDraft || !bookingName.trim()) return;
+
+    if (!user) {
+      sessionStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify(bookingDraft));
+      router.push('/login');
+      return;
+    }
+
+    const nights        = calcNights(bookingDraft.checkin, bookingDraft.checkout);
+    const pricePerNight = bookingDraft.hotel.pricePerNight ?? PRICE_PER_NIGHT[bookingDraft.hotel.priceLevel ?? '$$'] ?? 160;
+    const totalPrice    = pricePerNight * nights * bookingGuests;
+
+    saveBooking({
+      hotelName:    bookingDraft.hotel.name,
+      address:      bookingDraft.hotel.description ?? '',
+      checkin:      bookingDraft.checkin,
+      checkout:     bookingDraft.checkout,
+      guests:       bookingGuests,
+      guestName:    bookingName.trim(),
+      priceLevel:   bookingDraft.hotel.priceLevel,
+      pricePerNight,
+      nights,
+      totalPrice,
+    });
+
+    try {
+      const res = await fetch(process.env.NEXT_PUBLIC_STRIPE_LAMBDA_URL!, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hotelName:  bookingDraft.hotel.name,
+          address:    bookingDraft.hotel.description ?? '',
+          checkin:    bookingDraft.checkin,
+          checkout:   bookingDraft.checkout,
+          guests:     bookingGuests,
+          guestName:  bookingName.trim(),
+          priceLevel: bookingDraft.hotel.priceLevel,
+          nights,
+          totalPrice,
+        }),
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+        return;
+      }
+      console.error('Stripe checkout error:', data.error);
+    } catch (err) {
+      console.error('Stripe fetch failed:', err);
+    }
+
+    // Fallback: go to dashboard if Stripe redirect didn't happen
+    setBookingDraft(null);
+    setBookingName('');
+    setBookingGuests(1);
+    router.push('/dashboard');
   };
 
   const tabs = [
@@ -200,6 +380,137 @@ export default function Home() {
     </div>
   );
 
+  const HotelList = () => {
+    if (!hasSearched) return null;
+    if (loading) return <p className="text-gray-500 mt-6">Searching hotels...</p>;
+    if (results.length === 0) return <p className="text-gray-600 mt-6">No results found. Try different search criteria.</p>;
+    return (
+      <div className="mt-6 space-y-4">
+        {results.map(result => (
+          <div key={result.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition">
+            {result.imageUrl ? (
+              <img src={result.imageUrl} alt={result.name} className="w-44 h-36 object-cover shrink-0" />
+            ) : (
+              <div className="w-44 h-36 bg-gray-100 flex items-center justify-center shrink-0 text-4xl">🏨</div>
+            )}
+            <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
+              <div>
+                <div className="flex items-start justify-between gap-2">
+                  <h3 className="font-bold text-gray-900 text-base leading-tight">{result.name}</h3>
+                  {result.pricePerNight != null && result.pricePerNight > 0 && (
+                    <div className="shrink-0 text-right">
+                      <p className="text-xl font-bold text-indigo-700">${result.pricePerNight}</p>
+                      <p className="text-xs text-gray-500">per night</p>
+                    </div>
+                  )}
+                </div>
+                {result.rating != null && (
+                  <div className="flex items-center gap-1 mt-1">
+                    <span className="text-sm font-semibold text-gray-800">{result.rating}</span>
+                    <span className="text-yellow-400 text-sm">
+                      {'★'.repeat(Math.round(result.rating))}{'☆'.repeat(Math.max(0, 5 - Math.round(result.rating)))}
+                    </span>
+                    {result.reviewCount != null && (
+                      <span className="text-xs text-gray-500">({result.reviewCount.toLocaleString()} reviews)</span>
+                    )}
+                  </div>
+                )}
+                {result.description && (
+                  <p className="text-sm text-gray-600 mt-1 line-clamp-2">{result.description}</p>
+                )}
+                {result.amenities && result.amenities.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {result.amenities.slice(0, 6).map(a => (
+                      <span key={a} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{a}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between mt-3">
+                {result.checkIn && <p className="text-xs text-gray-400">Check-in: {result.checkIn}</p>}
+                <button
+                  onClick={() => setBookingDraft({ hotel: result, checkin: formData.checkin, checkout: formData.checkout })}
+                  className="ml-auto px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+                >
+                  Book Now
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const FlightList = () => {
+    if (!hasSearched) return null;
+    if (loading) return <p className="text-gray-500 mt-6">Searching flights...</p>;
+    if (results.length === 0) return <p className="text-gray-600 mt-6">No flights found. Try different airports or dates.</p>;
+    const best  = results.filter(r => r.isBest);
+    const other = results.filter(r => !r.isBest);
+    const FlightRow = ({ r }: { r: SearchResult }) => {
+      if (!r.legs?.length) return null;
+      const first = r.legs[0];
+      const last  = r.legs[r.legs.length - 1];
+      const stops = r.legs.length - 1;
+      const stopLabel = stops === 0 ? 'Nonstop' : `${stops} stop${stops > 1 ? 's' : ''}`;
+      const layoverInfo = r.layovers?.map(l => `${l.id} ${fmtDuration(l.duration)}${l.overnight ? ' overnight' : ''}`).join(', ');
+      const airlines = [...new Set(r.legs.map(l => l.airline))].join(' + ');
+      return (
+        <div className="flex items-center bg-white rounded-xl border border-gray-200 px-4 py-3 hover:shadow-md transition gap-4">
+          <img
+            src={r.airlineLogo ?? first.airlineLogo}
+            alt={first.airline}
+            className="w-9 h-9 object-contain shrink-0"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+          />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-gray-900 text-base">{fmtTime(first.departure.time)}</span>
+              <span className="text-gray-400 text-sm">–</span>
+              <span className="font-bold text-gray-900 text-base">{fmtTime(last.arrival.time)}</span>
+              <span className="text-xs text-gray-500 ml-1 font-medium">{first.departure.airport} → {last.arrival.airport}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5 text-xs text-gray-500">
+              <span>{airlines}</span>
+              <span className="text-gray-300">|</span>
+              <span>{fmtDuration(r.totalDuration ?? 0)}</span>
+              <span className="text-gray-300">|</span>
+              <span className={stops === 0 ? 'text-green-600 font-semibold' : 'text-orange-500 font-medium'}>
+                {stopLabel}{layoverInfo ? ` · ${layoverInfo}` : ''}
+              </span>
+              <span className="text-gray-300">|</span>
+              <span>{first.travelClass}</span>
+            </div>
+            {r.extensions && r.extensions.length > 0 && (
+              <p className="text-xs text-gray-400 mt-0.5 truncate">{r.extensions.slice(0, 2).join(' · ')}</p>
+            )}
+          </div>
+          <div className="text-right shrink-0 ml-4">
+            <p className="text-xl font-bold text-indigo-700">${r.price?.toLocaleString()}</p>
+            <p className="text-xs text-gray-500">per person</p>
+          </div>
+        </div>
+      );
+    };
+    return (
+      <div className="mt-6 space-y-2">
+        {best.length > 0 && (
+          <>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Best flights</p>
+            {best.map(r => <FlightRow key={r.id} r={r} />)}
+          </>
+        )}
+        {other.length > 0 && (
+          <>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mt-5 mb-2">Other flights</p>
+            {other.map(r => <FlightRow key={r.id} r={r} />)}
+          </>
+        )}
+      </div>
+    );
+  };
+
   const ResultsGrid = () => {
     if (!hasSearched) return null;
     if (loading) return <p className="text-gray-500 mt-6">Searching...</p>;
@@ -207,8 +518,15 @@ export default function Home() {
     return (
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
         {results.map(result => (
-          <div key={result.id} className="p-4 border border-gray-200 rounded-lg hover:shadow-lg transition">
-            <h3 className="font-bold text-gray-900">{result.name}</h3>
+          <div key={result.id} className="p-4 border border-gray-200 bg-white rounded-lg hover:shadow-lg transition flex flex-col">
+            <div className="flex items-start justify-between gap-2">
+              <h3 className="font-bold text-gray-900">{result.name}</h3>
+              {result.priceLevel && (
+                <span className="shrink-0 text-green-700 font-bold text-sm bg-green-50 px-2 py-0.5 rounded">
+                  {result.priceLevel}
+                </span>
+              )}
+            </div>
             <p className="text-sm text-gray-600 mt-2">{result.description}</p>
             {result.rating && <p className="text-yellow-500 mt-2">⭐ {result.rating}</p>}
             {result.price !== undefined && (
@@ -296,7 +614,7 @@ export default function Home() {
                   </div>
                   {searchBtn('hotels')}
                 </div>
-                <ResultsGrid />
+                <HotelList />
               </div>
             )}
 
@@ -305,24 +623,24 @@ export default function Home() {
               <div>
                 <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
-                    <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="Departure city" className={inputClass} />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">From <span className="text-gray-400 font-normal">(IATA or city)</span></label>
+                    <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="e.g. CDG or Paris" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
-                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="Destination city" className={inputClass} />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">To <span className="text-gray-400 font-normal">(IATA or city)</span></label>
+                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="e.g. AUS or Austin" className={inputClass} />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Depart</label>
                     <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Return</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Return <span className="text-gray-400 font-normal">(optional)</span></label>
                     <input type="date" name="return" value={formData.return} onChange={handleInputChange} className={inputClass} />
                   </div>
                   {searchBtn('flights')}
                 </div>
-                <ResultsGrid />
+                <FlightList />
               </div>
             )}
 
@@ -509,6 +827,92 @@ export default function Home() {
 
           </div>
         </div>
+
+        {/* Success toast */}
+        {bookingSuccess && (
+          <div className="fixed bottom-6 right-6 z-50 bg-green-600 text-white px-6 py-3 rounded-xl shadow-lg font-medium">
+            ✓ Booking confirmed! View it in your dashboard.
+          </div>
+        )}
+
+        {/* Booking modal */}
+        {bookingDraft && (() => {
+          const nights        = calcNights(bookingDraft.checkin, bookingDraft.checkout);
+          const pricePerNight = bookingDraft.hotel.pricePerNight ?? PRICE_PER_NIGHT[bookingDraft.hotel.priceLevel ?? '$$'] ?? 160;
+          const total         = pricePerNight * nights * bookingGuests;
+          return (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+                <h2 className="text-xl font-bold text-gray-900 mb-1">Book Hotel</h2>
+                <p className="text-gray-600 text-sm mb-4">{bookingDraft.hotel.name}</p>
+
+                <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm text-gray-700 space-y-1">
+                  <p><span className="font-medium">Address:</span> {bookingDraft.hotel.description}</p>
+                  <p><span className="font-medium">Check-in:</span> {bookingDraft.checkin || '—'}</p>
+                  <p><span className="font-medium">Check-out:</span> {bookingDraft.checkout || '—'}</p>
+                  {bookingDraft.hotel.priceLevel && <p><span className="font-medium">Price level:</span> {bookingDraft.hotel.priceLevel}</p>}
+                </div>
+
+                <div className="space-y-3 mb-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
+                    <input
+                      type="text"
+                      value={bookingName}
+                      onChange={e => setBookingName(e.target.value)}
+                      placeholder="Enter your full name"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Guests</label>
+                    <input
+                      type="number"
+                      value={bookingGuests}
+                      onChange={e => setBookingGuests(Math.max(1, +e.target.value))}
+                      min={1}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Price breakdown */}
+                <div className="bg-indigo-50 rounded-lg p-3 mb-5 text-sm space-y-1">
+                  <div className="flex justify-between text-gray-700">
+                    <span>${pricePerNight}/night × {nights} night{nights > 1 ? 's' : ''}</span>
+                    <span>${pricePerNight * nights}</span>
+                  </div>
+                  {bookingGuests > 1 && (
+                    <div className="flex justify-between text-gray-700">
+                      <span>× {bookingGuests} guests</span>
+                      <span>${total}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-bold text-indigo-700 border-t border-indigo-200 pt-1 mt-1">
+                    <span>Total estimate</span>
+                    <span>${total.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setBookingDraft(null)}
+                    className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={confirmBooking}
+                    disabled={!bookingName.trim()}
+                    className="flex-1 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition"
+                  >
+                    {user ? 'Confirm Booking →' : 'Sign in to Book'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Footer */}
         <footer className="mt-16 border-t border-gray-200 pt-8">

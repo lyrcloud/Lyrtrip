@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import Stripe from 'stripe';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { MongoClient, ObjectId } from 'mongodb';
 import {
@@ -372,6 +373,112 @@ async function handleWeChatAuth(event) {
   });
 }
 
+async function searchHotelsSerpApi({ destination, checkin, checkout, guests }) {
+  const params = new URLSearchParams({
+    engine:   'google_hotels',
+    q:        destination ? `Hotels in ${destination}` : 'Hotels',
+    currency: 'USD',
+    gl:       'us',
+    hl:       'en',
+    adults:   String(guests || 1),
+    api_key:  process.env.SERPAPI_KEY,
+  });
+  if (checkin)  params.set('check_in_date',  checkin);
+  if (checkout) params.set('check_out_date', checkout);
+
+  const res = await fetch(`https://serpapi.com/search.json?${params}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`SerpAPI error (${res.status}): ${err}`);
+  }
+  const data = await res.json();
+
+  return (data.properties ?? []).map((p, i) => ({
+    id:           p.property_token ?? String(i),
+    name:         p.name ?? 'Hotel',
+    description:  p.description ?? p.neighborhood ?? '',
+    rating:       p.overall_rating,
+    reviewCount:  p.reviews,
+    hotelClass:   p.hotel_class,
+    amenities:    p.amenities ?? [],
+    price:        p.rate_per_night?.extracted_lowest,
+    pricePerNight: p.rate_per_night?.extracted_lowest,
+    unit:         '/night',
+    currency:     'USD',
+    imageUrl:     p.images?.[0]?.thumbnail,
+    link:         p.link,
+    checkIn:      p.check_in_time,
+    checkOut:     p.check_out_time,
+  }));
+}
+
+async function searchFlightsSerpApi({ from, to, depart, returnDate }) {
+  const params = new URLSearchParams({
+    engine:        'google_flights',
+    departure_id:  from,
+    arrival_id:    to,
+    outbound_date: depart,
+    currency:      'USD',
+    hl:            'en',
+    gl:            'us',
+    type:          returnDate ? '1' : '2',
+    api_key:       process.env.SERPAPI_KEY,
+  });
+  if (returnDate) params.set('return_date', returnDate);
+
+  const res = await fetch(`https://serpapi.com/search.json?${params}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`SerpAPI flights error (${res.status}): ${err}`);
+  }
+  const data = await res.json();
+
+  const mapFlight = (f, isBest, index) => ({
+    id:            `${isBest ? 'best' : 'other'}-${index}`,
+    type:          'flight',
+    isBest,
+    price:         f.price,
+    totalDuration: f.total_duration,
+    airlineLogo:   f.airline_logo,
+    legs: (f.flights ?? []).map(leg => ({
+      airline:      leg.airline,
+      airlineLogo:  leg.airline_logo,
+      flightNumber: leg.flight_number,
+      departure: {
+        airport: leg.departure_airport?.id,
+        name:    leg.departure_airport?.name,
+        time:    leg.departure_airport?.time,
+      },
+      arrival: {
+        airport: leg.arrival_airport?.id,
+        name:    leg.arrival_airport?.name,
+        time:    leg.arrival_airport?.time,
+      },
+      duration:    leg.duration,
+      airplane:    leg.airplane,
+      travelClass: leg.travel_class,
+      legroom:     leg.legroom,
+      extensions:  leg.extensions ?? [],
+    })),
+    layovers: (f.layovers ?? []).map(l => ({
+      name:      l.name,
+      id:        l.id,
+      duration:  l.duration,
+      overnight: l.overnight ?? false,
+    })),
+    extensions:      f.extensions ?? [],
+    carbonEmissions: f.carbon_emissions,
+    bookingToken:    f.booking_token,
+    // generic SearchResult compat fields
+    name:        (f.flights?.[0]?.airline ?? 'Flight'),
+    description: `${from} → ${to}`,
+  });
+
+  const best  = (data.best_flights  ?? []).map((f, i) => mapFlight(f, true,  i));
+  const other = (data.other_flights ?? []).map((f, i) => mapFlight(f, false, i));
+  return [...best, ...other];
+}
+
 async function handleSearch(event) {
   try {
     const body = JSON.parse(event.body || '{}');
@@ -385,10 +492,24 @@ async function handleSearch(event) {
       return json(400, { error: 'Invalid service type' });
     }
 
-    // --- Hotel: try Amadeus first ---
+    // --- Hotel: try SerpAPI first ---
+    if (service === 'hotels' && process.env.SERPAPI_KEY) {
+      const { destination, checkin, checkout, guests } = body;
+      if (destination) {
+        try {
+          const results = await searchHotelsSerpApi({ destination, checkin, checkout, guests });
+          if (results.length > 0) {
+            return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
+          }
+        } catch (serpErr) {
+          console.error('SerpAPI hotel search error (falling back to mock):', serpErr.message);
+        }
+      }
+    }
+
+    // --- Hotel: try Amadeus if SerpAPI not configured ---
     if (service === 'hotels' && process.env.AMADEUS_CLIENT_ID && process.env.AMADEUS_CLIENT_SECRET) {
       const { destinationLocation, checkin, checkout } = body;
-
       if (destinationLocation?.lat && destinationLocation?.lng) {
         try {
           const results = await searchHotelsAmadeus({
@@ -397,12 +518,26 @@ async function handleSearch(event) {
             checkin:  checkin  || null,
             checkout: checkout || null,
           });
-
           if (results.length > 0) {
             return json(200, { success: true, service, results, total: results.length, source: 'amadeus' });
           }
         } catch (amadeusError) {
           console.error('Amadeus hotel search error (falling back to mock):', amadeusError.message);
+        }
+      }
+    }
+
+    // --- Flights: try SerpAPI ---
+    if (service === 'flights' && process.env.SERPAPI_KEY) {
+      const { from, to, depart, returnDate } = body;
+      if (from && to && depart) {
+        try {
+          const results = await searchFlightsSerpApi({ from, to, depart, returnDate });
+          if (results.length > 0) {
+            return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
+          }
+        } catch (serpErr) {
+          console.error('SerpAPI flight search error (falling back to mock):', serpErr.message);
         }
       }
     }
@@ -477,6 +612,56 @@ async function getTour(event, id) {
 }
 
 // ---------------------------------------------------------------------------
+function nightsBetween(checkin, checkout) {
+  if (!checkin || !checkout) return 1;
+  const ms = new Date(checkout) - new Date(checkin);
+  const nights = Math.round(ms / (1000 * 60 * 60 * 24));
+  return nights > 0 ? nights : 1;
+}
+
+const STRIPE_BASE_PRICE = {
+  'Free':  0,
+  '$':     8900,
+  '$$':    16000,
+  '$$$':   30000,
+  '$$$$':  50000,
+};
+
+async function handleStripeCheckout(event) {
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) return json(500, { error: 'Stripe is not configured' });
+
+  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
+  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
+  const { hotelName, address, checkin, checkout, guests, guestName, priceLevel, nights: bodyNights, totalPrice } = body;
+
+  const nights       = bodyNights ?? nightsBetween(checkin, checkout);
+  const unitCents    = STRIPE_BASE_PRICE[priceLevel] ?? STRIPE_BASE_PRICE['$$'];
+  const amountCents  = totalPrice ? Math.round(totalPrice * 100) : unitCents * nights;
+
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    payment_method_types: ['card'],
+    line_items: [{
+      price_data: {
+        currency: 'usd',
+        unit_amount: amountCents,
+        product_data: {
+          name: hotelName,
+          description: `${address} · ${nights} night${nights !== 1 ? 's' : ''} · ${guests} guest${guests !== 1 ? 's' : ''}`,
+        },
+      },
+      quantity: 1,
+    }],
+    metadata: { hotelName, address, checkin, checkout, guests: String(guests), guestName, priceLevel: priceLevel ?? '' },
+    customer_email: guestName?.includes('@') ? guestName : undefined,
+    success_url: 'https://www.lyrtrip.com/booking/success?session_id={CHECKOUT_SESSION_ID}',
+    cancel_url:  'https://www.lyrtrip.com/booking/cancel',
+  });
+
+  return json(200, { url: session.url, sessionId: session.id });
+}
+
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -487,10 +672,11 @@ export async function handler(event) {
   if (method === 'OPTIONS') return json(204, {});
 
   try {
-    if (path.endsWith('/api/search'))                           return handleSearch(event);
-    if (path.endsWith('/api/auth/wechat') && method === 'POST') return handleWeChatAuth(event);
-    if (path.endsWith('/api/tours')       && method === 'GET')  return listTours(event);
-    if (path.endsWith('/api/tours')       && method === 'POST') return createTour(event);
+    if (path.endsWith('/api/search'))                                       return handleSearch(event);
+    if (path.endsWith('/api/auth/wechat')      && method === 'POST')        return handleWeChatAuth(event);
+    if (path.endsWith('/api/stripe-checkout')  && method === 'POST')        return handleStripeCheckout(event);
+    if (path.endsWith('/api/tours')            && method === 'GET')         return listTours(event);
+    if (path.endsWith('/api/tours')            && method === 'POST')        return createTour(event);
 
     const tourMatch = path.match(/\/api\/tours\/([^/]+)$/);
     if (tourMatch && method === 'GET') return getTour(event, tourMatch[1]);

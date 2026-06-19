@@ -26,8 +26,8 @@ export default function LocationMap({ lat, lng, zoom = 12, title = 'Location' }:
           return;
         }
 
-        const { Map } = await g.maps.importLibrary('maps') as google.maps.MapsLibrary;
-        const { Marker } = await g.maps.importLibrary('marker') as google.maps.MarkerLibrary;
+        const { Map } = await g.maps.importLibrary('maps') as any;
+        const { Marker } = await g.maps.importLibrary('marker') as any;
 
         if (!mounted || !mapRef.current) return;
 

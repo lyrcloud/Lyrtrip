@@ -56,6 +56,11 @@ Parameters:
     NoEcho: true
     Default: ""
     Description: Random shared secret used to bridge WeChat sign-in into a Cognito CUSTOM_AUTH challenge.
+  StripeSecretKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Stripe secret key (sk_live_... or sk_test_...) used by the checkout Lambda.
 
 Conditions:
   UseRoute53:
@@ -141,6 +146,7 @@ Resources:
           WECHAT_APP_ID: !Ref WeChatAppId
           WECHAT_APP_SECRET: !Ref WeChatAppSecret
           WECHAT_AUTH_SHARED_SECRET: !Ref WeChatAuthSharedSecret
+          STRIPE_SECRET_KEY: !Ref StripeSecretKey
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:

@@ -65,16 +65,15 @@ export async function getPlacePredictions(input: string): Promise<PlacePredictio
             let mainText = '';
             let secondaryText = '';
 
-            // Try to access placePrediction which contains the actual place info
             if (suggestion.placePrediction) {
-                placeId = suggestion.placePrediction.placeId || '';
-                mainText = typeof suggestion.mainText === 'string' ? suggestion.mainText : suggestion.mainText?.text || '';
-                secondaryText = typeof suggestion.secondaryText === 'string' ? suggestion.secondaryText : suggestion.secondaryText?.text || '';
+                const pp = suggestion.placePrediction as any;
+                placeId = pp.placeId || '';
+                mainText = pp.mainText?.text ?? pp.text?.text ?? '';
+                secondaryText = pp.secondaryText?.text ?? '';
             } else {
-                // Fallback to direct properties
                 placeId = suggestion.placeId || suggestion.id || '';
-                mainText = typeof suggestion.mainText === 'string' ? suggestion.mainText : suggestion.mainText?.text || '';
-                secondaryText = typeof suggestion.secondaryText === 'string' ? suggestion.secondaryText : suggestion.secondaryText?.text || '';
+                mainText = typeof suggestion.mainText === 'string' ? suggestion.mainText : (suggestion.mainText as any)?.text ?? '';
+                secondaryText = typeof suggestion.secondaryText === 'string' ? suggestion.secondaryText : (suggestion.secondaryText as any)?.text ?? '';
             }
 
             console.log('Extracted:', { placeId, mainText, secondaryText });

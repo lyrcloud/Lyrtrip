@@ -40,7 +40,7 @@ export function ToursPage() {
   return (
     <div>
       <h1>Find Hotels for Your Music Trip</h1>
-      <HotelSearch query="hotels in Paris" lat={48.8566} lng={2.3522} />
+      <HotelSearch lat={48.8566} lng={2.3522} />
     </div>
   );
 }

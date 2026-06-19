@@ -33,7 +33,8 @@ export default function AuthCallbackPage() {
         return;
       }
       await refresh();
-      router.replace('/dashboard');
+      const hasPending = !!sessionStorage.getItem('lyrtrip_pending_booking');
+      router.replace(hasPending ? '/?booking=pending' : '/dashboard');
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -21,6 +21,7 @@ COGNITO_USER_POOL_CLIENT_ID="${COGNITO_USER_POOL_CLIENT_ID:-}"
 WECHAT_APP_ID="${WECHAT_APP_ID:-}"
 WECHAT_APP_SECRET="${WECHAT_APP_SECRET:-}"
 WECHAT_AUTH_SHARED_SECRET="${WECHAT_AUTH_SHARED_SECRET:-}"
+STRIPE_SECRET_KEY="${STRIPE_SECRET_KEY:-}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-${STACK_NAME}-artifacts-${ACCOUNT_ID}-${REGION}}"
 PACKAGED_TEMPLATE="/tmp/${STACK_NAME}-packaged.yml"
@@ -93,7 +94,8 @@ aws cloudformation deploy \
     CognitoUserPoolClientId="$COGNITO_USER_POOL_CLIENT_ID" \
     WeChatAppId="$WECHAT_APP_ID" \
     WeChatAppSecret="$WECHAT_APP_SECRET" \
-    WeChatAuthSharedSecret="$WECHAT_AUTH_SHARED_SECRET"
+    WeChatAuthSharedSecret="$WECHAT_AUTH_SHARED_SECRET" \
+    StripeSecretKey="$STRIPE_SECRET_KEY"
 
 BUCKET_NAME="$(aws cloudformation describe-stacks \
   --region "$REGION" \
