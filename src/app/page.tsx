@@ -623,12 +623,12 @@ export default function Home() {
               <div>
                 <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">From <span className="text-gray-400 font-normal">(IATA or city)</span></label>
-                    <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="e.g. CDG or Paris" className={inputClass} />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
+                    <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="City or airport code" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">To <span className="text-gray-400 font-normal">(IATA or city)</span></label>
-                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="e.g. AUS or Austin" className={inputClass} />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
+                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="City or airport code" className={inputClass} />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Depart</label>
