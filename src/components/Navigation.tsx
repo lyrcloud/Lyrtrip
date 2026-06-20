@@ -50,13 +50,6 @@ export default function Navigation() {
 
           {/* Navigation Links */}
           <div className="flex items-center gap-6">
-            <Link
-              href="/tours"
-              className="text-gray-600 hover:text-gray-900 font-medium transition-colors"
-            >
-              Tours
-            </Link>
-
             {loading ? (
               <div className="w-9 h-9 rounded-full bg-gray-100 animate-pulse" />
             ) : user ? (
@@ -86,13 +79,6 @@ export default function Navigation() {
                       className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
                     >
                       Dashboard
-                    </Link>
-                    <Link
-                      href="/tours"
-                      onClick={() => setMenuOpen(false)}
-                      className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                    >
-                      My Tours
                     </Link>
                     <button
                       onClick={handleSignOut}

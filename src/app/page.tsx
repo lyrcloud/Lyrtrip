@@ -119,11 +119,6 @@ const mockData: Record<string, SearchResult[]> = {
     { id: '2', name: 'Swiss International', description: '1 stop — Economy and Business', rating: 4.6, price: 380 },
     { id: '3', name: 'Budget Airline', description: 'Low cost carrier — Direct route', rating: 4.1, price: 180 },
   ],
-  car: [
-    { id: '1', name: 'Tesla Model 3', description: 'Electric vehicle, luxury experience', rating: 4.9, price: 120, unit: '/day' },
-    { id: '2', name: 'Toyota Camry', description: 'Reliable and comfortable sedan', rating: 4.5, price: 55, unit: '/day' },
-    { id: '3', name: 'Hyundai i20', description: 'Budget-friendly economy car', rating: 4.3, price: 35, unit: '/day' },
-  ],
   bus: [
     { id: '1', name: 'VIP Coach', description: 'Luxury seats, AC, WiFi, meals included', rating: 4.7, price: 95 },
     { id: '2', name: 'Express Bus', description: 'Direct route, comfortable seats', rating: 4.4, price: 55 },
@@ -188,9 +183,6 @@ export default function Home() {
     depart: '',
     return: '',
     location: '',
-    pickupLocation: null as LocationData | null,
-    pickupDate: '',
-    returnDate: '',
     cruiseDays: '',
     cuisine: '',
     priceRange: 'Any',
@@ -987,72 +979,66 @@ export default function Home() {
             {/* Dash (Food Delivery) */}
             {activeTab === 'dash' && (
               <div>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Delivery Location</label>
-                    <input type="text" name="location" value={formData.location} onChange={handleInputChange} placeholder="Your address" className={inputClass} />
+                {/* Header */}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <span>📍</span>
+                    <span>{uberCity || 'Detecting location…'}</span>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Cuisine</label>
-                    <input type="text" name="cuisine" value={formData.cuisine} onChange={handleInputChange} placeholder="E.g. Italian, Chinese" className={inputClass} />
+                  <div className="flex items-center gap-2">
+                    <span className="w-6 h-6 bg-[#06C167] rounded-full flex items-center justify-center text-white text-xs font-bold">U</span>
+                    <span className="text-xs text-gray-400">Powered by Uber Eats</span>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Price Range</label>
-                    <select name="priceRange" value={formData.priceRange} onChange={handleInputChange} className={inputClass}>
-                      <option>Any</option>
-                      <option>$ — Budget</option>
-                      <option>$$ — Moderate</option>
-                      <option>$$$ — Premium</option>
-                    </select>
-                  </div>
-                  {searchBtn('dash')}
                 </div>
 
-                <ResultsGrid />
+                <h3 className="text-xl font-bold text-gray-900 mb-5">What are you craving?</h3>
 
-                {/* Uber Eats — shown after search */}
-                {hasSearched && (
-                <div className="mt-8 border-t border-gray-100 pt-6">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="w-6 h-6 bg-[#06C167] rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold">U</span>
-                    <h3 className="font-semibold text-gray-900">Order with Uber Eats</h3>
-                    <span className="ml-auto text-xs text-gray-400">Powered by Uber Eats</span>
-                  </div>
-                  {formData.location ? (
-                    <p className="text-xs text-gray-500 mb-4">Delivering to: <span className="font-medium text-gray-700">{formData.location}</span></p>
-                  ) : !locationLoading && !locationError ? (
-                    <p className="text-xs text-gray-500 mb-4">📍 Using your current location</p>
-                  ) : <div className="mb-4" />}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {[
-                      { name: 'Restaurants',  desc: 'Food from thousands of local restaurants', emoji: '🍽️', q: formData.cuisine || 'restaurant' },
-                      { name: 'Grocery',      desc: 'Fresh groceries & everyday essentials',    emoji: '🛒', q: 'grocery' },
-                      { name: 'Pickup',       desc: 'Order ahead and skip the wait',            emoji: '🍱', q: formData.cuisine || 'pickup' },
-                    ].map(opt => {
-                      const locParam = formData.location
-                        ? `&address=${encodeURIComponent(formData.location)}`
-                        : !locationLoading && !locationError
-                          ? `&lat=${userLocation.lat}&lng=${userLocation.lng}`
-                          : '';
-                      return (
-                      <div key={opt.name} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md transition flex flex-col">
-                        <span className="text-2xl">{opt.emoji}</span>
-                        <p className="font-bold text-gray-900 mt-2">{opt.name}</p>
-                        <p className="text-sm text-gray-500 mt-0.5 flex-1">{opt.desc}</p>
-                        <a
-                          href={`https://www.ubereats.com/search?q=${encodeURIComponent(opt.q)}${locParam}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-3 block w-full text-center py-2 rounded-lg bg-[#06C167] text-white text-sm font-semibold hover:bg-[#05a857] transition"
-                        >
+                {/* Category cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  {[
+                    { name: 'Restaurants', desc: 'Food from thousands of local restaurants', emoji: '🍽️', q: 'restaurant' },
+                    { name: 'Grocery',     desc: 'Fresh groceries & everyday essentials',    emoji: '🛒', q: 'grocery' },
+                    { name: 'Pickup',      desc: 'Order ahead and skip the wait',            emoji: '🍱', q: 'pickup' },
+                  ].map(opt => {
+                    const href = !locationLoading && !locationError
+                      ? `https://www.ubereats.com/search?lat=${userLocation.lat}&lng=${userLocation.lng}&q=${encodeURIComponent(opt.q)}`
+                      : `https://www.ubereats.com/search?q=${encodeURIComponent(opt.q)}`;
+                    return (
+                      <div
+                        key={opt.name}
+                        onClick={() => { window.location.href = href; }}
+                        className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md hover:border-[#06C167] transition flex flex-col cursor-pointer"
+                      >
+                        <span className="text-3xl">{opt.emoji}</span>
+                        <p className="font-bold text-gray-900 mt-3 text-lg">{opt.name}</p>
+                        <p className="text-sm text-gray-500 mt-1 flex-1">{opt.desc}</p>
+                        <div className="mt-4 py-2 rounded-lg bg-[#06C167] text-white text-sm font-semibold text-center">
                           Order {opt.name}
-                        </a>
+                        </div>
                       </div>
-                      );
-                    })}
-                  </div>
+                    );
+                  })}
                 </div>
-                )}
+
+                {/* Search box */}
+                <div className="flex items-center gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50">
+                  <span className="text-gray-400">🔍</span>
+                  <input
+                    type="text"
+                    placeholder="Search for food or restaurants…"
+                    className="flex-1 bg-transparent text-sm text-gray-800 outline-none placeholder-gray-400"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        const q = (e.target as HTMLInputElement).value.trim();
+                        if (!q) return;
+                        const href = !locationLoading && !locationError
+                          ? `https://www.ubereats.com/search?lat=${userLocation.lat}&lng=${userLocation.lng}&q=${encodeURIComponent(q)}`
+                          : `https://www.ubereats.com/search?q=${encodeURIComponent(q)}`;
+                        window.location.href = href;
+                      }
+                    }}
+                  />
+                </div>
               </div>
             )}
 
