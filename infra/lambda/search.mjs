@@ -782,42 +782,23 @@ async function handleStripeCheckout(event) {
 }
 
 // ---------------------------------------------------------------------------
-// Uber Rides API
+// Uber Rides — price estimates via Google Maps Distance Matrix
 // ---------------------------------------------------------------------------
 
-const UBER_BASE = 'https://api.uber.com/v1.2';
 const UBER_CLIENT_ID_DEFAULT = 'xuJjFMaEj4AfL-2TP-ql-6bKkA8sMPAB';
 
-const RIDE_META = {
-  'UberX':        { emoji: '🚗', seats: '1–4' },
-  'Uber Comfort': { emoji: '🛋️', seats: '1–4' },
-  'UberXL':       { emoji: '🚐', seats: '1–6' },
-  'Uber Black':   { emoji: '🖤', seats: '1–4' },
-  'UberSUV':      { emoji: '🚙', seats: '1–6' },
-};
-
-let _uberAccessToken = null;
-let _uberTokenExpiry = 0;
-
-async function getUberAccessToken() {
-  if (_uberAccessToken && Date.now() < _uberTokenExpiry - 60_000) return _uberAccessToken;
-  const clientId     = process.env.UBER_CLIENT_ID ?? UBER_CLIENT_ID_DEFAULT;
-  const clientSecret = process.env.UBER_SERVER_TOKEN;
-  const res = await fetch('https://auth.uber.com/oauth/v2/token', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body:    new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret, scope: 'price.read' }),
-  });
-  if (!res.ok) { const e = await res.text(); throw new Error(`Uber OAuth ${res.status}: ${e}`); }
-  const data = await res.json();
-  _uberAccessToken = data.access_token;
-  _uberTokenExpiry = Date.now() + (data.expires_in ?? 2592000) * 1000;
-  return _uberAccessToken;
-}
+// Typical US average rates per ride tier (base + per-mile + per-min)
+const RIDE_TIERS = [
+  { name: 'UberX',        emoji: '🚗', seats: '1–4', base: 2.50, mile: 1.25, min: 0.25, minFare:  6, spread: 0.18 },
+  { name: 'Uber Comfort', emoji: '🛋️', seats: '1–4', base: 3.50, mile: 1.75, min: 0.35, minFare:  9, spread: 0.18 },
+  { name: 'UberXL',       emoji: '🚐', seats: '1–6', base: 4.50, mile: 2.00, min: 0.40, minFare: 12, spread: 0.18 },
+  { name: 'Uber Black',   emoji: '🖤', seats: '1–4', base: 8.00, mile: 3.50, min: 0.65, minFare: 20, spread: 0.18 },
+  { name: 'UberSUV',      emoji: '🚙', seats: '1–6', base: 10.0, mile: 4.50, min: 0.80, minFare: 25, spread: 0.18 },
+];
 
 async function handleUberEstimates(event) {
-  const clientSecret = process.env.UBER_SERVER_TOKEN;
-  if (!clientSecret) return json(500, { error: 'Uber is not configured on this server' });
+  const mapsKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!mapsKey) return json(500, { error: 'Maps API key not configured' });
 
   const qs = event.queryStringParameters ?? {};
   const { pickupLat, pickupLng, dropoffLat, dropoffLng } = qs;
@@ -825,48 +806,35 @@ async function handleUberEstimates(event) {
     return json(400, { error: 'Missing required coordinates: pickupLat, pickupLng, dropoffLat, dropoffLng' });
   }
 
-  const priceParams = new URLSearchParams({
-    start_latitude:  pickupLat,
-    start_longitude: pickupLng,
-    end_latitude:    dropoffLat,
-    end_longitude:   dropoffLng,
+  const mapsUrl = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${pickupLat},${pickupLng}&destinations=${dropoffLat},${dropoffLng}&mode=driving&units=imperial&key=${mapsKey}`;
+  const mapsRes = await fetch(mapsUrl);
+  if (!mapsRes.ok) return json(502, { error: 'Could not calculate route' });
+
+  const mapsData = await mapsRes.json();
+  const element  = mapsData.rows?.[0]?.elements?.[0];
+  if (!element || element.status !== 'OK') return json(502, { error: 'No driving route found between those locations' });
+
+  const distanceMiles = element.distance.value / 1609.34;
+  const durationMins  = element.duration.value / 60;
+  const durationSecs  = element.duration.value;
+
+  const rides = RIDE_TIERS.map(t => {
+    const mid  = Math.max(t.minFare, t.base + t.mile * distanceMiles + t.min * durationMins);
+    const low  = Math.round(mid * (1 - t.spread));
+    const high = Math.round(mid * (1 + t.spread));
+    return {
+      productId:       '',
+      name:            t.name,
+      lowEstimate:     low,
+      highEstimate:    high,
+      currencyCode:    'USD',
+      duration:        durationSecs,
+      distance:        Math.round(distanceMiles * 10) / 10,
+      surgeMultiplier: 1,
+      emoji:           t.emoji,
+      seats:           t.seats,
+    };
   });
-
-  let accessToken;
-  try { accessToken = await getUberAccessToken(); }
-  catch (e) { console.error('Uber OAuth error:', e.message); return json(502, { error: 'Could not authenticate with Uber' }); }
-
-  const headers = { Authorization: `Bearer ${accessToken}` };
-
-  const [priceRes, productRes] = await Promise.all([
-    fetch(`${UBER_BASE}/estimates/price?${priceParams}`, { headers }),
-    fetch(`${UBER_BASE}/products?latitude=${pickupLat}&longitude=${pickupLng}`, { headers }),
-  ]);
-
-  if (!priceRes.ok) {
-    const errText = await priceRes.text();
-    console.error('Uber price estimates error:', priceRes.status, errText);
-    return json(priceRes.status, { error: `Uber API returned ${priceRes.status}` });
-  }
-
-  const priceData   = await priceRes.json();
-  const productData = productRes.ok ? await productRes.json() : { products: [] };
-
-  const productIdMap = {};
-  for (const p of (productData.products ?? [])) productIdMap[p.display_name] = p.product_id;
-
-  const rides = (priceData.prices ?? []).map(p => ({
-    productId:       productIdMap[p.display_name] ?? '',
-    name:            p.display_name,
-    lowEstimate:     p.low_estimate,
-    highEstimate:    p.high_estimate,
-    currencyCode:    p.currency_code ?? 'USD',
-    duration:        p.duration,
-    distance:        p.distance,
-    surgeMultiplier: p.surge_multiplier ?? 1,
-    emoji:           RIDE_META[p.display_name]?.emoji ?? '🚗',
-    seats:           RIDE_META[p.display_name]?.seats ?? '1–4',
-  }));
 
   return json(200, { rides });
 }
