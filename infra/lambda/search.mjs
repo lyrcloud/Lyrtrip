@@ -796,9 +796,28 @@ const RIDE_META = {
   'UberSUV':      { emoji: '🚙', seats: '1–6' },
 };
 
+let _uberAccessToken = null;
+let _uberTokenExpiry = 0;
+
+async function getUberAccessToken() {
+  if (_uberAccessToken && Date.now() < _uberTokenExpiry - 60_000) return _uberAccessToken;
+  const clientId     = process.env.UBER_CLIENT_ID ?? UBER_CLIENT_ID_DEFAULT;
+  const clientSecret = process.env.UBER_SERVER_TOKEN;
+  const res = await fetch('https://auth.uber.com/oauth/v2/token', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body:    new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret, scope: 'price.read' }),
+  });
+  if (!res.ok) { const e = await res.text(); throw new Error(`Uber OAuth ${res.status}: ${e}`); }
+  const data = await res.json();
+  _uberAccessToken = data.access_token;
+  _uberTokenExpiry = Date.now() + (data.expires_in ?? 2592000) * 1000;
+  return _uberAccessToken;
+}
+
 async function handleUberEstimates(event) {
-  const token = process.env.UBER_SERVER_TOKEN;
-  if (!token) return json(500, { error: 'Uber is not configured on this server' });
+  const clientSecret = process.env.UBER_SERVER_TOKEN;
+  if (!clientSecret) return json(500, { error: 'Uber is not configured on this server' });
 
   const qs = event.queryStringParameters ?? {};
   const { pickupLat, pickupLng, dropoffLat, dropoffLng } = qs;
@@ -812,7 +831,12 @@ async function handleUberEstimates(event) {
     end_latitude:    dropoffLat,
     end_longitude:   dropoffLng,
   });
-  const headers = { Authorization: `Token ${token}` };
+
+  let accessToken;
+  try { accessToken = await getUberAccessToken(); }
+  catch (e) { console.error('Uber OAuth error:', e.message); return json(502, { error: 'Could not authenticate with Uber' }); }
+
+  const headers = { Authorization: `Bearer ${accessToken}` };
 
   const [priceRes, productRes] = await Promise.all([
     fetch(`${UBER_BASE}/estimates/price?${priceParams}`, { headers }),
