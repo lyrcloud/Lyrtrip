@@ -25,6 +25,7 @@ export default function RootLayout({
             async
           />
         ) : null}
+        <script src="https://accounts.google.com/gsi/client" async defer />
       </head>
       <body>
         <AuthProvider>

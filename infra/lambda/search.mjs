@@ -56,15 +56,11 @@ const mockData = {
     { id: '2', name: 'Local City Walking Tour', description: 'Explore hidden gems with local guide, 2.5 hours', rating: 4.6, price: 45 },
     { id: '3', name: 'Museum Pass - 24 Hours', description: 'Access to 5 major museums with guide', rating: 4.7, price: 85 },
   ],
-  study: [
-    { id: '1', name: 'Oxford University - Masters Program', description: 'Prestigious postgraduate degree, 1 year', rating: 4.9, price: 35000, unit: '/year' },
-    { id: '2', name: 'University of Toronto - Bachelor Program', description: 'International student program, 4 years', rating: 4.7, price: 25000, unit: '/year' },
-    { id: '3', name: 'Online Course Platform - Certificate', description: 'Professional certification, Self-paced, 3 months', rating: 4.5, price: 599 },
-  ],
+  study: [],
   career: [
-    { id: '1', name: 'Senior Software Engineer - Google', description: 'Remote position, Competitive salary, Benefits', rating: 4.8, price: 200000, unit: '/yr' },
-    { id: '2', name: 'Product Manager - Startup', description: 'Growth-focused role, Equity options, NYC', rating: 4.6, price: 150000, unit: '/yr' },
-    { id: '3', name: 'Junior Developer - Tech Company', description: 'Entry-level, Mentorship, Remote-friendly', rating: 4.4, price: 80000, unit: '/yr' },
+    { id: '1', name: 'Senior Software Engineer', company: 'Google', jobLocation: 'Remote / Mountain View, CA', salary: '$180,000–220,000/yr', jobType: 'Full-time', postedAt: '2 days ago', description: 'Build and scale distributed systems powering Google\'s core products. 5+ years experience required.' },
+    { id: '2', name: 'Product Manager', company: 'Meta', jobLocation: 'Menlo Park, CA', salary: '$150,000–190,000/yr', jobType: 'Full-time', postedAt: '1 day ago', description: 'Drive product strategy and execution for flagship consumer applications. MBA or equivalent preferred.' },
+    { id: '3', name: 'UX Designer', company: 'Apple', jobLocation: 'Cupertino, CA', salary: '$130,000–160,000/yr', jobType: 'Full-time', postedAt: '3 days ago', description: 'Shape delightful user experiences across iOS and macOS platforms. Portfolio required.' },
   ],
 };
 
@@ -598,6 +594,83 @@ async function searchFlightsSerpApi({ from, to, depart, returnDate }) {
   return [...best, ...other];
 }
 
+async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
+  let q = title || 'jobs';
+
+  const typeMap   = { 'Full-time': 'full time', 'Part-time': 'part time', 'Contract': 'contract', 'Internship': 'internship' };
+  const dateMap   = { today: 'since yesterday', '3days': 'in the last 3 days', week: 'in the last week', month: 'in the last month' };
+
+  if (jobType  && typeMap[jobType])   q += ` ${typeMap[jobType]}`;
+  if (datePosted && dateMap[datePosted]) q += ` ${dateMap[datePosted]}`;
+
+  const params = new URLSearchParams({
+    engine:  'google_jobs',
+    q,
+    hl:      'en',
+    api_key: process.env.SERPAPI_KEY,
+  });
+  if (location) params.set('location', location);
+
+  const res = await fetch(`https://serpapi.com/search.json?${params}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`SerpAPI jobs error (${res.status}): ${err}`);
+  }
+  const data = await res.json();
+
+  return (data.jobs_results ?? []).map((j, i) => ({
+    id:          j.job_id ?? String(i),
+    name:        j.title,
+    company:     j.company_name,
+    jobLocation: j.location,
+    via:         j.via,
+    description: (j.description ?? '').slice(0, 400),
+    salary:      j.detected_extensions?.salary ?? null,
+    jobType:     j.detected_extensions?.schedule_type ?? null,
+    postedAt:    j.detected_extensions?.posted_at ?? null,
+    benefits:    [
+      j.detected_extensions?.dental_coverage  ? 'Dental'           : null,
+      j.detected_extensions?.health_insurance ? 'Health Insurance' : null,
+      j.detected_extensions?.paid_time_off    ? 'PTO'              : null,
+      j.detected_extensions?.vision_coverage  ? 'Vision'           : null,
+    ].filter(Boolean),
+    imageUrl:    j.thumbnail ?? null,
+    applyLink:   j.apply_options?.[0]?.link ?? j.share_link ?? null,
+    highlights:  (j.job_highlights ?? []).map(h => ({ title: h.title, items: (h.items ?? []).slice(0, 4) })),
+    rating:      null,
+    price:       null,
+  }));
+}
+
+async function handleClassroomAssign(event) {
+  const { courseId, courseWorkId, studentIds, accessToken } = JSON.parse(event.body || '{}');
+  if (!accessToken) return json(401, { error: 'No access token' });
+  if (!courseId || !courseWorkId || !Array.isArray(studentIds) || studentIds.length === 0) {
+    return json(400, { error: 'courseId, courseWorkId, and studentIds are required' });
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(
+      `https://classroom.googleapis.com/v1/courses/${courseId}/courseWork/${courseWorkId}:modifyAssignees`,
+      {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assigneeMode: 'INDIVIDUAL_STUDENTS',
+          modifyIndividualStudentsOptions: { addStudentIds: studentIds },
+        }),
+      }
+    );
+    const data = await res.json();
+    if (res.ok) return json(200, { success: true, courseWork: data });
+    if (res.status === 500 && attempt < 2) {
+      await new Promise(r => setTimeout(r, 2000));
+      continue;
+    }
+    return json(res.status, { error: data.error?.message || 'Failed to assign coursework' });
+  }
+}
+
 async function handleSearch(event) {
   try {
     const body = JSON.parse(event.body || '{}');
@@ -657,6 +730,21 @@ async function handleSearch(event) {
           }
         } catch (serpErr) {
           console.error('SerpAPI flight search error (falling back to mock):', serpErr.message);
+        }
+      }
+    }
+
+    // --- Jobs (Career): try SerpAPI ---
+    if (service === 'career' && process.env.SERPAPI_KEY) {
+      const { jobTitle, location, jobType, datePosted } = body;
+      if (jobTitle || location) {
+        try {
+          const results = await searchJobsSerpApi({ title: jobTitle, location, jobType, datePosted });
+          if (results.length > 0) {
+            return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
+          }
+        } catch (serpErr) {
+          console.error('SerpAPI jobs search error (falling back to mock):', serpErr.message);
         }
       }
     }
@@ -905,6 +993,7 @@ export async function handler(event) {
 
   try {
     if (path.endsWith('/api/search'))                                        return handleSearch(event);
+    if (path.endsWith('/api/classroom/assign')  && method === 'POST')        return handleClassroomAssign(event);
     if (path.endsWith('/api/auth/wechat')       && method === 'POST')        return handleWeChatAuth(event);
     if (path.endsWith('/api/stripe-checkout')   && method === 'POST')        return handleStripeCheckout(event);
     if (path.includes('/api/uber/estimates')    && method === 'GET')         return handleUberEstimates(event);

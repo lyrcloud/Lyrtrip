@@ -54,6 +54,16 @@ interface SearchResult {
   extensions?: string[];
   bookingToken?: string;
   airlineLogo?: string;
+  // job-specific
+  company?: string;
+  jobLocation?: string;
+  salary?: string;
+  jobType?: string;
+  postedAt?: string;
+  benefits?: string[];
+  applyLink?: string;
+  via?: string;
+  highlights?: { title: string; items: string[] }[];
 }
 
 function fmtDuration(minutes: number): string {
@@ -108,6 +118,76 @@ interface RideDraft {
   dropoffLabel: string;
 }
 
+interface TrainStation {
+  name: string;
+  code: string;
+  tz: string;
+  bus: boolean;
+  schArr: string;
+  schDep: string;
+  arr?: string;
+  dep?: string;
+  arrCmnt?: string;
+  depCmnt?: string;
+  status: string;
+  platform?: string;
+}
+
+interface TrainData {
+  routeName: string;
+  trainNum: string;
+  trainID: string;
+  lat: number;
+  lon: number;
+  heading: string;
+  velocity: number;
+  trainState: string;
+  trainTimely: string;
+  statusMsg: string;
+  eventCode: string;
+  eventName?: string;
+  destCode: string;
+  destName?: string;
+  origCode: string;
+  origName?: string;
+  originTZ: string;
+  updatedAt: string;
+  lastValTS: string;
+  alerts: string[];
+  stations: TrainStation[];
+}
+
+interface ClassroomCourse {
+  id: string;
+  name: string;
+  section?: string;
+  descriptionHeading?: string;
+  description?: string;
+  courseState: string;
+  alternateLink?: string;
+}
+
+interface ClassroomCourseWork {
+  id: string;
+  title: string;
+  description?: string;
+  dueDate?: { year: number; month: number; day: number };
+  maxPoints?: number;
+  workType: string;
+  state: string;
+  assigneeMode?: string;
+  alternateLink?: string;
+}
+
+interface ClassroomStudent {
+  userId: string;
+  profile: {
+    name: { fullName: string };
+    emailAddress: string;
+    photoUrl?: string;
+  };
+}
+
 const mockData: Record<string, SearchResult[]> = {
   hotels: [
     { id: '1', name: 'Luxury Palace Hotel', description: '5-star hotel with ocean view', rating: 4.8, price: 250, unit: '/night' },
@@ -144,15 +224,11 @@ const mockData: Record<string, SearchResult[]> = {
     { id: '2', name: 'City Walking Tour', description: 'Explore hidden gems with a local guide, 2.5 hours', rating: 4.6, price: 45 },
     { id: '3', name: 'Museum Pass — 24 Hours', description: 'Access to 5 major museums with guide', rating: 4.7, price: 85 },
   ],
-  study: [
-    { id: '1', name: 'Oxford — Masters Program', description: 'Prestigious postgraduate degree, 1 year', rating: 4.9, price: 35000, unit: '/year' },
-    { id: '2', name: 'Univ. of Toronto — Bachelor', description: 'International student program, 4 years', rating: 4.7, price: 25000, unit: '/year' },
-    { id: '3', name: 'Online Certificate Course', description: 'Professional certification, self-paced, 3 months', rating: 4.5, price: 599 },
-  ],
+  study: [],
   career: [
-    { id: '1', name: 'Senior Software Engineer — Google', description: 'Remote position, competitive salary, benefits', rating: 4.8, price: 200000, unit: '/yr' },
-    { id: '2', name: 'Product Manager — Startup', description: 'Growth-focused role, equity options, NYC', rating: 4.6, price: 150000, unit: '/yr' },
-    { id: '3', name: 'Junior Developer — Tech Company', description: 'Entry-level, mentorship, remote-friendly', rating: 4.4, price: 80000, unit: '/yr' },
+    { id: '1', name: 'Senior Software Engineer', company: 'Google', jobLocation: 'Remote / Mountain View, CA', salary: '$180,000–220,000/yr', jobType: 'Full-time', postedAt: '2 days ago', description: 'Build and scale distributed systems powering Google\'s core products.' },
+    { id: '2', name: 'Product Manager', company: 'Meta', jobLocation: 'Menlo Park, CA', salary: '$150,000–190,000/yr', jobType: 'Full-time', postedAt: '1 day ago', description: 'Drive product strategy and execution for flagship consumer applications.' },
+    { id: '3', name: 'UX Designer', company: 'Apple', jobLocation: 'Cupertino, CA', salary: '$130,000–160,000/yr', jobType: 'Full-time', postedAt: '3 days ago', description: 'Shape delightful user experiences across iOS and macOS platforms.' },
   ],
 };
 
@@ -188,8 +264,11 @@ export default function Home() {
     priceRange: 'Any',
     activityType: '',
     courseType: '',
+    trainNum: '',
     jobTitle: '',
     industry: '',
+    jobType: '',
+    datePosted: '',
   });
 
   const [userLocation, setUserLocation] = useState({ lat: 40.7128, lng: -74.0060 });
@@ -214,6 +293,22 @@ export default function Home() {
   const [riderEmail, setRiderEmail] = useState('');
   const [rideBookingLoading, setRideBookingLoading] = useState(false);
   const [rideBookingError, setRideBookingError] = useState<string | null>(null);
+  const [trainResults, setTrainResults] = useState<TrainData[]>([]);
+
+  // Google Classroom state
+  const [classroomToken, setClassroomToken] = useState<string | null>(null);
+  const [classroomCourses, setClassroomCourses] = useState<ClassroomCourse[]>([]);
+  const [classroomLoading, setClassroomLoading] = useState(false);
+  const [classroomError, setClassroomError] = useState<string | null>(null);
+  const [selectedCourse, setSelectedCourse] = useState<ClassroomCourse | null>(null);
+  const [courseWork, setCourseWork] = useState<ClassroomCourseWork[]>([]);
+  const [courseStudents, setCourseStudents] = useState<ClassroomStudent[]>([]);
+  const [courseTab, setCourseTab] = useState<'coursework' | 'students'>('coursework');
+  const [assigningWork, setAssigningWork] = useState<ClassroomCourseWork | null>(null);
+  const [assignStudentIds, setAssignStudentIds] = useState<string[]>([]);
+  const [assignLoading, setAssignLoading] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [assignSuccess, setAssignSuccess] = useState(false);
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -292,6 +387,7 @@ export default function Home() {
   const switchTab = (tabId: string) => {
     setActiveTab(tabId);
     setResults([]);
+    setTrainResults([]);
     setHasSearched(false);
     setUberDropoff(null);
     setUberPrices([]);
@@ -348,6 +444,146 @@ export default function Home() {
     return (data.results ?? []) as SearchResult[];
   };
 
+  // ---- Google Classroom helpers ----
+
+  const classroomFetch = async (path: string, token: string) => {
+    const res = await fetch(`https://classroom.googleapis.com/v1${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`Classroom API ${res.status}`);
+    return res.json();
+  };
+
+  const connectClassroom = () => {
+    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    const g = (window as any).google;
+    if (!clientId || !g) {
+      setClassroomError('Google client ID is not configured. Add NEXT_PUBLIC_GOOGLE_CLIENT_ID to your environment.');
+      return;
+    }
+    const tokenClient = g.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: [
+        'https://www.googleapis.com/auth/classroom.courses.readonly',
+        'https://www.googleapis.com/auth/classroom.coursework.students',
+        'https://www.googleapis.com/auth/classroom.rosters.readonly',
+      ].join(' '),
+      callback: async (response: { access_token?: string; error?: string }) => {
+        if (response.access_token) {
+          setClassroomToken(response.access_token);
+          await loadCourses(response.access_token);
+        } else {
+          setClassroomError(response.error ?? 'Sign-in cancelled');
+        }
+      },
+    });
+    tokenClient.requestAccessToken();
+  };
+
+  const loadCourses = async (token: string) => {
+    setClassroomLoading(true);
+    setClassroomError(null);
+    try {
+      const data = await classroomFetch('/courses?courseStates=ACTIVE&teacherId=me', token);
+      setClassroomCourses(data.courses ?? []);
+    } catch {
+      setClassroomError('Failed to load courses. Make sure you have teacher access.');
+    } finally {
+      setClassroomLoading(false);
+    }
+  };
+
+  const openCourse = async (course: ClassroomCourse) => {
+    setSelectedCourse(course);
+    setCourseTab('coursework');
+    setCourseWork([]);
+    setCourseStudents([]);
+    if (!classroomToken) return;
+    setClassroomLoading(true);
+    try {
+      const [cwData, stData] = await Promise.all([
+        classroomFetch(`/courses/${course.id}/courseWork?courseWorkStates=PUBLISHED`, classroomToken),
+        classroomFetch(`/courses/${course.id}/students`, classroomToken),
+      ]);
+      setCourseWork(cwData.courseWork ?? []);
+      setCourseStudents(stData.students ?? []);
+    } catch {
+      setClassroomError('Failed to load course data.');
+    } finally {
+      setClassroomLoading(false);
+    }
+  };
+
+  const toggleAssignStudent = (userId: string) => {
+    setAssignStudentIds(prev =>
+      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
+    );
+  };
+
+  const confirmAssign = async () => {
+    if (!assigningWork || !selectedCourse || !classroomToken || assignStudentIds.length === 0) return;
+    setAssignLoading(true);
+    setAssignError(null);
+    setAssignSuccess(false);
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    try {
+      const res = await fetch(`${baseUrl}/api/classroom/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          courseId: selectedCourse.id,
+          courseWorkId: assigningWork.id,
+          studentIds: assignStudentIds,
+          accessToken: classroomToken,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Assign failed');
+      setAssignSuccess(true);
+      setTimeout(() => { setAssigningWork(null); setAssignStudentIds([]); setAssignSuccess(false); }, 2000);
+    } catch (e: unknown) {
+      setAssignError(e instanceof Error ? e.message : 'Assign failed');
+    } finally {
+      setAssignLoading(false);
+    }
+  };
+
+  const searchJobsViaApi = async (): Promise<SearchResult[]> => {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service:    'career',
+        jobTitle:   formData.jobTitle  || null,
+        location:   formData.location  || null,
+        jobType:    formData.jobType   || null,
+        datePosted: formData.datePosted || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Job search failed');
+    return (data.results ?? []) as SearchResult[];
+  };
+
+  const searchTrainsViaApi = async (): Promise<TrainData[]> => {
+    const base = 'https://api.amtraker.com/v2';
+    const endpoint = formData.trainNum
+      ? `${base}/trains/${formData.trainNum.trim()}`
+      : `${base}/trains`;
+    const res = await fetch(endpoint);
+    if (!res.ok) throw new Error(`Amtraker API returned ${res.status}`);
+    const data: Record<string, TrainData[]> = await res.json();
+    let trains: TrainData[] = Object.values(data).flat();
+    if (!formData.trainNum) {
+      const from = formData.from.toUpperCase().trim();
+      const to   = formData.to.toUpperCase().trim();
+      if (from) trains = trains.filter(t => t.origCode === from);
+      if (to)   trains = trains.filter(t => t.destCode === to);
+    }
+    return trains;
+  };
+
   const handleSearch = async (service: string) => {
     setLoading(true);
     setHasSearched(true);
@@ -358,6 +594,12 @@ export default function Home() {
       } else if (service === 'flights') {
         const data = await searchFlightsViaApi();
         setResults(data);
+      } else if (service === 'career') {
+        const data = await searchJobsViaApi();
+        setResults(data);
+      } else if (service === 'train') {
+        const data = await searchTrainsViaApi();
+        setTrainResults(data);
       } else {
         const data = await searchService(service);
         setResults(data);
@@ -365,6 +607,7 @@ export default function Home() {
     } catch (error) {
       console.error('Search error:', error);
       setResults([]);
+      setTrainResults([]);
     } finally {
       setLoading(false);
     }
@@ -522,7 +765,7 @@ export default function Home() {
     { id: 'dash',    label: '🍔 Dash' },
     { id: 'tourism', label: '🎒 Tourism' },
     { id: 'study',   label: '📚 Study' },
-    { id: 'career',  label: '💼 Career' },
+    { id: 'career',  label: '💼 Jobs' },
   ];
 
   const inputClass = "w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-600 focus:border-transparent";
@@ -676,6 +919,251 @@ export default function Home() {
     );
   };
 
+  const fmtDue = (d?: { year: number; month: number; day: number }) =>
+    d ? `${d.month}/${d.day}/${d.year}` : null;
+
+  const ClassroomView = () => {
+    // Not yet connected
+    if (!classroomToken) return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <div className="text-6xl mb-5">📚</div>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Google Classroom</h2>
+        <p className="text-gray-500 mb-6 max-w-sm">
+          Connect your Google account to view and manage your courses, assignments, and students.
+        </p>
+        {classroomError && <p className="text-red-600 text-sm mb-4">{classroomError}</p>}
+        <button
+          onClick={connectClassroom}
+          className="flex items-center gap-3 px-6 py-3 bg-white border-2 border-gray-200 rounded-xl font-semibold text-gray-700 hover:border-indigo-400 hover:shadow-md transition"
+        >
+          <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"/><path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"/><path fill="#FBBC05" d="M11.69 28.18C11.25 26.86 11 25.45 11 24s.25-2.86.69-4.18v-5.7H4.34C2.85 17.09 2 20.45 2 24c0 3.55.85 6.91 2.34 9.88l7.35-5.7z"/><path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z"/></svg>
+          Sign in with Google
+        </button>
+        <p className="text-xs text-gray-400 mt-4">Requires teacher access · Classroom scopes</p>
+      </div>
+    );
+
+    // Loading courses or course detail
+    if (classroomLoading && !selectedCourse) return (
+      <div className="flex items-center justify-center py-16 text-gray-500">
+        <div className="animate-spin mr-3 w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full" />
+        Loading courses…
+      </div>
+    );
+
+    if (classroomError) return (
+      <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
+        {classroomError}
+        <button onClick={() => setClassroomError(null)} className="ml-4 underline text-xs">Dismiss</button>
+      </div>
+    );
+
+    // Course detail view
+    if (selectedCourse) return (
+      <div className="mt-4">
+        <button onClick={() => { setSelectedCourse(null); setCourseWork([]); setCourseStudents([]); }}
+          className="flex items-center gap-1 text-sm text-indigo-600 hover:underline mb-4">
+          ← Back to Courses
+        </button>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-xl font-bold text-gray-900">{selectedCourse.name}</h3>
+            {selectedCourse.section && <p className="text-sm text-gray-500">Section: {selectedCourse.section}</p>}
+          </div>
+          {selectedCourse.alternateLink && (
+            <a href={selectedCourse.alternateLink} target="_blank" rel="noopener noreferrer"
+              className="text-sm text-indigo-600 hover:underline">Open in Classroom →</a>
+          )}
+        </div>
+
+        {/* Sub-tabs */}
+        <div className="flex border-b mb-4 gap-1">
+          {(['coursework', 'students'] as const).map(t => (
+            <button key={t} onClick={() => setCourseTab(t)}
+              className={`px-4 py-2 text-sm font-semibold capitalize transition ${courseTab === t ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}>
+              {t} {t === 'coursework' ? `(${courseWork.length})` : `(${courseStudents.length})`}
+            </button>
+          ))}
+        </div>
+
+        {classroomLoading && <div className="text-gray-500 text-sm py-4">Loading…</div>}
+
+        {/* Coursework list */}
+        {courseTab === 'coursework' && !classroomLoading && (
+          <div className="space-y-3">
+            {courseWork.length === 0 && <p className="text-gray-500 text-sm">No published assignments found.</p>}
+            {courseWork.map(cw => (
+              <div key={cw.id} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-sm transition">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">{cw.workType?.replace(/_/g, ' ')}</span>
+                      <h4 className="font-bold text-gray-900">{cw.title}</h4>
+                    </div>
+                    {cw.description && <p className="text-sm text-gray-500 mt-1 line-clamp-2">{cw.description}</p>}
+                    <div className="flex flex-wrap gap-3 mt-2 text-xs text-gray-400">
+                      {fmtDue(cw.dueDate) && <span>📅 Due {fmtDue(cw.dueDate)}</span>}
+                      {cw.maxPoints != null && <span>🏆 {cw.maxPoints} pts</span>}
+                      {cw.assigneeMode && <span>👥 {cw.assigneeMode.replace(/_/g, ' ')}</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => { setAssigningWork(cw); setAssignStudentIds([]); setAssignError(null); setAssignSuccess(false); }}
+                    className="shrink-0 px-3 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+                  >
+                    Assign →
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Students list */}
+        {courseTab === 'students' && !classroomLoading && (
+          <div className="space-y-2">
+            {courseStudents.length === 0 && <p className="text-gray-500 text-sm">No students enrolled.</p>}
+            {courseStudents.map(s => (
+              <div key={s.userId} className="flex items-center gap-3 bg-white border border-gray-200 rounded-xl px-4 py-3">
+                {s.profile.photoUrl ? (
+                  <img src={s.profile.photoUrl} alt={s.profile.name.fullName} className="w-8 h-8 rounded-full" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-sm">
+                    {s.profile.name.fullName?.[0]}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="font-medium text-gray-900 text-sm">{s.profile.name.fullName}</p>
+                  <p className="text-xs text-gray-400">{s.profile.emailAddress}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+
+    // Course list view
+    return (
+      <div className="mt-4">
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+            My Courses ({classroomCourses.length})
+          </p>
+          <div className="flex gap-2">
+            <button onClick={() => classroomToken && loadCourses(classroomToken)}
+              className="text-sm text-indigo-600 hover:underline">Refresh</button>
+            <button onClick={() => { setClassroomToken(null); setClassroomCourses([]); }}
+              className="text-sm text-gray-400 hover:text-red-500">Disconnect</button>
+          </div>
+        </div>
+        {classroomCourses.length === 0 && (
+          <p className="text-gray-500 text-sm py-4">No active courses found. Make sure you have teacher access to at least one course.</p>
+        )}
+        <div className="space-y-3">
+          {classroomCourses.map(course => (
+            <div key={course.id} className="flex items-center justify-between bg-white border border-gray-200 rounded-xl px-5 py-4 hover:shadow-md transition">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-xl shrink-0">📖</div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-gray-900 truncate">{course.name}</h3>
+                  <p className="text-sm text-gray-500">
+                    {[course.section, course.descriptionHeading].filter(Boolean).join(' · ') || 'Active'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => openCourse(course)}
+                className="shrink-0 ml-4 px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition">
+                Open →
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const JobList = () => {
+    if (!hasSearched) return null;
+    if (loading) return <p className="text-gray-500 mt-6">Searching jobs worldwide...</p>;
+    if (results.length === 0) return <p className="text-gray-600 mt-6">No jobs found. Try different keywords or location.</p>;
+    return (
+      <div className="mt-6 space-y-4">
+        {results.map(result => (
+          <div key={result.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition">
+            {/* Company logo */}
+            <div className="w-20 bg-gray-50 flex items-center justify-center p-3 shrink-0 border-r border-gray-100">
+              {result.imageUrl ? (
+                <img src={result.imageUrl} alt={result.company} className="w-14 h-14 object-contain rounded-lg" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              ) : (
+                <div className="w-14 h-14 bg-indigo-100 flex items-center justify-center text-3xl rounded-lg">💼</div>
+              )}
+            </div>
+            <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
+              <div>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-gray-900 text-base leading-tight truncate">{result.name}</h3>
+                    <p className="text-sm text-indigo-600 font-medium mt-0.5">{result.company}</p>
+                    {result.jobLocation && <p className="text-xs text-gray-500">📍 {result.jobLocation}</p>}
+                  </div>
+                  <div className="shrink-0 text-right flex flex-col items-end gap-1">
+                    {result.salary && (
+                      <span className="text-sm font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded-full">{result.salary}</span>
+                    )}
+                    {result.jobType && (
+                      <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{result.jobType}</span>
+                    )}
+                  </div>
+                </div>
+                {result.description && (
+                  <p className="text-sm text-gray-600 mt-2 line-clamp-2">{result.description}</p>
+                )}
+                {result.highlights && result.highlights.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {result.highlights.slice(0, 1).map(h => (
+                      <div key={h.title}>
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{h.title}</p>
+                        <ul className="flex flex-wrap gap-1 mt-1">
+                          {h.items.slice(0, 3).map((item, i) => (
+                            <li key={i} className="text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {result.benefits && result.benefits.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {result.benefits.map(b => (
+                      <span key={b} className="text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-full">{b}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between mt-3">
+                <div className="flex items-center gap-3 text-xs text-gray-400">
+                  {result.postedAt && <span>🕐 {result.postedAt}</span>}
+                  {result.via && <span>via {result.via}</span>}
+                </div>
+                {result.applyLink && (
+                  <a
+                    href={result.applyLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+                  >
+                    Apply Now →
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const ResultsGrid = () => {
     if (!hasSearched) return null;
     if (loading) return <p className="text-gray-500 mt-6">Searching...</p>;
@@ -700,6 +1188,146 @@ export default function Home() {
                 {result.price.toLocaleString()}{result.unit ?? ''}
               </p>
             )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const TrainList = () => {
+    if (!hasSearched) return null;
+    if (loading) return <p className="text-gray-500 mt-6">Looking up trains…</p>;
+    if (trainResults.length === 0) return (
+      <p className="text-gray-600 mt-6">No trains found. Try a train number (e.g. 2150) or station codes (e.g. WAS, NYP, CHI).</p>
+    );
+
+    const fmtT = (d?: string | null): string => {
+      if (!d) return '—';
+      try { return new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+      catch { return '—'; }
+    };
+
+    return (
+      <div className="mt-6 space-y-6">
+        {trainResults.map(train => (
+          <div key={train.trainID || train.trainNum} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+            {/* Header */}
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100">
+              <span className="text-2xl shrink-0">🚂</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-bold text-gray-900">{train.routeName}</h3>
+                  <span className="text-sm text-gray-400">#{train.trainNum}</span>
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                    train.trainState === 'Active'       ? 'bg-green-100 text-green-700' :
+                    train.trainState === 'Predeparture' ? 'bg-blue-100 text-blue-700'  :
+                                                          'bg-gray-100 text-gray-600'
+                  }`}>{train.trainState}</span>
+                  {train.trainTimely && (
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                      train.trainTimely === 'On Time' ? 'bg-green-50 text-green-600' : 'bg-amber-50 text-amber-700'
+                    }`}>{train.trainTimely}</span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  {train.origName || train.origCode} → {train.destName || train.destCode}
+                </p>
+              </div>
+              {train.velocity > 0 && (
+                <div className="shrink-0 text-right">
+                  <p className="text-lg font-bold text-gray-900">{Math.round(train.velocity)} mph</p>
+                  <p className="text-xs text-gray-400">{train.heading}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Alerts banner */}
+            {train.alerts?.length > 0 && (
+              <div className="px-5 py-2 bg-amber-50 border-b border-amber-100">
+                {train.alerts.map((alert, i) => (
+                  <p key={i} className="text-sm text-amber-800">⚠️ {alert}</p>
+                ))}
+              </div>
+            )}
+
+            {/* Station timeline */}
+            {train.stations.length > 0 && (
+              <div className="px-5 py-4">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+                  Stops ({train.stations.length})
+                </p>
+                <div className="space-y-0">
+                  {train.stations.map((st, i) => {
+                    const passed    = !!st.dep;
+                    const atStop    = !!st.arr && !st.dep;
+                    const isCurrent = st.code === train.eventCode;
+                    const isFirst   = i === 0;
+                    const isLast    = i === train.stations.length - 1;
+                    const cmnt      = st.depCmnt || st.arrCmnt;
+                    return (
+                      <div key={`${st.code}-${i}`} className="flex items-start gap-3">
+                        <div className="flex flex-col items-center shrink-0 mt-1">
+                          <span className={`w-2.5 h-2.5 rounded-full ${
+                            passed    ? 'bg-gray-300' :
+                            atStop    ? 'bg-green-500 ring-2 ring-green-200' :
+                            isCurrent ? 'bg-indigo-500 ring-2 ring-indigo-200' :
+                            'bg-white border-2 border-gray-300'
+                          }`} />
+                          {!isLast && <span className="w-px h-7 bg-gray-200 mt-0.5" />}
+                        </div>
+                        <div className="flex-1 min-w-0 pb-3">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className={`text-sm font-bold ${passed ? 'text-gray-400' : 'text-gray-900'}`}>
+                              {st.code}
+                            </span>
+                            {st.name && st.name !== st.code && (
+                              <span className={`text-xs ${passed ? 'text-gray-300' : 'text-gray-500'}`}>{st.name}</span>
+                            )}
+                            {st.bus && (
+                              <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">Bus</span>
+                            )}
+                            {atStop && (
+                              <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-semibold">● At station</span>
+                            )}
+                            {isCurrent && !atStop && !passed && (
+                              <span className="text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-semibold">Next stop</span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-x-3 mt-0.5 text-xs">
+                            <span className="text-gray-400">
+                              Sch:{' '}
+                              {isFirst
+                                ? fmtT(st.schDep)
+                                : isLast
+                                  ? fmtT(st.schArr)
+                                  : `${fmtT(st.schArr)} / ${fmtT(st.schDep)}`}
+                            </span>
+                            {(st.arr || st.dep) && (
+                              <span className="text-gray-700">
+                                Act: {fmtT(st.arr || st.dep)}
+                                {cmnt ? ` · ${cmnt}` : ''}
+                              </span>
+                            )}
+                          </div>
+                          {st.platform && (
+                            <p className="text-xs text-indigo-500 mt-0.5">Platform {st.platform}</p>
+                          )}
+                        </div>
+                        <span className="text-xs text-gray-300 shrink-0 mt-1">{st.tz}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Footer */}
+            <div className="px-5 py-2.5 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
+              <span>Updated: {fmtT(train.updatedAt)}</span>
+              {train.eventCode && (
+                <span>At/next: <span className="font-semibold text-gray-600">{train.eventCode}{train.eventName ? ` — ${train.eventName}` : ''}</span></span>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -935,22 +1563,49 @@ export default function Home() {
             {/* Train */}
             {activeTab === 'train' && (
               <div>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Train # <span className="text-gray-400 font-normal">(optional)</span>
+                    </label>
+                    <input
+                      type="number"
+                      name="trainNum"
+                      value={formData.trainNum}
+                      onChange={handleInputChange}
+                      placeholder="e.g. 2150"
+                      className={inputClass}
+                    />
+                  </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
-                    <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="Departure station" className={inputClass} />
+                    <input
+                      type="text"
+                      name="from"
+                      value={formData.from}
+                      onChange={handleInputChange}
+                      placeholder="Station code (WAS)"
+                      className={inputClass}
+                    />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
-                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="Destination station" className={inputClass} />
+                    <input
+                      type="text"
+                      name="to"
+                      value={formData.to}
+                      onChange={handleInputChange}
+                      placeholder="Station code (NYP)"
+                      className={inputClass}
+                    />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Depart</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Date</label>
                     <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
                   </div>
                   {searchBtn('train')}
                 </div>
-                <ResultsGrid />
+                <TrainList />
               </div>
             )}
 
@@ -996,28 +1651,23 @@ export default function Home() {
                 {/* Category cards */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                   {[
-                    { name: 'Restaurants', desc: 'Food from thousands of local restaurants', emoji: '🍽️', q: 'restaurant' },
-                    { name: 'Grocery',     desc: 'Fresh groceries & everyday essentials',    emoji: '🛒', q: 'grocery' },
-                    { name: 'Pickup',      desc: 'Order ahead and skip the wait',            emoji: '🍱', q: 'pickup' },
-                  ].map(opt => {
-                    const href = !locationLoading && !locationError
-                      ? `https://www.ubereats.com/search?lat=${userLocation.lat}&lng=${userLocation.lng}&q=${encodeURIComponent(opt.q)}`
-                      : `https://www.ubereats.com/search?q=${encodeURIComponent(opt.q)}`;
-                    return (
-                      <div
-                        key={opt.name}
-                        onClick={() => { window.location.href = href; }}
-                        className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md hover:border-[#06C167] transition flex flex-col cursor-pointer"
-                      >
-                        <span className="text-3xl">{opt.emoji}</span>
-                        <p className="font-bold text-gray-900 mt-3 text-lg">{opt.name}</p>
-                        <p className="text-sm text-gray-500 mt-1 flex-1">{opt.desc}</p>
-                        <div className="mt-4 py-2 rounded-lg bg-[#06C167] text-white text-sm font-semibold text-center">
-                          Order {opt.name}
-                        </div>
+                    { name: 'Restaurants', desc: 'Food from thousands of local restaurants', emoji: '🍽️', href: '/dash/restaurants' },
+                    { name: 'Grocery',     desc: 'Fresh groceries & everyday essentials',    emoji: '🛒', href: '/dash/grocery' },
+                    { name: 'Pickup',      desc: 'Order ahead and skip the wait',            emoji: '🍱', href: '/dash/pickup' },
+                  ].map(opt => (
+                    <div
+                      key={opt.name}
+                      onClick={() => router.push(opt.href)}
+                      className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md hover:border-[#06C167] transition flex flex-col cursor-pointer"
+                    >
+                      <span className="text-3xl">{opt.emoji}</span>
+                      <p className="font-bold text-gray-900 mt-3 text-lg">{opt.name}</p>
+                      <p className="text-sm text-gray-500 mt-1 flex-1">{opt.desc}</p>
+                      <div className="mt-4 py-2 rounded-lg bg-[#06C167] text-white text-sm font-semibold text-center">
+                        Order {opt.name}
                       </div>
-                    );
-                  })}
+                    </div>
+                  ))}
                 </div>
 
                 {/* Search box */}
@@ -1030,11 +1680,7 @@ export default function Home() {
                     onKeyDown={e => {
                       if (e.key === 'Enter') {
                         const q = (e.target as HTMLInputElement).value.trim();
-                        if (!q) return;
-                        const href = !locationLoading && !locationError
-                          ? `https://www.ubereats.com/search?lat=${userLocation.lat}&lng=${userLocation.lng}&q=${encodeURIComponent(q)}`
-                          : `https://www.ubereats.com/search?q=${encodeURIComponent(q)}`;
-                        window.location.href = href;
+                        if (q) router.push(`/dash/restaurants?q=${encodeURIComponent(q)}`);
                       }
                     }}
                   />
@@ -1064,47 +1710,89 @@ export default function Home() {
               </div>
             )}
 
-            {/* Study */}
-            {activeTab === 'study' && (
-              <div>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Country / Region</label>
-                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="Study destination" className={inputClass} />
+            {/* Study — Google Classroom */}
+            {activeTab === 'study' && <ClassroomView />}
+
+            {/* Assign modal */}
+            {assigningWork && selectedCourse && (
+              <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+                  <h3 className="text-lg font-bold text-gray-900 mb-1">Assign to Students</h3>
+                  <p className="text-sm text-gray-500 mb-4">{assigningWork.title}</p>
+
+                  <div className="space-y-2 max-h-60 overflow-y-auto mb-4">
+                    {courseStudents.length === 0 && (
+                      <p className="text-sm text-gray-500">No students in this course.</p>
+                    )}
+                    {courseStudents.map(s => (
+                      <label key={s.userId} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer">
+                        <input type="checkbox" checked={assignStudentIds.includes(s.userId)}
+                          onChange={() => toggleAssignStudent(s.userId)}
+                          className="w-4 h-4 accent-indigo-600" />
+                        {s.profile.photoUrl ? (
+                          <img src={s.profile.photoUrl} alt={s.profile.name.fullName} className="w-7 h-7 rounded-full" />
+                        ) : (
+                          <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 text-xs font-bold">
+                            {s.profile.name.fullName?.[0]}
+                          </div>
+                        )}
+                        <span className="text-sm text-gray-800">{s.profile.name.fullName}</span>
+                      </label>
+                    ))}
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Course Type</label>
-                    <input type="text" name="courseType" value={formData.courseType} onChange={handleInputChange} placeholder="E.g. Bachelor, Master" className={inputClass} />
+
+                  {assignError && <p className="text-red-600 text-sm mb-3">{assignError}</p>}
+                  {assignSuccess && <p className="text-green-600 text-sm mb-3">Assigned successfully!</p>}
+
+                  <div className="flex gap-3">
+                    <button onClick={() => { setAssigningWork(null); setAssignSuccess(false); setAssignError(null); }}
+                      className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
+                      Cancel
+                    </button>
+                    <button onClick={confirmAssign} disabled={assignLoading || assignStudentIds.length === 0 || assignSuccess}
+                      className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition">
+                      {assignLoading ? 'Assigning…' : `Assign ${assignStudentIds.length > 0 ? assignStudentIds.length : ''} Student${assignStudentIds.length !== 1 ? 's' : ''}`}
+                    </button>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
-                    <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
-                  </div>
-                  {searchBtn('study')}
                 </div>
-                <ResultsGrid />
               </div>
             )}
 
-            {/* Career */}
+            {/* Jobs (Career) */}
             {activeTab === 'career' && (
               <div>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Job Title</label>
-                    <input type="text" name="jobTitle" value={formData.jobTitle} onChange={handleInputChange} placeholder="E.g. Software Engineer" className={inputClass} />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Job Title / Keywords</label>
+                    <input type="text" name="jobTitle" value={formData.jobTitle} onChange={handleInputChange} placeholder="e.g. Software Engineer, Barista" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Location</label>
-                    <input type="text" name="location" value={formData.location} onChange={handleInputChange} placeholder="City or remote" className={inputClass} />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Location <span className="text-gray-400 font-normal">(worldwide)</span></label>
+                    <input type="text" name="location" value={formData.location} onChange={handleInputChange} placeholder="City, country or Remote" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Industry</label>
-                    <input type="text" name="industry" value={formData.industry} onChange={handleInputChange} placeholder="E.g. Technology, Finance" className={inputClass} />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Job Type</label>
+                    <select name="jobType" value={formData.jobType} onChange={handleInputChange} className={inputClass}>
+                      <option value="">Any type</option>
+                      <option value="Full-time">Full-time</option>
+                      <option value="Part-time">Part-time</option>
+                      <option value="Contract">Contract</option>
+                      <option value="Internship">Internship</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Date Posted</label>
+                    <select name="datePosted" value={formData.datePosted} onChange={handleInputChange} className={inputClass}>
+                      <option value="">Any time</option>
+                      <option value="today">Today</option>
+                      <option value="3days">Last 3 days</option>
+                      <option value="week">Last week</option>
+                      <option value="month">Last month</option>
+                    </select>
                   </div>
                   {searchBtn('career')}
                 </div>
-                <ResultsGrid />
+                <JobList />
               </div>
             )}
 
