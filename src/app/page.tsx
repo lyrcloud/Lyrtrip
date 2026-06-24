@@ -157,36 +157,30 @@ interface TrainData {
   stations: TrainStation[];
 }
 
-interface ClassroomCourse {
-  id: string;
-  name: string;
-  section?: string;
-  descriptionHeading?: string;
-  description?: string;
-  courseState: string;
-  alternateLink?: string;
+interface FlixbusSegment {
+  dep_offset: string;
+  dep_name: string;
+  arr_offset: string;
+  arr_name: string;
+  product_type: string;
+  product: string;
 }
 
-interface ClassroomCourseWork {
+interface FlixbusJourney {
   id: string;
-  title: string;
-  description?: string;
-  dueDate?: { year: number; month: number; day: number };
-  maxPoints?: number;
-  workType: string;
-  state: string;
-  assigneeMode?: string;
-  alternateLink?: string;
+  depOffset: string;
+  arrOffset: string;
+  depName: string;
+  arrName: string;
+  duration: string;
+  changeovers: number;
+  segments: FlixbusSegment[];
+  deeplink: string;
+  price: number | null;
+  currency: string;
+  additionalInfo: string | null;
 }
 
-interface ClassroomStudent {
-  userId: string;
-  profile: {
-    name: { fullName: string };
-    emailAddress: string;
-    photoUrl?: string;
-  };
-}
 
 const mockData: Record<string, SearchResult[]> = {
   hotels: [
@@ -224,7 +218,6 @@ const mockData: Record<string, SearchResult[]> = {
     { id: '2', name: 'City Walking Tour', description: 'Explore hidden gems with a local guide, 2.5 hours', rating: 4.6, price: 45 },
     { id: '3', name: 'Museum Pass — 24 Hours', description: 'Access to 5 major museums with guide', rating: 4.7, price: 85 },
   ],
-  study: [],
   career: [
     { id: '1', name: 'Senior Software Engineer', company: 'Google', jobLocation: 'Remote / Mountain View, CA', salary: '$180,000–220,000/yr', jobType: 'Full-time', postedAt: '2 days ago', description: 'Build and scale distributed systems powering Google\'s core products.' },
     { id: '2', name: 'Product Manager', company: 'Meta', jobLocation: 'Menlo Park, CA', salary: '$150,000–190,000/yr', jobType: 'Full-time', postedAt: '1 day ago', description: 'Drive product strategy and execution for flagship consumer applications.' },
@@ -282,6 +275,10 @@ export default function Home() {
   const [flightPassengerName, setFlightPassengerName] = useState('');
   const [flightPassengers, setFlightPassengers] = useState(1);
 
+  const [uberToken, setUberToken]     = useState<string | null>(null);
+  const [uberProfile, setUberProfile] = useState<{ first_name?: string; last_name?: string; email?: string; picture?: string } | null>(null);
+  const [uberProfileLoading, setUberProfileLoading] = useState(false);
+
   const [uberDropoff, setUberDropoff] = useState<LocationData | null>(null);
   const [uberPickupText, setUberPickupText] = useState('');
   const [uberCity, setUberCity] = useState('');
@@ -294,21 +291,8 @@ export default function Home() {
   const [rideBookingLoading, setRideBookingLoading] = useState(false);
   const [rideBookingError, setRideBookingError] = useState<string | null>(null);
   const [trainResults, setTrainResults] = useState<TrainData[]>([]);
+  const [busJourneys, setBusJourneys] = useState<FlixbusJourney[]>([]);
 
-  // Google Classroom state
-  const [classroomToken, setClassroomToken] = useState<string | null>(null);
-  const [classroomCourses, setClassroomCourses] = useState<ClassroomCourse[]>([]);
-  const [classroomLoading, setClassroomLoading] = useState(false);
-  const [classroomError, setClassroomError] = useState<string | null>(null);
-  const [selectedCourse, setSelectedCourse] = useState<ClassroomCourse | null>(null);
-  const [courseWork, setCourseWork] = useState<ClassroomCourseWork[]>([]);
-  const [courseStudents, setCourseStudents] = useState<ClassroomStudent[]>([]);
-  const [courseTab, setCourseTab] = useState<'coursework' | 'students'>('coursework');
-  const [assigningWork, setAssigningWork] = useState<ClassroomCourseWork | null>(null);
-  const [assignStudentIds, setAssignStudentIds] = useState<string[]>([]);
-  const [assignLoading, setAssignLoading] = useState(false);
-  const [assignError, setAssignError] = useState<string | null>(null);
-  const [assignSuccess, setAssignSuccess] = useState(false);
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -384,10 +368,58 @@ export default function Home() {
     } catch { /* ignore */ }
   }, [user]);
 
+  // Read ?tab= URL param on mount (e.g. after Uber OAuth redirect)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    if (tab) {
+      setActiveTab(tab);
+      window.history.replaceState({}, '', '/');
+    }
+  }, []);
+
+  // Load Uber OAuth token from localStorage on mount
+  useEffect(() => {
+    const token   = localStorage.getItem('uber_access_token');
+    const expires = localStorage.getItem('uber_token_expires');
+    if (!token || (expires && Date.now() >= Number(expires))) {
+      localStorage.removeItem('uber_access_token');
+      localStorage.removeItem('uber_token_expires');
+      return;
+    }
+    setUberToken(token);
+    const lambdaBase = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    if (!lambdaBase) return;
+    setUberProfileLoading(true);
+    fetch(`${lambdaBase}/api/uber/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(data => { if (!data.error) setUberProfile(data); })
+      .catch(() => {})
+      .finally(() => setUberProfileLoading(false));
+  }, []);
+
+  const connectUber = () => {
+    const clientId    = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
+    const redirectUri = `${window.location.origin}/auth/uber/callback`;
+    const scope       = 'profile eats.deliveries';
+    window.location.href =
+      `https://auth.uber.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(scope)}&response_type=code`;
+  };
+
+  const disconnectUber = () => {
+    localStorage.removeItem('uber_access_token');
+    localStorage.removeItem('uber_token_expires');
+    setUberToken(null);
+    setUberProfile(null);
+  };
+
   const switchTab = (tabId: string) => {
     setActiveTab(tabId);
     setResults([]);
     setTrainResults([]);
+    setBusJourneys([]);
     setHasSearched(false);
     setUberDropoff(null);
     setUberPrices([]);
@@ -444,109 +476,6 @@ export default function Home() {
     return (data.results ?? []) as SearchResult[];
   };
 
-  // ---- Google Classroom helpers ----
-
-  const classroomFetch = async (path: string, token: string) => {
-    const res = await fetch(`https://classroom.googleapis.com/v1${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) throw new Error(`Classroom API ${res.status}`);
-    return res.json();
-  };
-
-  const connectClassroom = () => {
-    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-    const g = (window as any).google;
-    if (!clientId || !g) {
-      setClassroomError('Google client ID is not configured. Add NEXT_PUBLIC_GOOGLE_CLIENT_ID to your environment.');
-      return;
-    }
-    const tokenClient = g.accounts.oauth2.initTokenClient({
-      client_id: clientId,
-      scope: [
-        'https://www.googleapis.com/auth/classroom.courses.readonly',
-        'https://www.googleapis.com/auth/classroom.coursework.students',
-        'https://www.googleapis.com/auth/classroom.rosters.readonly',
-      ].join(' '),
-      callback: async (response: { access_token?: string; error?: string }) => {
-        if (response.access_token) {
-          setClassroomToken(response.access_token);
-          await loadCourses(response.access_token);
-        } else {
-          setClassroomError(response.error ?? 'Sign-in cancelled');
-        }
-      },
-    });
-    tokenClient.requestAccessToken();
-  };
-
-  const loadCourses = async (token: string) => {
-    setClassroomLoading(true);
-    setClassroomError(null);
-    try {
-      const data = await classroomFetch('/courses?courseStates=ACTIVE&teacherId=me', token);
-      setClassroomCourses(data.courses ?? []);
-    } catch {
-      setClassroomError('Failed to load courses. Make sure you have teacher access.');
-    } finally {
-      setClassroomLoading(false);
-    }
-  };
-
-  const openCourse = async (course: ClassroomCourse) => {
-    setSelectedCourse(course);
-    setCourseTab('coursework');
-    setCourseWork([]);
-    setCourseStudents([]);
-    if (!classroomToken) return;
-    setClassroomLoading(true);
-    try {
-      const [cwData, stData] = await Promise.all([
-        classroomFetch(`/courses/${course.id}/courseWork?courseWorkStates=PUBLISHED`, classroomToken),
-        classroomFetch(`/courses/${course.id}/students`, classroomToken),
-      ]);
-      setCourseWork(cwData.courseWork ?? []);
-      setCourseStudents(stData.students ?? []);
-    } catch {
-      setClassroomError('Failed to load course data.');
-    } finally {
-      setClassroomLoading(false);
-    }
-  };
-
-  const toggleAssignStudent = (userId: string) => {
-    setAssignStudentIds(prev =>
-      prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]
-    );
-  };
-
-  const confirmAssign = async () => {
-    if (!assigningWork || !selectedCourse || !classroomToken || assignStudentIds.length === 0) return;
-    setAssignLoading(true);
-    setAssignError(null);
-    setAssignSuccess(false);
-    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-    try {
-      const res = await fetch(`${baseUrl}/api/classroom/assign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          courseId: selectedCourse.id,
-          courseWorkId: assigningWork.id,
-          studentIds: assignStudentIds,
-          accessToken: classroomToken,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Assign failed');
-      setAssignSuccess(true);
-      setTimeout(() => { setAssigningWork(null); setAssignStudentIds([]); setAssignSuccess(false); }, 2000);
-    } catch (e: unknown) {
-      setAssignError(e instanceof Error ? e.message : 'Assign failed');
-    } finally {
-      setAssignLoading(false);
-    }
-  };
 
   const searchJobsViaApi = async (): Promise<SearchResult[]> => {
     const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
@@ -584,6 +513,24 @@ export default function Home() {
     return trains;
   };
 
+  const searchBusViaApi = async (): Promise<FlixbusJourney[]> => {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service: 'bus',
+        from:    formData.from,
+        to:      formData.to,
+        date:    formData.depart || null,
+        adult:   1,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Bus search failed');
+    return (data.results ?? []) as FlixbusJourney[];
+  };
+
   const handleSearch = async (service: string) => {
     setLoading(true);
     setHasSearched(true);
@@ -600,6 +547,9 @@ export default function Home() {
       } else if (service === 'train') {
         const data = await searchTrainsViaApi();
         setTrainResults(data);
+      } else if (service === 'bus') {
+        const data = await searchBusViaApi();
+        setBusJourneys(data);
       } else {
         const data = await searchService(service);
         setResults(data);
@@ -608,6 +558,7 @@ export default function Home() {
       console.error('Search error:', error);
       setResults([]);
       setTrainResults([]);
+      setBusJourneys([]);
     } finally {
       setLoading(false);
     }
@@ -764,7 +715,6 @@ export default function Home() {
     { id: 'cruise',  label: '🚢 Cruise' },
     { id: 'dash',    label: '🍔 Dash' },
     { id: 'tourism', label: '🎒 Tourism' },
-    { id: 'study',   label: '📚 Study' },
     { id: 'career',  label: '💼 Jobs' },
   ];
 
@@ -915,170 +865,6 @@ export default function Home() {
             {other.map(r => <FlightRow key={r.id} r={r} />)}
           </>
         )}
-      </div>
-    );
-  };
-
-  const fmtDue = (d?: { year: number; month: number; day: number }) =>
-    d ? `${d.month}/${d.day}/${d.year}` : null;
-
-  const ClassroomView = () => {
-    // Not yet connected
-    if (!classroomToken) return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="text-6xl mb-5">📚</div>
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Google Classroom</h2>
-        <p className="text-gray-500 mb-6 max-w-sm">
-          Connect your Google account to view and manage your courses, assignments, and students.
-        </p>
-        {classroomError && <p className="text-red-600 text-sm mb-4">{classroomError}</p>}
-        <button
-          onClick={connectClassroom}
-          className="flex items-center gap-3 px-6 py-3 bg-white border-2 border-gray-200 rounded-xl font-semibold text-gray-700 hover:border-indigo-400 hover:shadow-md transition"
-        >
-          <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"/><path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"/><path fill="#FBBC05" d="M11.69 28.18C11.25 26.86 11 25.45 11 24s.25-2.86.69-4.18v-5.7H4.34C2.85 17.09 2 20.45 2 24c0 3.55.85 6.91 2.34 9.88l7.35-5.7z"/><path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z"/></svg>
-          Sign in with Google
-        </button>
-        <p className="text-xs text-gray-400 mt-4">Requires teacher access · Classroom scopes</p>
-      </div>
-    );
-
-    // Loading courses or course detail
-    if (classroomLoading && !selectedCourse) return (
-      <div className="flex items-center justify-center py-16 text-gray-500">
-        <div className="animate-spin mr-3 w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full" />
-        Loading courses…
-      </div>
-    );
-
-    if (classroomError) return (
-      <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm">
-        {classroomError}
-        <button onClick={() => setClassroomError(null)} className="ml-4 underline text-xs">Dismiss</button>
-      </div>
-    );
-
-    // Course detail view
-    if (selectedCourse) return (
-      <div className="mt-4">
-        <button onClick={() => { setSelectedCourse(null); setCourseWork([]); setCourseStudents([]); }}
-          className="flex items-center gap-1 text-sm text-indigo-600 hover:underline mb-4">
-          ← Back to Courses
-        </button>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-xl font-bold text-gray-900">{selectedCourse.name}</h3>
-            {selectedCourse.section && <p className="text-sm text-gray-500">Section: {selectedCourse.section}</p>}
-          </div>
-          {selectedCourse.alternateLink && (
-            <a href={selectedCourse.alternateLink} target="_blank" rel="noopener noreferrer"
-              className="text-sm text-indigo-600 hover:underline">Open in Classroom →</a>
-          )}
-        </div>
-
-        {/* Sub-tabs */}
-        <div className="flex border-b mb-4 gap-1">
-          {(['coursework', 'students'] as const).map(t => (
-            <button key={t} onClick={() => setCourseTab(t)}
-              className={`px-4 py-2 text-sm font-semibold capitalize transition ${courseTab === t ? 'text-indigo-600 border-b-2 border-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}>
-              {t} {t === 'coursework' ? `(${courseWork.length})` : `(${courseStudents.length})`}
-            </button>
-          ))}
-        </div>
-
-        {classroomLoading && <div className="text-gray-500 text-sm py-4">Loading…</div>}
-
-        {/* Coursework list */}
-        {courseTab === 'coursework' && !classroomLoading && (
-          <div className="space-y-3">
-            {courseWork.length === 0 && <p className="text-gray-500 text-sm">No published assignments found.</p>}
-            {courseWork.map(cw => (
-              <div key={cw.id} className="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-sm transition">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">{cw.workType?.replace(/_/g, ' ')}</span>
-                      <h4 className="font-bold text-gray-900">{cw.title}</h4>
-                    </div>
-                    {cw.description && <p className="text-sm text-gray-500 mt-1 line-clamp-2">{cw.description}</p>}
-                    <div className="flex flex-wrap gap-3 mt-2 text-xs text-gray-400">
-                      {fmtDue(cw.dueDate) && <span>📅 Due {fmtDue(cw.dueDate)}</span>}
-                      {cw.maxPoints != null && <span>🏆 {cw.maxPoints} pts</span>}
-                      {cw.assigneeMode && <span>👥 {cw.assigneeMode.replace(/_/g, ' ')}</span>}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => { setAssigningWork(cw); setAssignStudentIds([]); setAssignError(null); setAssignSuccess(false); }}
-                    className="shrink-0 px-3 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
-                  >
-                    Assign →
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Students list */}
-        {courseTab === 'students' && !classroomLoading && (
-          <div className="space-y-2">
-            {courseStudents.length === 0 && <p className="text-gray-500 text-sm">No students enrolled.</p>}
-            {courseStudents.map(s => (
-              <div key={s.userId} className="flex items-center gap-3 bg-white border border-gray-200 rounded-xl px-4 py-3">
-                {s.profile.photoUrl ? (
-                  <img src={s.profile.photoUrl} alt={s.profile.name.fullName} className="w-8 h-8 rounded-full" />
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-sm">
-                    {s.profile.name.fullName?.[0]}
-                  </div>
-                )}
-                <div className="min-w-0">
-                  <p className="font-medium text-gray-900 text-sm">{s.profile.name.fullName}</p>
-                  <p className="text-xs text-gray-400">{s.profile.emailAddress}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-
-    // Course list view
-    return (
-      <div className="mt-4">
-        <div className="flex items-center justify-between mb-4">
-          <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
-            My Courses ({classroomCourses.length})
-          </p>
-          <div className="flex gap-2">
-            <button onClick={() => classroomToken && loadCourses(classroomToken)}
-              className="text-sm text-indigo-600 hover:underline">Refresh</button>
-            <button onClick={() => { setClassroomToken(null); setClassroomCourses([]); }}
-              className="text-sm text-gray-400 hover:text-red-500">Disconnect</button>
-          </div>
-        </div>
-        {classroomCourses.length === 0 && (
-          <p className="text-gray-500 text-sm py-4">No active courses found. Make sure you have teacher access to at least one course.</p>
-        )}
-        <div className="space-y-3">
-          {classroomCourses.map(course => (
-            <div key={course.id} className="flex items-center justify-between bg-white border border-gray-200 rounded-xl px-5 py-4 hover:shadow-md transition">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-xl shrink-0">📖</div>
-                <div className="min-w-0">
-                  <h3 className="font-bold text-gray-900 truncate">{course.name}</h3>
-                  <p className="text-sm text-gray-500">
-                    {[course.section, course.descriptionHeading].filter(Boolean).join(' · ') || 'Active'}
-                  </p>
-                </div>
-              </div>
-              <button onClick={() => openCourse(course)}
-                className="shrink-0 ml-4 px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition">
-                Open →
-              </button>
-            </div>
-          ))}
-        </div>
       </div>
     );
   };
@@ -1334,6 +1120,82 @@ export default function Home() {
     );
   };
 
+  const BusList = () => {
+    if (!hasSearched) return null;
+    if (loading) return <p className="text-gray-500 mt-6">Searching bus routes…</p>;
+    if (busJourneys.length === 0) return (
+      <p className="text-gray-600 mt-6">No routes found. Try different cities or date.</p>
+    );
+
+    const fmtT = (offset: string) => {
+      try { return new Date(offset).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+      catch { return offset; }
+    };
+
+    return (
+      <div className="mt-6 space-y-3">
+        <div className="flex items-center mb-2">
+          <span className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
+            {busJourneys.length} route{busJourneys.length !== 1 ? 's' : ''} found
+          </span>
+          <span className="ml-auto flex items-center gap-1 text-xs text-gray-400">
+            <span className="w-4 h-4 bg-[#73D700] rounded-full inline-block" />
+            Powered by Flixbus
+          </span>
+        </div>
+        {busJourneys.map(j => (
+          <div key={j.id} className="flex items-center bg-white rounded-xl border border-gray-200 px-4 py-4 hover:shadow-md transition gap-4">
+            <span className="text-2xl shrink-0">🚌</span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-gray-900 text-base">{fmtT(j.depOffset)}</span>
+                <span className="text-gray-400 text-sm">–</span>
+                <span className="font-bold text-gray-900 text-base">{fmtT(j.arrOffset)}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5 text-xs text-gray-500">
+                <span className="truncate max-w-xs">{j.depName} → {j.arrName}</span>
+                <span className="text-gray-300">|</span>
+                <span>{j.duration}</span>
+                <span className="text-gray-300">|</span>
+                <span className={j.changeovers === 0 ? 'text-green-600 font-semibold' : 'text-orange-500 font-medium'}>
+                  {j.changeovers === 0 ? 'Direct' : `${j.changeovers} changeover${j.changeovers > 1 ? 's' : ''}`}
+                </span>
+              </div>
+              {j.segments.length > 1 && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {j.segments.map((s, i) => (
+                    <span key={i} className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">
+                      {s.dep_name.split(' (')[0]} → {s.arr_name.split(' (')[0]}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {j.additionalInfo && (
+                <p className="text-xs text-orange-500 mt-0.5 font-medium">⚠ {j.additionalInfo}</p>
+              )}
+            </div>
+            <div className="text-right shrink-0 ml-4 flex flex-col items-end gap-1">
+              {j.price != null && (
+                <>
+                  <p className="text-xl font-bold text-indigo-700">{j.currency} {j.price.toFixed(2)}</p>
+                  <p className="text-xs text-gray-500">per person</p>
+                </>
+              )}
+              <a
+                href={j.deeplink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 px-4 py-1.5 bg-[#73D700] text-black text-sm font-semibold rounded-lg hover:opacity-90 transition"
+              >
+                Book on Flixbus →
+              </a>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-linear-to-br from-indigo-50 to-blue-50">
       <main className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
@@ -1541,6 +1403,12 @@ export default function Home() {
             {/* Bus */}
             {activeTab === 'bus' && (
               <div>
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <span className="w-5 h-5 bg-[#73D700] rounded-full shrink-0" />
+                    <span className="text-sm font-medium text-gray-600">Powered by Flixbus</span>
+                  </div>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
@@ -1556,7 +1424,7 @@ export default function Home() {
                   </div>
                   {searchBtn('bus')}
                 </div>
-                <ResultsGrid />
+                <BusList />
               </div>
             )}
 
@@ -1634,37 +1502,95 @@ export default function Home() {
             {/* Dash (Food Delivery) */}
             {activeTab === 'dash' && (
               <div>
-                {/* Header */}
-                <div className="flex items-center justify-between mb-4">
+                {/* Header row */}
+                <div className="flex items-center justify-between mb-5">
                   <div className="flex items-center gap-2 text-sm text-gray-500">
                     <span>📍</span>
                     <span>{uberCity || 'Detecting location…'}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="w-6 h-6 bg-[#06C167] rounded-full flex items-center justify-center text-white text-xs font-bold">U</span>
-                    <span className="text-xs text-gray-400">Powered by Uber Eats</span>
-                  </div>
+                  {uberToken ? (
+                    <div className="flex items-center gap-2">
+                      {uberProfileLoading ? (
+                        <div className="w-4 h-4 border-2 border-[#06C167] border-t-transparent rounded-full animate-spin" />
+                      ) : uberProfile?.picture ? (
+                        <img src={uberProfile.picture} alt="" className="w-7 h-7 rounded-full object-cover" />
+                      ) : (
+                        <span className="w-7 h-7 bg-[#06C167] rounded-full flex items-center justify-center text-white text-xs font-bold">
+                          {uberProfile?.first_name?.[0] ?? 'U'}
+                        </span>
+                      )}
+                      <span className="text-sm text-gray-700 font-medium">
+                        {uberProfile ? `${uberProfile.first_name ?? ''} ${uberProfile.last_name ?? ''}`.trim() : 'Connected'}
+                      </span>
+                      <button onClick={disconnectUber} className="text-xs text-gray-400 hover:text-red-500 underline ml-1">Disconnect</button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={connectUber}
+                      className="flex items-center gap-2 px-4 py-1.5 bg-black text-white text-sm font-semibold rounded-full hover:bg-gray-800 transition"
+                    >
+                      <span className="w-5 h-5 bg-[#06C167] rounded-full flex items-center justify-center text-white text-xs font-bold">U</span>
+                      Connect Uber
+                    </button>
+                  )}
                 </div>
+
+                {!uberToken && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-2xl p-5 mb-6 flex items-start gap-4">
+                    <span className="text-3xl shrink-0">🚀</span>
+                    <div>
+                      <p className="font-semibold text-gray-900 mb-1">Connect your Uber account</p>
+                      <p className="text-sm text-gray-500 mb-3">Sign in with Uber to order food and track deliveries in real time through Uber Eats.</p>
+                      <button
+                        onClick={connectUber}
+                        className="px-5 py-2 bg-black text-white text-sm font-semibold rounded-lg hover:bg-gray-800 transition"
+                      >
+                        Sign in with Uber
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <h3 className="text-xl font-bold text-gray-900 mb-5">What are you craving?</h3>
 
-                {/* Category cards */}
+                {/* Category cards — link to live Uber Eats when connected, internal pages otherwise */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                   {[
-                    { name: 'Restaurants', desc: 'Food from thousands of local restaurants', emoji: '🍽️', href: '/dash/restaurants' },
-                    { name: 'Grocery',     desc: 'Fresh groceries & everyday essentials',    emoji: '🛒', href: '/dash/grocery' },
-                    { name: 'Pickup',      desc: 'Order ahead and skip the wait',            emoji: '🍱', href: '/dash/pickup' },
+                    {
+                      name: 'Restaurants',
+                      desc: 'Food from thousands of local restaurants',
+                      emoji: '🍽️',
+                      liveHref: `https://www.ubereats.com/feed?pl=${userLocation.lat},${userLocation.lng}`,
+                      localHref: '/dash/restaurants',
+                    },
+                    {
+                      name: 'Grocery',
+                      desc: 'Fresh groceries & everyday essentials',
+                      emoji: '🛒',
+                      liveHref: `https://www.ubereats.com/category/grocery?pl=${userLocation.lat},${userLocation.lng}`,
+                      localHref: '/dash/grocery',
+                    },
+                    {
+                      name: 'Pickup',
+                      desc: 'Order ahead and skip the wait',
+                      emoji: '🍱',
+                      liveHref: `https://www.ubereats.com/category/pickup?pl=${userLocation.lat},${userLocation.lng}`,
+                      localHref: '/dash/pickup',
+                    },
                   ].map(opt => (
                     <div
                       key={opt.name}
-                      onClick={() => router.push(opt.href)}
+                      onClick={() => {
+                        if (uberToken) window.open(opt.liveHref, '_blank', 'noopener');
+                        else router.push(opt.localHref);
+                      }}
                       className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md hover:border-[#06C167] transition flex flex-col cursor-pointer"
                     >
                       <span className="text-3xl">{opt.emoji}</span>
                       <p className="font-bold text-gray-900 mt-3 text-lg">{opt.name}</p>
                       <p className="text-sm text-gray-500 mt-1 flex-1">{opt.desc}</p>
                       <div className="mt-4 py-2 rounded-lg bg-[#06C167] text-white text-sm font-semibold text-center">
-                        Order {opt.name}
+                        {uberToken ? `Open Uber Eats →` : `Browse ${opt.name}`}
                       </div>
                     </div>
                   ))}
@@ -1680,11 +1606,19 @@ export default function Home() {
                     onKeyDown={e => {
                       if (e.key === 'Enter') {
                         const q = (e.target as HTMLInputElement).value.trim();
-                        if (q) router.push(`/dash/restaurants?q=${encodeURIComponent(q)}`);
+                        if (!q) return;
+                        if (uberToken) window.open(`https://www.ubereats.com/search?q=${encodeURIComponent(q)}&pl=${userLocation.lat},${userLocation.lng}`, '_blank', 'noopener');
+                        else router.push(`/dash/restaurants?q=${encodeURIComponent(q)}`);
                       }
                     }}
                   />
                 </div>
+
+                {uberToken && (
+                  <p className="text-xs text-gray-400 text-center mt-4">
+                    Ordering via Uber Eats · {uberProfile?.email ?? ''}
+                  </p>
+                )}
               </div>
             )}
 
@@ -1707,54 +1641,6 @@ export default function Home() {
                   {searchBtn('tourism')}
                 </div>
                 <ResultsGrid />
-              </div>
-            )}
-
-            {/* Study — Google Classroom */}
-            {activeTab === 'study' && <ClassroomView />}
-
-            {/* Assign modal */}
-            {assigningWork && selectedCourse && (
-              <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
-                  <h3 className="text-lg font-bold text-gray-900 mb-1">Assign to Students</h3>
-                  <p className="text-sm text-gray-500 mb-4">{assigningWork.title}</p>
-
-                  <div className="space-y-2 max-h-60 overflow-y-auto mb-4">
-                    {courseStudents.length === 0 && (
-                      <p className="text-sm text-gray-500">No students in this course.</p>
-                    )}
-                    {courseStudents.map(s => (
-                      <label key={s.userId} className="flex items-center gap-3 p-2 rounded-lg hover:bg-gray-50 cursor-pointer">
-                        <input type="checkbox" checked={assignStudentIds.includes(s.userId)}
-                          onChange={() => toggleAssignStudent(s.userId)}
-                          className="w-4 h-4 accent-indigo-600" />
-                        {s.profile.photoUrl ? (
-                          <img src={s.profile.photoUrl} alt={s.profile.name.fullName} className="w-7 h-7 rounded-full" />
-                        ) : (
-                          <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 text-xs font-bold">
-                            {s.profile.name.fullName?.[0]}
-                          </div>
-                        )}
-                        <span className="text-sm text-gray-800">{s.profile.name.fullName}</span>
-                      </label>
-                    ))}
-                  </div>
-
-                  {assignError && <p className="text-red-600 text-sm mb-3">{assignError}</p>}
-                  {assignSuccess && <p className="text-green-600 text-sm mb-3">Assigned successfully!</p>}
-
-                  <div className="flex gap-3">
-                    <button onClick={() => { setAssigningWork(null); setAssignSuccess(false); setAssignError(null); }}
-                      className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-sm font-semibold text-gray-600 hover:bg-gray-50 transition">
-                      Cancel
-                    </button>
-                    <button onClick={confirmAssign} disabled={assignLoading || assignStudentIds.length === 0 || assignSuccess}
-                      className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 transition">
-                      {assignLoading ? 'Assigning…' : `Assign ${assignStudentIds.length > 0 ? assignStudentIds.length : ''} Student${assignStudentIds.length !== 1 ? 's' : ''}`}
-                    </button>
-                  </div>
-                </div>
               </div>
             )}
 

@@ -12,6 +12,106 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 
 // ---------------------------------------------------------------------------
+// Flixbus API integration
+// ---------------------------------------------------------------------------
+
+const DEMO_BUS_JOURNEYS = [
+  {
+    id: 'demo-0',
+    depOffset: new Date(Date.now() + 3600000).toISOString().replace('Z', ''),
+    arrOffset: new Date(Date.now() + 3600000 * 10).toISOString().replace('Z', ''),
+    depName: 'Origin City Bus Terminal',
+    arrName: 'Destination City Bus Station',
+    duration: '09:00',
+    changeovers: 0,
+    segments: [],
+    deeplink: 'https://shop.flixbus.com',
+    price: 29.99,
+    currency: 'EUR',
+    additionalInfo: null,
+  },
+  {
+    id: 'demo-1',
+    depOffset: new Date(Date.now() + 3600000 * 5).toISOString().replace('Z', ''),
+    arrOffset: new Date(Date.now() + 3600000 * 16).toISOString().replace('Z', ''),
+    depName: 'Origin City Bus Terminal',
+    arrName: 'Destination City Bus Station',
+    duration: '11:00',
+    changeovers: 1,
+    segments: [],
+    deeplink: 'https://shop.flixbus.com',
+    price: 19.99,
+    currency: 'EUR',
+    additionalInfo: '3 seats left at this price',
+  },
+];
+
+async function searchBusFlixbus({ from, to, date, adult }) {
+  const apiUrl = (process.env.FLIXBUS_API_URL ?? '').replace(/\/$/, '');
+  const apiKey = process.env.FLIXBUS_API_KEY;
+  if (!apiUrl || !apiKey) throw new Error('Flixbus API not configured');
+
+  const headers = { 'x-api-key': apiKey, Accept: 'application/json' };
+
+  const [fromRes, toRes] = await Promise.all([
+    fetch(`${apiUrl}/v1/locations/autocomplete?query=${encodeURIComponent(from)}`, { headers }),
+    fetch(`${apiUrl}/v1/locations/autocomplete?query=${encodeURIComponent(to)}`, { headers }),
+  ]);
+
+  const [fromData, toData] = await Promise.all([fromRes.json(), toRes.json()]);
+
+  if (!Array.isArray(fromData) || fromData.length === 0) throw new Error(`No Flixbus location found for "${from}"`);
+  if (!Array.isArray(toData)   || toData.length   === 0) throw new Error(`No Flixbus location found for "${to}"`);
+
+  const fromId = fromData[0].id;
+  const toId   = toData[0].id;
+
+  // Convert YYYY-MM-DD → DD.MM.YYYY
+  const [yr, mo, dy] = date.split('-');
+  const flixDate = `${dy}.${mo}.${yr}`;
+
+  const tripParams = new URLSearchParams({
+    from_id:   fromId,
+    to_id:     toId,
+    date:      flixDate,
+    time:      '00:00',
+    adult:     String(adult || 1),
+    search_by: 'cities',
+    currency:  'EUR',
+    locale:    'en',
+  });
+
+  const tripRes = await fetch(`${apiUrl}/v2/trips?${tripParams}`, { headers });
+  if (!tripRes.ok) {
+    const err = await tripRes.text();
+    throw new Error(`Flixbus trip search failed (${tripRes.status}): ${err}`);
+  }
+  const tripData = await tripRes.json();
+
+  return (tripData.journeys ?? []).map((j, i) => ({
+    id:           String(i),
+    depOffset:    j.dep_offset,
+    arrOffset:    j.arr_offset,
+    depName:      j.dep_name,
+    arrName:      j.arr_name,
+    duration:     j.duration,
+    changeovers:  j.changeovers,
+    segments:     (j.segments ?? []).map(s => ({
+      dep_offset:   s.dep_offset,
+      dep_name:     s.dep_name,
+      arr_offset:   s.arr_offset,
+      arr_name:     s.arr_name,
+      product_type: s.product_type,
+      product:      s.product,
+    })),
+    deeplink:      j.deeplink,
+    price:         j.fares?.[0]?.price ?? null,
+    currency:      j.fares?.[0]?.currency ?? 'EUR',
+    additionalInfo: j.fares?.[0]?.additional_info ?? null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Mock fallback data (used when real API keys are not configured)
 // ---------------------------------------------------------------------------
 
@@ -749,6 +849,20 @@ async function handleSearch(event) {
       }
     }
 
+    // --- Bus: try Flixbus API ---
+    if (service === 'bus') {
+      const { from, to, date, adult } = body;
+      if (from && to && date && process.env.FLIXBUS_API_URL && process.env.FLIXBUS_API_KEY) {
+        try {
+          const results = await searchBusFlixbus({ from, to, date, adult: Number(adult || 1) });
+          return json(200, { success: true, service, results, total: results.length, source: 'flixbus' });
+        } catch (flixErr) {
+          console.error('Flixbus search error (falling back to demo):', flixErr.message);
+        }
+      }
+      return json(200, { success: true, service, results: DEMO_BUS_JOURNEYS, total: DEMO_BUS_JOURNEYS.length, source: 'demo' });
+    }
+
     // --- Fallback to mock data for all services ---
     const results = mockData[service] || [];
     return json(200, { success: true, service, results, total: results.length, source: 'mock' });
@@ -867,6 +981,39 @@ async function handleStripeCheckout(event) {
   });
 
   return json(200, { url: session.url, sessionId: session.id });
+}
+
+// ---------------------------------------------------------------------------
+// Uber OAuth — token exchange and profile proxy
+// ---------------------------------------------------------------------------
+
+const UBER_CLIENT_SECRET_DEFAULT = process.env.UBER_CLIENT_SECRET;
+
+async function handleUberToken(event) {
+  const clientId     = process.env.UBER_CLIENT_ID     ?? UBER_CLIENT_ID_DEFAULT;
+  const clientSecret = process.env.UBER_CLIENT_SECRET ?? UBER_CLIENT_SECRET_DEFAULT;
+
+  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
+  const { code, redirect_uri } = body;
+  if (!code || !redirect_uri) return json(400, { error: 'Missing code or redirect_uri' });
+
+  const res = await fetch('https://auth.uber.com/oauth/v2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, grant_type: 'authorization_code', redirect_uri, code }),
+  });
+  const data = await res.json();
+  if (!res.ok) return json(400, { error: data.error_description || data.error || 'Token exchange failed' });
+  return json(200, { access_token: data.access_token, expires_in: data.expires_in, scope: data.scope });
+}
+
+async function handleUberMe(event) {
+  const auth = event.headers?.authorization || event.headers?.Authorization;
+  if (!auth) return json(401, { error: 'Missing authorization header' });
+  const res = await fetch('https://api.uber.com/v1.2/me', { headers: { Authorization: auth } });
+  const data = await res.json();
+  if (!res.ok) return json(res.status, { error: data.message || 'Failed to fetch profile' });
+  return json(200, data);
 }
 
 // ---------------------------------------------------------------------------
@@ -993,11 +1140,12 @@ export async function handler(event) {
 
   try {
     if (path.endsWith('/api/search'))                                        return handleSearch(event);
-    if (path.endsWith('/api/classroom/assign')  && method === 'POST')        return handleClassroomAssign(event);
     if (path.endsWith('/api/auth/wechat')       && method === 'POST')        return handleWeChatAuth(event);
     if (path.endsWith('/api/stripe-checkout')   && method === 'POST')        return handleStripeCheckout(event);
     if (path.includes('/api/uber/estimates')    && method === 'GET')         return handleUberEstimates(event);
     if (path.includes('/api/uber/checkout')     && method === 'POST')        return handleUberCheckout(event);
+    if (path.includes('/api/uber/token')        && method === 'POST')        return handleUberToken(event);
+    if (path.includes('/api/uber/me')           && method === 'GET')         return handleUberMe(event);
     if (path.endsWith('/api/tours')             && method === 'GET')         return listTours(event);
     if (path.endsWith('/api/tours')             && method === 'POST')        return createTour(event);
 
