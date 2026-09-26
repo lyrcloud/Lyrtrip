@@ -70,6 +70,45 @@ Parameters:
     Type: String
     Default: "xuJjFMaEj4AfL-2TP-ql-6bKkA8sMPAB"
     Description: Uber OAuth client ID used to build deep-links.
+  DuffelApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Duffel API key (duffel_test_... or duffel_live_...) for flight search and booking.
+  SesFromEmail:
+    Type: String
+    Default: ""
+    Description: Verified SES sender address for flight e-ticket emails (e.g. tickets@lyrtrip.com).
+  TravelportUsername:
+    Type: String
+    Default: ""
+    Description: Travelport TripServices username (e.g. TP12345678).
+  TravelportPassword:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Travelport TripServices password.
+  TravelportClientId:
+    Type: String
+    Default: ""
+    Description: Travelport OAuth client ID.
+  TravelportClientSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Travelport OAuth client secret.
+  TravelportAccessGroup:
+    Type: String
+    Default: ""
+    Description: Travelport access group GUID (XAUTH_TRAVELPORT_ACCESSGROUP header value).
+  TravelportAirMarkup:
+    Type: String
+    Default: "1.08"
+    Description: Multiplier applied to the Travelport air total fare incl. taxes (1.08 = 8% commission).
+  TravelportHotelMarkup:
+    Type: String
+    Default: "1.12"
+    Description: Multiplier applied to Travelport hotel base rate (1.12 = 12% commission).
 
 Conditions:
   UseRoute53:
@@ -158,6 +197,15 @@ Resources:
           STRIPE_SECRET_KEY: !Ref StripeSecretKey
           UBER_SERVER_TOKEN: !Ref UberServerToken
           UBER_CLIENT_ID: !Ref UberClientId
+          DUFFEL_API_KEY: !Ref DuffelApiKey
+          SES_FROM_EMAIL: !Ref SesFromEmail
+          TRAVELPORT_USERNAME: !Ref TravelportUsername
+          TRAVELPORT_PASSWORD: !Ref TravelportPassword
+          TRAVELPORT_CLIENT_ID: !Ref TravelportClientId
+          TRAVELPORT_CLIENT_SECRET: !Ref TravelportClientSecret
+          TRAVELPORT_ACCESS_GROUP: !Ref TravelportAccessGroup
+          TRAVELPORT_AIR_MARKUP: !Ref TravelportAirMarkup
+          TRAVELPORT_HOTEL_MARKUP: !Ref TravelportHotelMarkup
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:
@@ -169,6 +217,12 @@ Resources:
                 - cognito-idp:AdminInitiateAuth
                 - cognito-idp:AdminRespondToAuthChallenge
               Resource: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: '*'
 
   AuthChallengeFunction:
     Type: AWS::Serverless::Function

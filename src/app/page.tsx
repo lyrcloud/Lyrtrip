@@ -28,6 +28,17 @@ interface FlightLayover {
   overnight?: boolean;
 }
 
+interface PassengerDetail {
+  title: string;
+  givenName: string;
+  familyName: string;
+  dob: string;
+  gender: string;
+  nationality: string;
+  email: string;
+  phone: string;
+}
+
 interface SearchResult {
   id: string;
   name: string;
@@ -54,6 +65,22 @@ interface SearchResult {
   extensions?: string[];
   bookingToken?: string;
   airlineLogo?: string;
+  // duffel booking fields
+  duffelOfferId?: string;
+  duffelPassengerIds?: string[];
+  duffelPassengerCount?: number;
+  duffelExpiresAt?: string;
+  totalPrice?: number;
+  basePrice?: number;
+  // travelport booking metadata
+  _tvpt?: {
+    sessionId: string;
+    offeringId: string;
+    productId: string;
+    contentSource: string;
+    basePrice: number;
+    currency: string;
+  };
   // job-specific
   company?: string;
   jobLocation?: string;
@@ -251,6 +278,7 @@ export default function Home() {
     toLocation: null as LocationData | null,
     depart: '',
     return: '',
+    flightPassengers: 1,
     location: '',
     cruiseDays: '',
     cuisine: '',
@@ -274,6 +302,9 @@ export default function Home() {
   const [flightDraft, setFlightDraft] = useState<FlightDraft | null>(null);
   const [flightPassengerName, setFlightPassengerName] = useState('');
   const [flightPassengers, setFlightPassengers] = useState(1);
+  const [flightPassengerDetails, setFlightPassengerDetails] = useState<PassengerDetail[]>([]);
+  const [flightBookingLoading, setFlightBookingLoading] = useState(false);
+  const [flightBookingError, setFlightBookingError] = useState<string | null>(null);
 
   const [uberToken, setUberToken]     = useState<string | null>(null);
   const [uberProfile, setUberProfile] = useState<{ first_name?: string; last_name?: string; email?: string; picture?: string } | null>(null);
@@ -354,10 +385,22 @@ export default function Home() {
     const raw = sessionStorage.getItem(PENDING_BOOKING_KEY);
     if (!raw) return;
     try {
-      const draft: BookingDraft = JSON.parse(raw);
+      const draft = JSON.parse(raw);
       sessionStorage.removeItem(PENDING_BOOKING_KEY);
       // Strip the query param without a reload
       window.history.replaceState({}, '', '/');
+      if (draft.type === 'flight') {
+        const { type: _type, ...flightOnly } = draft;
+        const count = flightOnly.flight?.duffelPassengerCount ?? (flightOnly.flight?._tvpt ? formData.flightPassengers || 1 : 1);
+        const emptyPax: PassengerDetail = { title: 'mr', givenName: '', familyName: '', dob: '', gender: 'm', nationality: '', email: '', phone: '' };
+        setActiveTab('flights');
+        setTimeout(() => {
+          setFlightDraft(flightOnly as FlightDraft);
+          setFlightPassengerDetails(Array.from({ length: count }, () => ({ ...emptyPax })));
+          setFlightPassengers(count);
+        }, 100);
+        return;
+      }
       setActiveTab('hotels');
       // Small delay so the tab renders before we open the modal
       setTimeout(() => {
@@ -469,6 +512,7 @@ export default function Home() {
         to:         formData.to,
         depart:     formData.depart || null,
         returnDate: formData.return || null,
+        passengers: formData.flightPassengers || 1,
       }),
     });
     const data = await res.json();
@@ -624,30 +668,107 @@ export default function Home() {
   };
 
   const confirmFlightBooking = async () => {
-    if (!flightDraft || !flightPassengerName.trim()) return;
-
+    if (!flightDraft) return;
     if (!user) {
       sessionStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify({ type: 'flight', ...flightDraft }));
       router.push('/login');
       return;
     }
-
     const f = flightDraft.flight;
+
+    // Travelport booking path
+    if (f._tvpt) {
+      if (flightPassengerDetails.some(p => !p.givenName.trim() || !p.familyName.trim() || !p.email.trim() || !p.dob || !p.nationality.trim())) return;
+      setFlightBookingLoading(true);
+      setFlightBookingError(null);
+      try {
+        const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+
+        // The server re-prices the offer and charges its own total (fare + taxes + fee)
+        const checkoutRes = await fetch(`${baseUrl}/api/travelport/flight/checkout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId:  f._tvpt.sessionId,
+            offeringId: f._tvpt.offeringId,
+            productId:  f._tvpt.productId,
+            passengers: flightPassengerDetails,
+            flightSummary: {
+              legs:          f.legs,
+              totalDuration: f.totalDuration,
+              from:          flightDraft.from,
+              to:            flightDraft.to,
+              depart:        flightDraft.depart,
+              airline:       f.name,
+              route:         `${flightDraft.from} → ${flightDraft.to}`,
+            },
+          }),
+        });
+        const checkoutData = await checkoutRes.json();
+        if (checkoutData.url) { window.location.href = checkoutData.url; return; }
+        setFlightBookingError(checkoutData.error ?? 'Booking failed. Please try again.');
+      } catch {
+        setFlightBookingError('Could not connect to booking service. Please try again.');
+      } finally {
+        setFlightBookingLoading(false);
+      }
+      return;
+    }
+
+    // Duffel booking path
+    if (f.duffelOfferId) {
+      if (flightPassengerDetails.some(p => !p.givenName.trim() || !p.familyName.trim() || !p.email.trim() || !p.dob || !p.nationality.trim())) return;
+      setFlightBookingLoading(true);
+      setFlightBookingError(null);
+      try {
+        const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+        const res = await fetch(`${baseUrl}/api/flight/checkout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            duffelOfferId:      f.duffelOfferId,
+            duffelPassengerIds: f.duffelPassengerIds,
+            passengers:         flightPassengerDetails,
+            flightSummary: {
+              legs:          f.legs,
+              totalDuration: f.totalDuration,
+              from:          flightDraft.from,
+              to:            flightDraft.to,
+              depart:        flightDraft.depart,
+            },
+          }),
+        });
+        const data = await res.json();
+        if (data.url) { window.location.href = data.url; return; }
+        setFlightBookingError(data.error ?? 'Booking failed. Please try again.');
+      } catch {
+        setFlightBookingError('Could not connect to booking service. Please try again.');
+      } finally {
+        setFlightBookingLoading(false);
+      }
+      return;
+    }
+
+    // Legacy SerpAPI path (no real PNR — keeps old Stripe flow)
+    if (!flightPassengerName.trim()) return;
+    if (!user) {
+      sessionStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify({ type: 'flight', ...flightDraft }));
+      router.push('/login');
+      return;
+    }
     const first = f.legs?.[0];
     const last  = f.legs?.[f.legs.length - 1];
     const totalPrice = (f.price ?? 0) * flightPassengers;
     const routeLabel = `${first?.departure.airport ?? flightDraft.from} → ${last?.arrival.airport ?? flightDraft.to}`;
-    const timeLabel  = first ? `${fmtTime(first.departure.time)} → ${fmtTime(last!.arrival.time)}` : flightDraft.depart;
     const stops      = (f.legs?.length ?? 1) - 1;
     const stopLabel  = stops === 0 ? 'Nonstop' : `${stops} stop${stops > 1 ? 's' : ''}`;
-
     try {
       const res = await fetch(process.env.NEXT_PUBLIC_STRIPE_LAMBDA_URL!, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           hotelName:  `${[...new Set(f.legs?.map(l => l.airline))].join(' + ')} · ${routeLabel}`,
-          address:    `${timeLabel} · ${stopLabel} · ${fmtDuration(f.totalDuration ?? 0)} · ${first?.travelClass ?? 'Economy'}`,
+          address:    `${stopLabel} · ${fmtDuration(f.totalDuration ?? 0)} · ${first?.travelClass ?? 'Economy'}`,
           checkin:    flightDraft.depart,
           checkout:   flightDraft.depart,
           guests:     flightPassengers,
@@ -658,11 +779,9 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.url) { window.location.href = data.url; return; }
-      console.error('Stripe error:', data.error);
     } catch (err) {
       console.error('Stripe fetch failed:', err);
     }
-
     setFlightDraft(null);
     setFlightPassengerName('');
     setFlightPassengers(1);
@@ -842,7 +961,15 @@ export default function Home() {
             <p className="text-xl font-bold text-indigo-700">${r.price?.toLocaleString()}</p>
             <p className="text-xs text-gray-500">per person</p>
             <button
-              onClick={() => { setFlightDraft({ flight: r, from: formData.from, to: formData.to, depart: formData.depart }); setFlightPassengerName(''); setFlightPassengers(1); }}
+              onClick={() => {
+                const count = r.duffelPassengerCount ?? (r._tvpt ? formData.flightPassengers || 1 : 1);
+                const emptyPax: PassengerDetail = { title: 'mr', givenName: '', familyName: '', dob: '', gender: 'm', nationality: '', email: '', phone: '' };
+                setFlightDraft({ flight: r, from: formData.from, to: formData.to, depart: formData.depart });
+                setFlightPassengerDetails(Array.from({ length: count }, () => ({ ...emptyPax })));
+                setFlightPassengerName('');
+                setFlightPassengers(count);
+                setFlightBookingError(null);
+              }}
               className="mt-1 px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
             >
               Select
@@ -1276,22 +1403,26 @@ export default function Home() {
             {/* Flights */}
             {activeTab === 'flights' && (
               <div>
-                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
-                  <div>
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-4">
+                  <div className="col-span-2 md:col-span-1">
                     <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
-                    <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="City or airport code" className={inputClass} />
+                    <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="City or IATA code" className={inputClass} />
                   </div>
-                  <div>
+                  <div className="col-span-2 md:col-span-1">
                     <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
-                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="City or airport code" className={inputClass} />
+                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="City or IATA code" className={inputClass} />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Depart</label>
                     <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Return <span className="text-gray-400 font-normal">(optional)</span></label>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Return <span className="text-gray-400 font-normal">(opt.)</span></label>
                     <input type="date" name="return" value={formData.return} onChange={handleInputChange} className={inputClass} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Adults</label>
+                    <input type="number" name="flightPassengers" value={formData.flightPassengers} onChange={e => setFormData(prev => ({ ...prev, flightPassengers: Math.max(1, Math.min(9, +e.target.value)) }))} min={1} max={9} className={inputClass} />
                   </div>
                   {searchBtn('flights')}
                 </div>
@@ -1773,11 +1904,149 @@ export default function Home() {
 
         {/* Flight booking modal */}
         {flightDraft && (() => {
-          const f = flightDraft.flight;
+          const f     = flightDraft.flight;
           const first = f.legs?.[0];
           const last  = f.legs?.[f.legs.length - 1];
           const stops = (f.legs?.length ?? 1) - 1;
           const stopLabel = stops === 0 ? 'Nonstop' : `${stops} stop${stops > 1 ? 's' : ''}`;
+
+          // Duffel booking modal — full passenger details
+          if (f.duffelOfferId) {
+            const total     = f.totalPrice ?? ((f.price ?? 0) * flightPassengers);
+            const allValid  = flightPassengerDetails.length > 0 && flightPassengerDetails.every(
+              p => p.givenName.trim() && p.familyName.trim() && p.email.trim() && p.dob && p.nationality.trim()
+            );
+            const updatePax = (idx: number, field: keyof PassengerDetail, val: string) => {
+              setFlightPassengerDetails(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
+            };
+            return (
+              <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 px-4 py-6 overflow-y-auto">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 my-auto">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-xl font-bold text-gray-900">Book Flight</h2>
+                    <button onClick={() => setFlightDraft(null)} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+                  </div>
+
+                  {/* Flight summary */}
+                  <div className="bg-indigo-50 rounded-xl p-4 mb-5">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-gray-900 text-base">
+                          {first?.departure.airport} → {last?.arrival.airport}
+                        </p>
+                        <p className="text-sm text-gray-600 mt-0.5">
+                          {first ? `${fmtTime(first.departure.time)} – ${fmtTime(last!.arrival.time)}` : flightDraft.depart}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {fmtDuration(f.totalDuration ?? 0)} · {stopLabel} · {[...new Set(f.legs?.map(l => l.airline))].join(' + ')}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-bold text-indigo-700">${total.toLocaleString()}</p>
+                        <p className="text-xs text-gray-500">total · {flightPassengers} pax</p>
+                        <p className="text-xs text-indigo-500 mt-0.5">incl. taxes &amp; fees</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Passenger forms */}
+                  <div className="space-y-5 mb-5 max-h-[50vh] overflow-y-auto pr-1">
+                    {flightPassengerDetails.map((pax, idx) => (
+                      <div key={idx} className="border border-gray-200 rounded-xl p-4 space-y-3">
+                        {flightPassengerDetails.length > 1 && (
+                          <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wide">Passenger {idx + 1}</p>
+                        )}
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">Title</label>
+                            <select value={pax.title} onChange={e => updatePax(idx, 'title', e.target.value)}
+                              className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                              <option value="mr">Mr</option>
+                              <option value="ms">Ms</option>
+                              <option value="mrs">Mrs</option>
+                              <option value="miss">Miss</option>
+                              <option value="dr">Dr</option>
+                            </select>
+                          </div>
+                          <div className="col-span-2">
+                            <label className="block text-xs font-medium text-gray-600 mb-1">First Name <span className="text-red-500">*</span></label>
+                            <input type="text" value={pax.givenName} onChange={e => updatePax(idx, 'givenName', e.target.value)}
+                              placeholder="Given name" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Last Name <span className="text-red-500">*</span></label>
+                          <input type="text" value={pax.familyName} onChange={e => updatePax(idx, 'familyName', e.target.value)}
+                            placeholder="Family name" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">Date of Birth <span className="text-red-500">*</span></label>
+                            <input type="date" value={pax.dob} onChange={e => updatePax(idx, 'dob', e.target.value)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">Gender</label>
+                            <select value={pax.gender} onChange={e => updatePax(idx, 'gender', e.target.value)}
+                              className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                              <option value="m">Male</option>
+                              <option value="f">Female</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Nationality <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(2-letter code, e.g. US, GB, CN)</span></label>
+                          <input type="text" value={pax.nationality} onChange={e => updatePax(idx, 'nationality', e.target.value.toUpperCase().slice(0, 2))}
+                            placeholder="US" maxLength={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Email <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(ticket will be sent here)</span></label>
+                          <input type="email" value={pax.email} onChange={e => updatePax(idx, 'email', e.target.value)}
+                            placeholder="passenger@email.com" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-gray-400 font-normal">(with country code)</span></label>
+                          <input type="tel" value={pax.phone} onChange={e => updatePax(idx, 'phone', e.target.value)}
+                            placeholder="+1 555 000 0000" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {flightBookingError && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-700">
+                      {flightBookingError}
+                    </div>
+                  )}
+
+                  <div className="flex gap-3">
+                    <button onClick={() => { setFlightDraft(null); setFlightBookingError(null); }}
+                      className="flex-1 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition">
+                      Cancel
+                    </button>
+                    <button
+                      onClick={confirmFlightBooking}
+                      disabled={(user && !allValid) || flightBookingLoading}
+                      className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition flex items-center justify-center gap-2"
+                    >
+                      {flightBookingLoading ? (
+                        <><span className="animate-spin">⟳</span> Processing…</>
+                      ) : user ? (
+                        `Pay $${total.toLocaleString()} →`
+                      ) : 'Sign in to Book'}
+                    </button>
+                  </div>
+                  {!user && (
+                    <p className="text-center text-xs text-gray-500 mt-2">
+                      <button onClick={() => { sessionStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify({ type: 'flight', ...flightDraft })); router.push('/login'); }} className="text-indigo-600 underline">Sign in</button> to complete your booking
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          // Legacy (SerpAPI) modal — simple name + count
           const total = (f.price ?? 0) * flightPassengers;
           return (
             <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
@@ -1786,64 +2055,34 @@ export default function Home() {
                 <p className="text-gray-600 text-sm mb-4">
                   {[...new Set(f.legs?.map(l => l.airline))].join(' + ')}
                 </p>
-
                 <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm text-gray-700 space-y-1">
                   <div className="flex items-center gap-2 font-semibold text-gray-900">
                     {first && <><span>{fmtTime(first.departure.time)}</span><span className="text-gray-400">→</span><span>{fmtTime(last!.arrival.time)}</span></>}
-                    <span className="ml-1 text-gray-500 font-normal text-xs">
-                      {first?.departure.airport} → {last?.arrival.airport}
-                    </span>
+                    <span className="ml-1 text-gray-500 font-normal text-xs">{first?.departure.airport} → {last?.arrival.airport}</span>
                   </div>
                   <p>{fmtDuration(f.totalDuration ?? 0)} · {stopLabel} · {first?.travelClass ?? 'Economy'}</p>
-                  {f.extensions?.[0] && <p className="text-gray-500">{f.extensions.slice(0, 2).join(' · ')}</p>}
                 </div>
-
                 <div className="space-y-3 mb-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
-                    <input
-                      type="text"
-                      value={flightPassengerName}
-                      onChange={e => setFlightPassengerName(e.target.value)}
-                      placeholder="Enter passenger name"
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
+                    <input type="text" value={flightPassengerName} onChange={e => setFlightPassengerName(e.target.value)}
+                      placeholder="Passenger name" className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Passengers</label>
-                    <input
-                      type="number"
-                      value={flightPassengers}
-                      onChange={e => setFlightPassengers(Math.max(1, +e.target.value))}
-                      min={1}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
+                    <input type="number" value={flightPassengers} onChange={e => setFlightPassengers(Math.max(1, +e.target.value))}
+                      min={1} className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                   </div>
                 </div>
-
-                <div className="bg-indigo-50 rounded-lg p-3 mb-5 text-sm space-y-1">
-                  <div className="flex justify-between text-gray-700">
-                    <span>${f.price?.toLocaleString()} × {flightPassengers} passenger{flightPassengers > 1 ? 's' : ''}</span>
-                    <span>${total.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between font-bold text-indigo-700 border-t border-indigo-200 pt-1 mt-1">
-                    <span>Total</span>
-                    <span>${total.toLocaleString()}</span>
+                <div className="bg-indigo-50 rounded-lg p-3 mb-5 text-sm">
+                  <div className="flex justify-between font-bold text-indigo-700">
+                    <span>Total</span><span>${total.toLocaleString()}</span>
                   </div>
                 </div>
-
                 <div className="flex gap-3">
-                  <button
-                    onClick={() => setFlightDraft(null)}
-                    className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={confirmFlightBooking}
-                    disabled={!flightPassengerName.trim()}
-                    className="flex-1 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition"
-                  >
+                  <button onClick={() => setFlightDraft(null)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">Cancel</button>
+                  <button onClick={confirmFlightBooking} disabled={!flightPassengerName.trim()}
+                    className="flex-1 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition">
                     {user ? 'Confirm Booking →' : 'Sign in to Book'}
                   </button>
                 </div>
