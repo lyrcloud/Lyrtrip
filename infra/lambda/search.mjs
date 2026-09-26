@@ -326,6 +326,9 @@ const TVPT_HOTEL_BASE = 'https://api.pp.travelport.net/11/hotel';
 const TVPT_AIR_MARKUP   = parseFloat(process.env.TRAVELPORT_AIR_MARKUP   || '1.08'); // 8%
 const TVPT_HOTEL_MARKUP = parseFloat(process.env.TRAVELPORT_HOTEL_MARKUP || '1.12'); // 12%
 
+// Where Stripe sends the customer back to (override for local/staging testing)
+const SITE_URL = (process.env.SITE_URL || 'https://www.lyrtrip.com').replace(/\/$/, '');
+
 let tvptToken       = null;
 let tvptTokenExpiry = 0;
 
@@ -483,11 +486,56 @@ async function searchFlightsTravelport({ from, to, depart, returnDate, passenger
   });
 }
 
-// Hotel availability by chain/property code — returns results in the same shape as Amadeus
-async function searchHotelsTravelport({ chainCode, propertyCode, checkin, checkout, rooms = 1 }) {
-  if (!chainCode || !propertyCode) throw new Error('chainCode and propertyCode are required');
-  const nights = Math.max(1, Math.round((new Date(checkout) - new Date(checkin)) / 86_400_000));
+const titleCase = s => (s ?? '').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
 
+// Hotels near a coordinate — returns results in the same shape as SerpAPI hotels, plus _tvptHotel keys
+async function searchHotelsTravelport({ lat, lng, checkin, checkout, guests = 1 }) {
+  const data = await tvptHotelFetch('/search/properties/search', {
+    PropertiesQuerySearch: {
+      CheckInDate:    checkin,
+      CheckOutDate:   checkout,
+      AggregatorList: ['TVPT'],
+      RoomStayCandidate: [{
+        '@type':     'RoomStayCandidate',
+        GuestCounts: { '@type': 'GuestCounts', GuestCount: [{ '@type': 'GuestCount', count: Number(guests) || 1 }] },
+      }],
+      SearchBy: {
+        '@type':      'SearchByGeoLocation',
+        SearchRadius: { value: '10', unitOfDistance: 'Miles' },
+        Latitude:     String(lat),
+        Longitude:    String(lng),
+      },
+    },
+  });
+
+  const props = data.PropertiesResponse?.Properties?.PropertyInfo ?? [];
+  return props
+    // Only properties with a bookable rate for these dates
+    .filter(pi => pi.LowestAvailableRate?.value && pi.availability !== 'Closed')
+    .slice(0, 30)
+    .map(pi => {
+      const p    = pi.Property ?? {};
+      const addr = p.Address ?? {};
+      const key  = p.PropertyKey ?? {};
+      const stars = p.Rating?.find(r => r.provider === 'AAA')?.value ?? p.Rating?.[0]?.value;
+      return {
+        id:            `tvpth_${key.chainCode}_${key.propertyCode}`,
+        name:          p.name === p.name?.toUpperCase() ? titleCase(p.name) : p.name,
+        description:   [...(addr.AddressLine ?? []), addr.City, addr.StateProv?.value].filter(Boolean).join(', '),
+        rating:        stars,
+        hotelClass:    stars,
+        // Lowest nightly rate before taxes; the room list shows the full price incl. taxes
+        pricePerNight: Math.ceil(pi.LowestAvailableRate.value * TVPT_HOTEL_MARKUP),
+        currency:      pi.LowestAvailableRate.code ?? 'USD',
+        imageUrl:      p.Image?.[0]?.value,
+        amenities:     (p.PropertyAmenity ?? []).map(a => a.description).filter(Boolean).slice(0, 6),
+        _tvptHotel:    { chainCode: key.chainCode, propertyCode: key.propertyCode, distanceMiles: pi.Distance?.value },
+      };
+    });
+}
+
+// Room offers for one property. Prices include taxes; the charge is marked up on TotalPrice.
+async function tvptHotelRooms({ chainCode, propertyCode, checkin, checkout, guests = 1 }) {
   const data = await tvptHotelFetch('/availability/catalogofferingshospitality', {
     CatalogOfferingsQueryRequest: {
       CatalogOfferingsRequest: [{
@@ -496,7 +544,7 @@ async function searchHotelsTravelport({ chainCode, propertyCode, checkin, checko
         StayDates:         { start: checkin, end: checkout },
         HotelSearchCriterion: {
           '@type':         'HotelSearchCriterion',
-          numberOfRooms:   rooms,
+          numberOfRooms:   1,
           AggregatorList:  ['TVPT'],
           PropertyRequest: [{ '@type': 'PropertyRequest', PropertyKey: { '@type': 'PropertyKey', chainCode, propertyCode } }],
           RoomStayCandidates: {
@@ -505,7 +553,7 @@ async function searchHotelsTravelport({ chainCode, propertyCode, checkin, checko
               '@type': 'RoomStayCandidate',
               GuestCounts: {
                 '@type': 'GuestCounts',
-                GuestCount: [{ '@type': 'GuestCount', count: '1', ageQualifyingCode: '10' }],
+                GuestCount: [{ '@type': 'GuestCount', count: String(Number(guests) || 1), ageQualifyingCode: '10' }],
               },
             }],
           },
@@ -514,42 +562,54 @@ async function searchHotelsTravelport({ chainCode, propertyCode, checkin, checko
     },
   });
 
-  const resp      = data.CatalogOfferingsHospitalityResponse ?? {};
-  const offerings = resp.CatalogOfferings?.CatalogOffering ?? [];
+  const resp = data.CatalogOfferingsHospitalityResponse ?? {};
+  const err  = resp.Result?.Error?.[0];
+  if (err && !resp.CatalogOfferings) throw Object.assign(new Error(err.Message ?? 'Hotel availability failed'), { status: 400 });
 
-  return offerings.slice(0, 20).map(o => {
-    const prod  = o.ProductOptions?.[0]?.Product?.[0] ?? {};
-    const room  = prod.RoomType ?? {};
-    const chars = room.RoomCharacteristics ?? {};
-    const bed   = chars.BedConfiguration?.[0] ?? {};
-    const desc  = room.Description?.value ?? `${chainCode} Hotel`;
-    const price = o.Price ?? {};
-    const base  = price.Base ?? 0;
-    const markedUp = Math.ceil(base * TVPT_HOTEL_MARKUP * 100) / 100;
-
+  const nights = Math.max(1, Math.round((new Date(checkout) - new Date(checkin)) / 86_400_000));
+  return (resp.CatalogOfferings?.CatalogOffering ?? []).map(o => {
+    const prod    = o.ProductOptions?.[0]?.Product?.[0] ?? {};
+    const room    = prod.RoomType ?? {};
+    const chars   = room.RoomCharacteristics ?? {};
+    const bed     = chars.BedConfiguration?.[0] ?? {};
+    const tc      = o.TermsAndConditions ?? {};
+    const penalty = tc.CancelPenalty?.[0] ?? {};
+    const price   = o.Price ?? {};
+    const supplierTotal = price.TotalPrice ?? price.Base ?? 0;
+    const total   = Math.ceil(supplierTotal * TVPT_HOTEL_MARKUP * 100) / 100;
     return {
-      id:          o.id ?? o.Identifier?.value,
-      name:        desc,
-      description: [`${bed.quantity ?? ''} ${bed.bedType ?? ''}`.trim(), chars.smokingAllowed === 'No' ? 'Non-smoking' : null].filter(Boolean).join(' · '),
-      rating:      undefined,
-      price:       Math.ceil((markedUp / nights) * 100) / 100,
-      totalPrice:  markedUp,
-      currency:    price.CurrencyCode?.value ?? 'USD',
-      unit:        '/night',
-      bedType:     bed.bedType,
+      offerId:        o.id ?? o.Identifier?.value,
+      bookingCode:    prod.bookingCode ?? '',
+      name:           [room.Description?.value, bed.quantity && bed.bedType ? `${bed.quantity} × ${bed.bedType}` : bed.bedType].filter(Boolean).join(' · ') || 'Room',
+      rateDescription: (tc.Description ?? []).map(d => d.value ?? d).filter(v => typeof v === 'string').join(' ').slice(0, 300),
+      smoking:        chars.smokingAllowed,
+      refundable:     penalty.Refundable !== 'No',
+      cancelPolicy:   penalty.Description ?? '',
+      guaranteeType:  tc.Guarantee?.[0]?.guaranteeType ?? '',
       nights,
-      checkin,
-      checkout,
-      _tvpt: {
-        offeringId:   o.id ?? o.Identifier?.value,
-        chainCode,
-        propertyCode,
-        bookingCode:  prod.bookingCode ?? '',
-        basePrice:    base,
-        currency:     price.CurrencyCode?.value ?? 'USD',
-      },
+      supplierTotal,
+      taxes:          price.TotalTaxes ?? 0,
+      total,
+      perNight:       Math.ceil((total / nights) * 100) / 100,
+      currency:       price.CurrencyCode?.value ?? 'USD',
     };
-  });
+  }).sort((a, b) => a.total - b.total);
+}
+
+async function handleTravelportHotelRooms(event) {
+  if (!process.env.TRAVELPORT_CLIENT_ID) return json(500, { error: 'Travelport is not configured' });
+  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
+  const { chainCode, propertyCode, checkin, checkout, guests = 1 } = body;
+  if (!chainCode || !propertyCode || !checkin || !checkout) {
+    return json(400, { error: 'chainCode, propertyCode, checkin and checkout are required' });
+  }
+  try {
+    const rooms = await tvptHotelRooms({ chainCode, propertyCode, checkin, checkout, guests });
+    // offerId and supplier cost stay on the server
+    return json(200, { rooms: rooms.map(({ offerId: _o, supplierTotal: _s, ...r }) => r) });
+  } catch (err) {
+    return json(err.status ?? 500, { error: err.message });
+  }
 }
 
 // Price a catalog offering with Travelport. The charge is always computed here from
@@ -740,8 +800,8 @@ async function handleTravelportFlightCheckout(event) {
     }],
     metadata:       { type: 'travelport_flight', flightOrderId: orderId },
     customer_email: passengers[0]?.email || undefined,
-    success_url:    `https://www.lyrtrip.com/booking/success?session_id={CHECKOUT_SESSION_ID}&type=travelport_flight`,
-    cancel_url:     'https://www.lyrtrip.com/booking/cancel',
+    success_url:    `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=travelport_flight`,
+    cancel_url:     `${SITE_URL}/booking/cancel`,
   });
 
   await db.collection('flight_bookings').updateOne(
@@ -895,44 +955,62 @@ async function handleTravelportFlightConfirm(event) {
   });
 }
 
-// Stripe checkout for a Travelport hotel room
+// Stripe checkout for a Travelport hotel room (prepaid model).
+// The guest pays Lyrtrip through Stripe; after payment Lyrtrip pays the hotel with a
+// single-use Stripe Issuing virtual card (see handleTravelportHotelConfirm).
 async function handleTravelportHotelCheckout(event) {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!secretKey)                         return json(500, { error: 'Stripe is not configured' });
   if (!process.env.TRAVELPORT_CLIENT_ID) return json(500, { error: 'Travelport is not configured' });
 
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { chainCode, propertyCode, offeringId, bookingCode, checkin, checkout,
-          guestName, guestEmail, hotelName, basePrice, currency = 'USD' } = body;
+  const { chainCode, propertyCode, bookingCode, checkin, checkout, guests = 1, guest = {}, hotelName } = body;
 
-  if (!chainCode || !propertyCode || !offeringId || !checkin || !checkout) {
-    return json(400, { error: 'chainCode, propertyCode, offeringId, checkin, checkout are required' });
+  if (!chainCode || !propertyCode || !bookingCode || !checkin || !checkout) {
+    return json(400, { error: 'chainCode, propertyCode, bookingCode, checkin and checkout are required' });
+  }
+  if (!guest.givenName?.trim() || !guest.familyName?.trim() || !guest.email?.trim()) {
+    return json(400, { error: 'Guest first name, last name and email are required' });
   }
 
-  const nights   = Math.max(1, Math.round((new Date(checkout) - new Date(checkin)) / 86_400_000));
-  const base     = parseFloat(basePrice ?? 0);
-  const markedUp = Math.ceil(base * TVPT_HOTEL_MARKUP * 100) / 100;
-  const amtCents = Math.round(markedUp * 100);
+  // Price on the server from a fresh availability call; this is the amount we charge
+  let room;
+  try {
+    const rooms = await tvptHotelRooms({ chainCode, propertyCode, checkin, checkout, guests });
+    room = rooms.find(r => r.bookingCode === bookingCode);
+  } catch (err) {
+    return json(err.status ?? 500, { error: `Could not confirm room price: ${err.message}` });
+  }
+  if (!room) return json(409, { error: 'That room is no longer available. Please choose another room.' });
 
   const db  = await getDb();
   const now = new Date().toISOString();
-
-  const result  = await db.collection('hotel_bookings').insertOne({
+  const result = await db.collection('hotel_bookings').insertOne({
     status:        'pending_stripe',
     provider:      'travelport',
     chainCode,
     propertyCode,
-    offeringId,
-    bookingCode:   bookingCode ?? '',
+    bookingCode,
+    roomName:      room.name,
+    cancelPolicy:  room.cancelPolicy,
+    refundable:    room.refundable,
     checkin,
     checkout,
-    nights,
-    guestName:     guestName ?? '',
-    guestEmail:    guestEmail ?? '',
-    hotelName:     hotelName ?? `${chainCode} Hotel`,
-    basePrice:     base,
-    markedUpPrice: markedUp,
-    currency,
+    nights:        room.nights,
+    guests:        Number(guests) || 1,
+    guest:         {
+      givenName:  guest.givenName.trim(),
+      familyName: guest.familyName.trim(),
+      email:      guest.email.trim(),
+      phone:      guest.phone?.trim() ?? '',
+    },
+    guestName:     `${guest.givenName.trim()} ${guest.familyName.trim()}`,
+    guestEmail:    guest.email.trim(),
+    hotelName:     hotelName ?? `${chainCode} ${propertyCode}`,
+    supplierTotal: room.supplierTotal,
+    taxes:         room.taxes,
+    markedUpPrice: room.total,
+    currency:      room.currency,
     createdAt:     now,
     updatedAt:     now,
   });
@@ -944,19 +1022,19 @@ async function handleTravelportHotelCheckout(event) {
     payment_method_types: ['card'],
     line_items: [{
       price_data: {
-        currency:    currency.toLowerCase(),
-        unit_amount: amtCents,
+        currency:    room.currency.toLowerCase(),
+        unit_amount: Math.round(room.total * 100),
         product_data: {
-          name:        hotelName ?? `${chainCode} Hotel`,
-          description: `${nights} night${nights !== 1 ? 's' : ''} · ${checkin} → ${checkout} · all taxes & Lyrtrip fee`,
+          name:        `${hotelName ?? 'Hotel'} — ${room.name}`.slice(0, 250),
+          description: `${room.nights} night${room.nights !== 1 ? 's' : ''} · ${checkin} → ${checkout} · taxes & Lyrtrip fee included · ${room.refundable ? 'refundable' : 'non-refundable'}`,
         },
       },
       quantity: 1,
     }],
     metadata:       { type: 'travelport_hotel', hotelOrderId: orderId },
-    customer_email: guestEmail || undefined,
-    success_url:    `https://www.lyrtrip.com/booking/success?session_id={CHECKOUT_SESSION_ID}&type=travelport_hotel`,
-    cancel_url:     'https://www.lyrtrip.com/booking/cancel',
+    customer_email: guest.email.trim(),
+    success_url:    `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=travelport_hotel`,
+    cancel_url:     `${SITE_URL}/booking/cancel`,
   });
 
   await db.collection('hotel_bookings').updateOne(
@@ -967,7 +1045,28 @@ async function handleTravelportHotelCheckout(event) {
   return json(200, { url: session.url, orderId });
 }
 
-// Verify Stripe payment then create the Travelport hotel reservation
+// Travelport card-type codes for Stripe card brands
+const TVPT_CARD_CODE = { visa: 'VI', mastercard: 'CA', amex: 'AX', 'american express': 'AX', discover: 'DS' };
+
+// Single-use virtual card, capped at the hotel's price, used to pay the hotel through Travelport
+async function issueHotelPaymentCard(stripe, { amount, currency, orderId }) {
+  const cardholder = process.env.STRIPE_ISSUING_CARDHOLDER_ID;
+  if (!cardholder) throw new Error('STRIPE_ISSUING_CARDHOLDER_ID is not configured');
+  const card = await stripe.issuing.cards.create({
+    cardholder,
+    currency: currency.toLowerCase(),
+    type:     'virtual',
+    status:   'active',
+    // 2% headroom for FX/rounding at the hotel; nothing beyond this can be charged
+    spending_controls: { spending_limits: [{ amount: Math.ceil(amount * 100 * 1.02), interval: 'all_time' }] },
+    metadata: { hotelOrderId: orderId },
+  });
+  const full = await stripe.issuing.cards.retrieve(card.id, { expand: ['number', 'cvc'] });
+  return full;
+}
+
+// Verify Stripe payment, pay the hotel with a virtual card, and create the Travelport reservation.
+// Any failure after payment refunds the guest and cancels the card.
 async function handleTravelportHotelConfirm(event) {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!secretKey) return json(500, { error: 'Stripe is not configured' });
@@ -990,54 +1089,136 @@ async function handleTravelportHotelConfirm(event) {
   const orderId = session.metadata?.hotelOrderId;
   if (!orderId || !ObjectId.isValid(orderId)) return json(400, { error: 'Invalid order ID' });
 
-  const db    = await getDb();
-  const order = await db.collection('hotel_bookings').findOne({ _id: new ObjectId(orderId) });
-  if (!order) return json(404, { error: 'Order not found' });
+  const db   = await getDb();
+  const coll = db.collection('hotel_bookings');
+  const summary = o => ({
+    orderId,
+    hotelName:  o.hotelName,
+    roomName:   o.roomName,
+    checkin:    o.checkin,
+    checkout:   o.checkout,
+    nights:     o.nights,
+    totalPrice: o.markedUpPrice,
+    currency:   o.currency,
+  });
 
-  if (order.status === 'confirmed') {
-    return json(200, { success: true, bookingRef: order.tvptBookingRef, orderId });
-  }
-  if (order.status === 'booking_failed') {
-    return json(500, { error: `Booking failed. Contact support@lyrtrip.com, order ID: ${orderId}` });
-  }
-
-  await db.collection('hotel_bookings').updateOne(
-    { _id: order._id },
-    { $set: { status: 'processing', updatedAt: new Date().toISOString() } }
+  // Claim the order atomically so two confirm calls can never book twice
+  const order = await coll.findOneAndUpdate(
+    { _id: new ObjectId(orderId), status: 'pending_stripe' },
+    { $set: { status: 'processing', stripePaymentIntent: session.payment_intent, updatedAt: new Date().toISOString() } },
+    { returnDocument: 'after' }
   );
+  if (!order) {
+    const existing = await coll.findOne({ _id: new ObjectId(orderId) });
+    if (!existing) return json(404, { error: 'Order not found' });
+    if (existing.status === 'confirmed') {
+      return json(200, { success: true, bookingRef: existing.tvptBookingRef, hotelConfirmation: existing.hotelConfirmation, ...summary(existing) });
+    }
+    if (existing.status === 'processing') return json(202, { pending: true, message: 'Your booking is being confirmed. Please refresh in a moment.' });
+    return json(500, { error: `This booking could not be completed and your payment has been refunded. Order ID: ${orderId}` });
+  }
 
-  // Create the hotel reservation via Travelport
+  const fail = async (stage, err, card) => {
+    console.error(`Hotel booking failed at ${stage}:`, err.message);
+    if (card) await stripe.issuing.cards.update(card.id, { status: 'canceled' }).catch(e => console.error('Card cancel failed:', e.message));
+    let refunded = false;
+    try {
+      await stripe.refunds.create({ payment_intent: session.payment_intent, metadata: { hotelOrderId: orderId } });
+      refunded = true;
+    } catch (e) {
+      console.error('Refund failed:', e.message);
+    }
+    await coll.updateOne({ _id: order._id }, { $set: {
+      status: refunded ? 'refunded' : 'booking_failed', bookingError: `${stage}: ${err.message}`, updatedAt: new Date().toISOString(),
+    } });
+    return json(500, {
+      error: refunded
+        ? `We couldn't reserve this room (${err.message}). Your payment has been refunded in full. Order ID: ${orderId}`
+        : `We couldn't reserve this room and the automatic refund failed. Contact support@lyrtrip.com with order ID: ${orderId}`,
+    });
+  };
+
+  // Re-check the room: offer IDs expire, so match on the room's booking code and hold the price
+  let room;
+  try {
+    const rooms = await tvptHotelRooms({
+      chainCode: order.chainCode, propertyCode: order.propertyCode,
+      checkin: order.checkin, checkout: order.checkout, guests: order.guests,
+    });
+    room = rooms.find(r => r.bookingCode === order.bookingCode);
+  } catch (err) {
+    return fail('availability', err);
+  }
+  if (!room) return fail('availability', new Error('room no longer available'));
+  if (room.supplierTotal > order.supplierTotal * 1.01) {
+    return fail('availability', new Error(`hotel price rose from ${order.supplierTotal} to ${room.supplierTotal}`));
+  }
+
+  let card;
+  try {
+    card = await issueHotelPaymentCard(stripe, { amount: room.supplierTotal, currency: room.currency, orderId });
+  } catch (err) {
+    return fail('virtual card', err);
+  }
+
   let reservationRes;
   try {
-    reservationRes = await tvptHotelFetch('/book/reservations', {
-      ReservationQueryHospitality: {
-        '@type': 'ReservationQueryHospitality',
-        OfferIdentifier: { Identifier: { value: order.offeringId } },
-        StayDates: { start: order.checkin, end: order.checkout },
-        GuestCount: 1,
-        Payment: { '@type': 'PaymentCash' },
+    reservationRes = await tvptHotelFetch('/book/reservations/build', {
+      ReservationQueryBuild: {
+        '@type': 'ReservationQueryBuild',
+        ReservationBuild: {
+          '@type': 'ReservationBuildFromCatalogOffering',
+          BuildFromCatalogOfferingHospitality: {
+            '@type': 'BuildFromCatalogOfferingHospitality',
+            CatalogOfferingIdentifier: { value: room.offerId },
+          },
+          Traveler: [{
+            '@type':    'Traveler',
+            PersonName: { Given: order.guest.givenName, Surname: order.guest.familyName },
+            Email:      [{ value: order.guest.email }],
+            ...(order.guest.phone ? { Telephone: [{ '@type': 'TelephoneDetail', phoneNumber: order.guest.phone.replace(/[^\d]/g, '') }] } : {}),
+          }],
+          FormOfPayment: [{
+            '@type': 'FormOfPaymentPaymentCard',
+            PaymentCard: {
+              '@type':        'PaymentCardDetail',
+              expireDate:     `${String(card.exp_month).padStart(2, '0')}${String(card.exp_year).slice(-2)}`,
+              CardType:       'Credit',
+              CardCode:       TVPT_CARD_CODE[card.brand?.toLowerCase()] ?? 'VI',
+              CardHolderName: card.cardholder?.name ?? 'Lyrtrip',
+              CardNumber:     { '@type': 'CardNumber', PlainText: card.number },
+              SeriesCode:     { '@type': 'SeriesCode', PlainText: card.cvc },
+            },
+          }],
+          Payment: [{
+            '@type':      'Payment',
+            Amount:       { code: room.currency, value: room.supplierTotal },
+            guaranteeInd: room.guaranteeType !== 'DepositRequired',
+            depositInd:   room.guaranteeType === 'DepositRequired',
+          }],
+        },
       },
     });
   } catch (err) {
-    console.error('Travelport hotel reservation failed:', err.message);
-    await db.collection('hotel_bookings').updateOne(
-      { _id: order._id },
-      { $set: { status: 'booking_failed', bookingError: err.message, updatedAt: new Date().toISOString() } }
-    );
-    return json(500, {
-      error: `Hotel reservation failed: ${err.message}. Payment collected — contact support@lyrtrip.com, order ID: ${orderId}`,
-    });
+    return fail('reservation', err, card);
   }
 
-  const reservation = reservationRes.ReservationResponseHospitality?.Reservation ?? {};
-  const bookingRef  = reservation.Identifier?.value ?? reservation.locatorCode ?? orderId;
+  const reservation = reservationRes.ReservationResponse?.Reservation ?? {};
+  const locators    = (reservation.Receipt ?? []).map(r => r.Confirmation?.Locator).filter(Boolean);
+  const pnr         = locators.find(l => l.sourceContext === 'Travelport')?.value;
+  const hotelConf   = locators.find(l => l.sourceContext === 'Supplier')?.value;
+  if (!pnr && !hotelConf) return fail('reservation', new Error('no confirmation number returned'), card);
 
-  await db.collection('hotel_bookings').updateOne(
+  const bookingRef = pnr ?? hotelConf;
+  await coll.updateOne(
     { _id: order._id },
-    { $set: { status: 'confirmed', tvptBookingRef: bookingRef, confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } }
+    { $set: {
+      status: 'confirmed', tvptBookingRef: bookingRef, hotelConfirmation: hotelConf ?? null,
+      issuingCardId: card.id, supplierTotal: room.supplierTotal,
+      confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    } }
   );
 
-  // Send hotel confirmation email
   const sesFrom = process.env.SES_FROM_EMAIL;
   if (sesFrom && order.guestEmail) {
     try {
@@ -1053,12 +1234,15 @@ async function handleTravelportHotelConfirm(event) {
                 `Hotel booking confirmed!`,
                 ``,
                 `Property : ${order.hotelName}`,
+                `Room     : ${order.roomName}`,
                 `Check-in : ${order.checkin}`,
                 `Check-out: ${order.checkout}`,
                 `Nights   : ${order.nights}`,
-                `Booking  : ${bookingRef}`,
+                `Hotel confirmation: ${hotelConf ?? '—'}`,
+                `Booking reference : ${bookingRef}`,
                 ``,
-                `Total paid: ${order.currency} ${order.markedUpPrice.toFixed(2)}`,
+                `Total paid: ${order.currency} ${order.markedUpPrice.toFixed(2)} (prepaid — nothing to pay at the hotel)`,
+                `Cancellation: ${order.cancelPolicy || 'see hotel policy'}`,
                 ``,
                 `Questions? support@lyrtrip.com`,
               ].join('\n'),
@@ -1071,17 +1255,7 @@ async function handleTravelportHotelConfirm(event) {
     }
   }
 
-  return json(200, {
-    success: true,
-    bookingRef,
-    orderId,
-    hotelName:   order.hotelName,
-    checkin:     order.checkin,
-    checkout:    order.checkout,
-    nights:      order.nights,
-    totalPrice:  order.markedUpPrice,
-    currency:    order.currency,
-  });
+  return json(200, { success: true, bookingRef, hotelConfirmation: hotelConf ?? null, ...summary(order) });
 }
 
 // ---------------------------------------------------------------------------
@@ -2134,7 +2308,24 @@ async function handleSearch(event) {
       return json(400, { error: 'Invalid service type' });
     }
 
-    // --- Hotel: try SerpAPI first ---
+    // --- Hotel: Travelport (bookable) when configured and we have coordinates ---
+    if (service === 'hotels' && process.env.TRAVELPORT_CLIENT_ID) {
+      const { destinationLocation, checkin, checkout, guests } = body;
+      if (destinationLocation?.lat && destinationLocation?.lng && checkin && checkout) {
+        try {
+          const results = await searchHotelsTravelport({
+            lat: destinationLocation.lat, lng: destinationLocation.lng, checkin, checkout, guests,
+          });
+          if (results.length > 0) {
+            return json(200, { success: true, service, results, total: results.length, source: 'travelport' });
+          }
+        } catch (tvptErr) {
+          console.error('Travelport hotel search error (falling back to SerpAPI):', tvptErr.message);
+        }
+      }
+    }
+
+    // --- Hotel: try SerpAPI ---
     if (service === 'hotels' && process.env.SERPAPI_KEY) {
       const { destination, checkin, checkout, guests } = body;
       if (destination) {
@@ -2506,6 +2697,17 @@ async function handleUberCheckout(event) {
 // ---------------------------------------------------------------------------
 
 export async function handler(event) {
+  // Await here so errors thrown inside async route handlers become a JSON 500
+  // instead of an unhandled Lambda error (the routes return un-awaited promises).
+  try {
+    return await routeRequest(event);
+  } catch (error) {
+    console.error('API error:', error);
+    return json(500, { error: 'Failed to process API request' });
+  }
+}
+
+async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
 
@@ -2522,6 +2724,7 @@ export async function handler(event) {
     if (path.endsWith('/api/travelport/flight/checkout') && method === 'POST')     return handleTravelportFlightCheckout(event);
     if (path.endsWith('/api/travelport/flight/confirm')  && method === 'POST')     return handleTravelportFlightConfirm(event);
     // Travelport — hotel
+    if (path.endsWith('/api/travelport/hotel/rooms')    && method === 'POST')      return handleTravelportHotelRooms(event);
     if (path.endsWith('/api/travelport/hotel/checkout') && method === 'POST')      return handleTravelportHotelCheckout(event);
     if (path.endsWith('/api/travelport/hotel/confirm')  && method === 'POST')      return handleTravelportHotelConfirm(event);
     if (path.includes('/api/uber/estimates')         && method === 'GET')          return handleUberEstimates(event);

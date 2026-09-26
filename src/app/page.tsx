@@ -72,6 +72,8 @@ interface SearchResult {
   duffelExpiresAt?: string;
   totalPrice?: number;
   basePrice?: number;
+  // travelport hotel property key (rooms are fetched on demand)
+  _tvptHotel?: { chainCode: string; propertyCode: string; distanceMiles?: number };
   // travelport booking metadata
   _tvpt?: {
     sessionId: string;
@@ -107,6 +109,29 @@ interface BookingDraft {
   hotel: SearchResult;
   checkin: string;
   checkout: string;
+}
+
+interface HotelRoom {
+  bookingCode: string;
+  name: string;
+  rateDescription: string;
+  refundable: boolean;
+  cancelPolicy: string;
+  guaranteeType: string;
+  nights: number;
+  taxes: number;
+  total: number;
+  perNight: number;
+  currency: string;
+}
+
+interface HotelRoomsDraft {
+  hotel: SearchResult;
+  checkin: string;
+  checkout: string;
+  rooms: HotelRoom[] | null;
+  error: string | null;
+  selected: HotelRoom | null;
 }
 
 interface FlightDraft {
@@ -296,6 +321,9 @@ export default function Home() {
   const [locationLoading, setLocationLoading] = useState(true);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
+  const [roomsDraft, setRoomsDraft] = useState<HotelRoomsDraft | null>(null);
+  const [hotelGuest, setHotelGuest] = useState({ givenName: '', familyName: '', email: '', phone: '' });
+  const [hotelBookingLoading, setHotelBookingLoading] = useState(false);
   const [bookingName, setBookingName] = useState('');
   const [bookingGuests, setBookingGuests] = useState(1);
   const [bookingSuccess, setBookingSuccess] = useState(false);
@@ -491,6 +519,9 @@ export default function Home() {
       body: JSON.stringify({
         service:     'hotels',
         destination: formData.destination || formData.destinationLocation?.address || '',
+        destinationLocation: formData.destinationLocation
+          ? { lat: formData.destinationLocation.lat, lng: formData.destinationLocation.lng }
+          : null,
         checkin:     formData.checkin  || null,
         checkout:    formData.checkout || null,
         guests:      1,
@@ -605,6 +636,55 @@ export default function Home() {
       setBusJourneys([]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openHotelRooms = async (hotel: SearchResult) => {
+    const draft: HotelRoomsDraft = { hotel, checkin: formData.checkin, checkout: formData.checkout, rooms: null, error: null, selected: null };
+    setRoomsDraft(draft);
+    try {
+      const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${baseUrl}/api/travelport/hotel/rooms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...hotel._tvptHotel, checkin: draft.checkin, checkout: draft.checkout, guests: 1 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not load rooms');
+      setRoomsDraft(d => d && d.hotel.id === hotel.id ? { ...d, rooms: data.rooms ?? [] } : d);
+    } catch (err) {
+      setRoomsDraft(d => d && d.hotel.id === hotel.id ? { ...d, rooms: [], error: err instanceof Error ? err.message : 'Could not load rooms' } : d);
+    }
+  };
+
+  const payForHotelRoom = async () => {
+    if (!roomsDraft?.selected) return;
+    if (!user) { router.push('/login'); return; }
+    const { hotel, selected, checkin, checkout } = roomsDraft;
+    setHotelBookingLoading(true);
+    setRoomsDraft(d => d && { ...d, error: null });
+    try {
+      const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${baseUrl}/api/travelport/hotel/checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...hotel._tvptHotel,
+          bookingCode: selected.bookingCode,
+          checkin,
+          checkout,
+          guests:    1,
+          guest:     hotelGuest,
+          hotelName: hotel.name,
+        }),
+      });
+      const data = await res.json();
+      if (data.url) { window.location.href = data.url; return; }
+      setRoomsDraft(d => d && { ...d, error: data.error ?? 'Booking failed. Please try again.' });
+    } catch {
+      setRoomsDraft(d => d && { ...d, error: 'Could not connect to booking service. Please try again.' });
+    } finally {
+      setHotelBookingLoading(false);
     }
   };
 
@@ -870,8 +950,9 @@ export default function Home() {
                   <h3 className="font-bold text-gray-900 text-base leading-tight">{result.name}</h3>
                   {result.pricePerNight != null && result.pricePerNight > 0 && (
                     <div className="shrink-0 text-right">
+                      {result._tvptHotel && <p className="text-xs text-gray-500">from</p>}
                       <p className="text-xl font-bold text-indigo-700">${result.pricePerNight}</p>
-                      <p className="text-xs text-gray-500">per night</p>
+                      <p className="text-xs text-gray-500">{result._tvptHotel ? 'per night + taxes' : 'per night'}</p>
                     </div>
                   )}
                 </div>
@@ -900,10 +981,12 @@ export default function Home() {
               <div className="flex items-center justify-between mt-3">
                 {result.checkIn && <p className="text-xs text-gray-400">Check-in: {result.checkIn}</p>}
                 <button
-                  onClick={() => setBookingDraft({ hotel: result, checkin: formData.checkin, checkout: formData.checkout })}
+                  onClick={() => result._tvptHotel
+                    ? openHotelRooms(result)
+                    : setBookingDraft({ hotel: result, checkin: formData.checkin, checkout: formData.checkout })}
                   className="ml-auto px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
                 >
-                  Book Now
+                  {result._tvptHotel ? 'View rooms' : 'Book Now'}
                 </button>
               </div>
             </div>
@@ -1824,6 +1907,116 @@ export default function Home() {
         )}
 
         {/* Booking modal */}
+        {roomsDraft && (() => {
+          const { hotel, rooms, selected, error } = roomsDraft;
+          const close = () => { setRoomsDraft(null); setHotelBookingLoading(false); };
+          const guestValid = hotelGuest.givenName.trim() && hotelGuest.familyName.trim() && /\S+@\S+\.\S+/.test(hotelGuest.email);
+          const money = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          return (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
+                <div className="flex items-start justify-between mb-1">
+                  <h2 className="text-xl font-bold text-gray-900">{selected ? 'Guest details' : 'Choose a room'}</h2>
+                  <button onClick={close} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+                </div>
+                <p className="text-gray-600 text-sm">{hotel.name}</p>
+                <p className="text-gray-500 text-xs mb-4">{hotel.description} · {roomsDraft.checkin} → {roomsDraft.checkout}</p>
+
+                {!selected && (
+                  rooms === null ? (
+                    <p className="text-gray-500 text-sm py-6 text-center">Checking live room availability…</p>
+                  ) : rooms.length === 0 ? (
+                    <p className="text-gray-600 text-sm py-6 text-center">{error ?? 'No rooms available for these dates.'}</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {rooms.map(room => (
+                        <div key={room.bookingCode} className="border border-gray-200 rounded-xl p-3 flex gap-3 items-start">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-gray-900">{room.name}</p>
+                            <p className={`text-xs mt-1 font-medium ${room.refundable ? 'text-green-600' : 'text-orange-600'}`}>
+                              {room.refundable ? 'Refundable' : 'Non-refundable'}
+                            </p>
+                            {room.cancelPolicy && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{room.cancelPolicy}</p>}
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-lg font-bold text-indigo-700">{money(room.total)}</p>
+                            <p className="text-xs text-gray-500">{room.nights} night{room.nights !== 1 ? 's' : ''} · incl. taxes</p>
+                            <button
+                              onClick={() => setRoomsDraft(d => d && { ...d, selected: room, error: null })}
+                              className="mt-2 px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+                            >
+                              Select
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                )}
+
+                {selected && (
+                  <>
+                    <div className="bg-indigo-50 rounded-xl p-3 mb-4 text-sm">
+                      <div className="flex justify-between gap-3">
+                        <span className="font-medium text-gray-900">{selected.name}</span>
+                        <span className="font-bold text-indigo-700 shrink-0">{money(selected.total)}</span>
+                      </div>
+                      <p className="text-xs text-gray-600 mt-1">
+                        {selected.nights} night{selected.nights !== 1 ? 's' : ''} · prepaid, taxes & fees included · {selected.refundable ? 'refundable' : 'non-refundable'}
+                      </p>
+                      {selected.cancelPolicy && <p className="text-xs text-gray-500 mt-1">{selected.cancelPolicy}</p>}
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">First name <span className="text-red-500">*</span></label>
+                        <input value={hotelGuest.givenName} onChange={e => setHotelGuest(g => ({ ...g, givenName: e.target.value }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Last name <span className="text-red-500">*</span></label>
+                        <input value={hotelGuest.familyName} onChange={e => setHotelGuest(g => ({ ...g, familyName: e.target.value }))}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                      </div>
+                    </div>
+                    <div className="mb-3">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Email <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(confirmation will be sent here)</span></label>
+                      <input type="email" value={hotelGuest.email} onChange={e => setHotelGuest(g => ({ ...g, email: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                    </div>
+                    <div className="mb-4">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
+                      <input type="tel" value={hotelGuest.phone} onChange={e => setHotelGuest(g => ({ ...g, phone: e.target.value }))}
+                        placeholder="+1 555 000 0000" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                    </div>
+                  </>
+                )}
+
+                {error && rooms && rooms.length > 0 && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-4 text-sm text-red-700">{error}</div>
+                )}
+
+                <div className="flex gap-3 mt-4">
+                  <button
+                    onClick={() => selected ? setRoomsDraft(d => d && { ...d, selected: null, error: null }) : close()}
+                    className="flex-1 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition"
+                  >
+                    {selected ? 'Back to rooms' : 'Close'}
+                  </button>
+                  {selected && (
+                    <button
+                      onClick={payForHotelRoom}
+                      disabled={(user && !guestValid) || hotelBookingLoading}
+                      className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition"
+                    >
+                      {hotelBookingLoading ? 'Processing…' : user ? `Pay ${money(selected.total)} →` : 'Sign in to Book'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {bookingDraft && (() => {
           const nights        = calcNights(bookingDraft.checkin, bookingDraft.checkout);
           const pricePerNight = bookingDraft.hotel.pricePerNight ?? PRICE_PER_NIGHT[bookingDraft.hotel.priceLevel ?? '$$'] ?? 160;
@@ -1910,8 +2103,8 @@ export default function Home() {
           const stops = (f.legs?.length ?? 1) - 1;
           const stopLabel = stops === 0 ? 'Nonstop' : `${stops} stop${stops > 1 ? 's' : ''}`;
 
-          // Duffel booking modal — full passenger details
-          if (f.duffelOfferId) {
+          // Duffel / Travelport booking modal — full passenger details
+          if (f.duffelOfferId || f._tvpt) {
             const total     = f.totalPrice ?? ((f.price ?? 0) * flightPassengers);
             const allValid  = flightPassengerDetails.length > 0 && flightPassengerDetails.every(
               p => p.givenName.trim() && p.familyName.trim() && p.email.trim() && p.dob && p.nationality.trim()
