@@ -421,6 +421,7 @@ export default function Home() {
       window.history.replaceState({}, '', '/');
       if (draft.type === 'flight') {
         const { type: _type, ...flightOnly } = draft;
+        if (!(flightOnly.flight?._tvpt || flightOnly.flight?.duffelOfferId)) return;
         const count = flightOnly.flight?.duffelPassengerCount ?? (flightOnly.flight?._tvpt ? formData.flightPassengers || 1 : 1);
         const emptyPax: PassengerDetail = { title: 'mr', givenName: '', familyName: '', dob: '', gender: 'm', nationality: '', email: '', phone: '' };
         setActiveTab('flights');
@@ -431,13 +432,9 @@ export default function Home() {
         }, 100);
         return;
       }
+      // Saved hotel drafts come from listing-only results, which are no longer
+      // bookable here — just return the guest to the hotels tab.
       setActiveTab('hotels');
-      // Small delay so the tab renders before we open the modal
-      setTimeout(() => {
-        setBookingDraft(draft);
-        setBookingName('');
-        setBookingGuests(1);
-      }, 100);
     } catch { /* ignore */ }
   }, [user]);
 
@@ -984,15 +981,23 @@ export default function Home() {
                 {result.checkIn && <p className="text-xs text-gray-400">Check-in: {result.checkIn}</p>}
                 {result.demo ? (
                   <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
-                ) : (
+                ) : result._tvptHotel ? (
                 <button
-                  onClick={() => result._tvptHotel
-                    ? openHotelRooms(result)
-                    : setBookingDraft({ hotel: result, checkin: formData.checkin, checkout: formData.checkout })}
+                  onClick={() => openHotelRooms(result)}
                   className="ml-auto px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
                 >
-                  {result._tvptHotel ? 'View rooms' : 'Book Now'}
+                  View rooms
                 </button>
+                ) : (
+                // Listing-only result (no reservation system behind it): send the guest to the provider
+                <a
+                  href={result.link || `https://www.google.com/travel/hotels?q=${encodeURIComponent(`${result.name} ${result.description ?? ''}`)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-auto px-4 py-1.5 border border-indigo-600 text-indigo-700 text-sm font-semibold rounded-lg hover:bg-indigo-50 transition"
+                >
+                  View deal ↗
+                </a>
                 )}
               </div>
             </div>
@@ -1051,6 +1056,16 @@ export default function Home() {
             <p className="text-xs text-gray-500">per person</p>
             {r.demo ? (
               <span className="mt-1 px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
+            ) : !(r._tvpt || r.duffelOfferId) ? (
+              // Listing-only result (no reservation system behind it): send the traveler to the provider
+              <a
+                href={`https://www.google.com/travel/flights?q=${encodeURIComponent(`Flights from ${formData.from} to ${formData.to} on ${formData.depart}${formData.return ? ` returning ${formData.return}` : ''}`)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 px-4 py-1.5 border border-indigo-600 text-indigo-700 text-sm font-semibold rounded-lg hover:bg-indigo-50 transition"
+              >
+                View deal ↗
+              </a>
             ) : (
             <button
               onClick={() => {
