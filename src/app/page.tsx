@@ -76,6 +76,8 @@ interface SearchResult {
   demo?: boolean;
   // live content shown before online booking opens
   preview?: boolean;
+  // bookable against the Travelport test system with Stripe test cards
+  testBooking?: boolean;
   // travelport hotel property key (rooms are fetched on demand)
   _tvptHotel?: { chainCode: string; propertyCode: string; distanceMiles?: number };
   // travelport booking metadata
@@ -935,6 +937,11 @@ export default function Home() {
   const PreviewNotice = () => results.some(r => r.preview) ? (
     <div className="mt-6 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl px-4 py-3">
       <span className="font-semibold">Preview:</span> online booking opens soon. Prices shown are indicative and can&apos;t be booked yet.
+    </div>
+  ) : results.some(r => r.testBooking) ? (
+    <div className="mt-6 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl px-4 py-3">
+      <span className="font-semibold">Test mode:</span> bookings are made in the Travelport test system and are not real.
+      Pay with Stripe test card <span className="font-mono font-semibold">4242 4242 4242 4242</span>, any future date, any CVC. Real cards are not charged.
     </div>
   ) : null;
 

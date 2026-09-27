@@ -327,12 +327,21 @@ const TVPT_HOTEL_BASE = `https://api.${TVPT_HOST}/11/hotel`;
 
 // TRAVELPORT_PREVIEW=true: show Travelport results on the live site but take no bookings
 const TVPT_PREVIEW = process.env.TRAVELPORT_PREVIEW === 'true';
-const tvptMarkPreview = results => TVPT_PREVIEW ? results.map(r => ({ ...r, preview: true })) : results;
+// TRAVELPORT_TEST_SITE=true: full booking flow against Travelport pre-production, paid
+// with a Stripe TEST key (TRAVELPORT_STRIPE_SECRET_KEY) — test cards only, no real money
+const TVPT_TEST_SITE = process.env.TRAVELPORT_TEST_SITE === 'true';
+const tvptMarkPreview = results =>
+  TVPT_PREVIEW ? results.map(r => ({ ...r, preview: true }))
+  : TVPT_TEST_SITE ? results.map(r => ({ ...r, testBooking: true }))
+  : results;
+
+// Travelport bookings can be paid through a separate Stripe account/key
+const tvptStripeKey = () => process.env.TRAVELPORT_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
 
 // Never take real money for a booking in Travelport's test system
 function tvptPaymentModeError() {
   if (TVPT_PREVIEW) return 'Online booking is not available yet. Please check back soon.';
-  const liveStripe = /^(sk|rk)_live_/.test(process.env.STRIPE_SECRET_KEY ?? '');
+  const liveStripe = /^(sk|rk)_live_/.test(tvptStripeKey() ?? '');
   if (liveStripe && !TVPT_LIVE) {
     return 'Online booking is not available yet. Please check back soon.';
   }
@@ -721,7 +730,7 @@ async function handleTravelportAirPrice(event) {
 
 // Create workbench + Stripe checkout session for a Travelport flight
 async function handleTravelportFlightCheckout(event) {
-  const secretKey = process.env.STRIPE_SECRET_KEY;
+  const secretKey = tvptStripeKey();
   if (!secretKey)                          return json(500, { error: 'Stripe is not configured' });
   if (!process.env.TRAVELPORT_CLIENT_ID)  return json(500, { error: 'Travelport is not configured' });
   const modeError = tvptPaymentModeError();
@@ -811,7 +820,7 @@ async function handleTravelportFlightCheckout(event) {
         currency:    currency.toLowerCase(),
         unit_amount: amountCents,
         product_data: {
-          name:        `${flightSummary?.airline ?? 'Flight'} — ${flightSummary?.route ?? 'Flight'}`,
+          name:        `${TVPT_LIVE ? '' : '[TEST] '}${flightSummary?.airline ?? 'Flight'} — ${flightSummary?.route ?? 'Flight'}`,
           description: `${numPax} passenger${numPax !== 1 ? 's' : ''} · all taxes & Lyrtrip service fee included`,
         },
       },
@@ -900,7 +909,7 @@ async function tvptIssueTickets({ locator, offerId, amount, currency }) {
 // Verify Stripe payment, create the booking, issue e-tickets, email the ticket.
 // Any failure after payment refunds the customer automatically.
 async function handleTravelportFlightConfirm(event) {
-  const secretKey = process.env.STRIPE_SECRET_KEY;
+  const secretKey = tvptStripeKey();
   if (!secretKey) return json(500, { error: 'Stripe is not configured' });
 
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
@@ -935,6 +944,7 @@ async function handleTravelportFlightConfirm(event) {
     totalPrice:     o.markedUpPrice,
     currency:       o.currency,
     issuedAt:       o.ticketedAt ?? o.confirmedAt,
+    testBooking:    !TVPT_LIVE,
   });
 
   // Claim the order atomically so two confirm calls can never book twice
@@ -1087,7 +1097,7 @@ async function handleTravelportFlightConfirm(event) {
 // The guest pays Lyrtrip through Stripe; after payment Lyrtrip pays the hotel with a
 // single-use Stripe Issuing virtual card (see handleTravelportHotelConfirm).
 async function handleTravelportHotelCheckout(event) {
-  const secretKey = process.env.STRIPE_SECRET_KEY;
+  const secretKey = tvptStripeKey();
   if (!secretKey)                         return json(500, { error: 'Stripe is not configured' });
   if (!process.env.TRAVELPORT_CLIENT_ID) return json(500, { error: 'Travelport is not configured' });
   const modeError = tvptPaymentModeError();
@@ -1155,7 +1165,7 @@ async function handleTravelportHotelCheckout(event) {
         currency:    room.currency.toLowerCase(),
         unit_amount: Math.round(room.total * 100),
         product_data: {
-          name:        `${hotelName ?? 'Hotel'} — ${room.name}`.slice(0, 250),
+          name:        `${TVPT_LIVE ? '' : '[TEST] '}${hotelName ?? 'Hotel'} — ${room.name}`.slice(0, 250),
           description: `${room.nights} night${room.nights !== 1 ? 's' : ''} · ${checkin} → ${checkout} · taxes & Lyrtrip fee included · ${room.refundable ? 'refundable' : 'non-refundable'}`,
         },
       },
@@ -1198,7 +1208,7 @@ async function issueHotelPaymentCard(stripe, { amount, currency, orderId }) {
 // Verify Stripe payment, pay the hotel with a virtual card, and create the Travelport reservation.
 // Any failure after payment refunds the guest and cancels the card.
 async function handleTravelportHotelConfirm(event) {
-  const secretKey = process.env.STRIPE_SECRET_KEY;
+  const secretKey = tvptStripeKey();
   if (!secretKey) return json(500, { error: 'Stripe is not configured' });
 
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
@@ -1230,6 +1240,7 @@ async function handleTravelportHotelConfirm(event) {
     nights:     o.nights,
     totalPrice: o.markedUpPrice,
     currency:   o.currency,
+    testBooking: !TVPT_LIVE,
   });
 
   // Claim the order atomically so two confirm calls can never book twice

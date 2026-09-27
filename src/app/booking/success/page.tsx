@@ -31,6 +31,7 @@ interface ItinerarySegment {
 interface FlightConfirmation {
   pnr: string;
   airlineLocator?: string | null;
+  testBooking?: boolean;
   tickets?: { number: string; passenger: string }[];
   itinerary?: ItinerarySegment[];
   issuedAt?: string;
@@ -47,6 +48,7 @@ interface FlightConfirmation {
 interface HotelConfirmation {
   bookingRef: string;
   hotelConfirmation?: string | null;
+  testBooking?: boolean;
   orderId?: string;
   roomName?: string;
   hotelName: string;
@@ -245,6 +247,11 @@ export default function BookingSuccessPage() {
         </div>
 
         <article className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden print:shadow-none print:rounded-none">
+          {flightConfirm.testBooking && (
+            <div className="bg-red-600 text-white text-center font-black tracking-widest py-2 text-sm">
+              TEST BOOKING — NOT VALID FOR TRAVEL
+            </div>
+          )}
           {/* Header */}
           <header className="flex items-center justify-between px-8 py-6 border-b-4 border-indigo-600">
             <img src="/logo.png" alt="Lyrtrip" className="h-12 w-auto" />
@@ -356,6 +363,11 @@ export default function BookingSuccessPage() {
           <Link href="/" className="px-5 py-2.5 border border-gray-300 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to search</Link>
         </div>
         <article className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden print:shadow-none print:rounded-none">
+          {hotelConfirm.testBooking && (
+            <div className="bg-red-600 text-white text-center font-black tracking-widest py-2 text-sm">
+              TEST BOOKING — NOT VALID FOR TRAVEL
+            </div>
+          )}
           <header className="flex items-center justify-between px-8 py-6 border-b-4 border-emerald-600">
             <img src="/logo.png" alt="Lyrtrip" className="h-12 w-auto" />
             <div className="text-right">

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Show Travelport hotels/flights on www.lyrtrip.com in PREVIEW mode (no bookings taken).
+# Put Travelport hotels/flights on www.lyrtrip.com using the TRIAL (pre-production) account.
 #
-#   bash infra/deploy-preview.sh
+#   bash infra/deploy-preview.sh          # preview: results shown, every checkout refused
+#   bash infra/deploy-preview.sh test     # test site: full booking flow, Stripe TEST cards only
 #
-# Uses the Travelport trial credentials from .env.local (Travelport pre-production),
-# sets TRAVELPORT_PREVIEW=true so every checkout is refused, and shows a "Preview"
-# notice above Travelport results. Switch to real booking later with go-live-travelport.sh.
+# Test mode needs in .env.local: a Stripe TEST key (STRIPE_SECRET_KEY=sk_test_...), used only
+# for Travelport bookings as TRAVELPORT_STRIPE_SECRET_KEY (the site's own Stripe key is kept),
+# and MONGODB_URI. Bookings go to the MONGODB_DB_NAME=lyrtrip_test database and are marked
+# "TEST BOOKING — NOT VALID FOR TRAVEL". Switch to real booking with go-live-travelport.sh.
 #
 # Steps: rollback version → deploy API code from HEAD → merge settings → add
 # /api/travelport/* route → build and publish the frontend.
@@ -19,13 +21,21 @@ R="--region us-east-1"
 
 cd "$(git rev-parse --show-toplevel)"
 [[ -z "$(git status --porcelain infra/lambda src)" ]] || { echo "Uncommitted changes in infra/lambda or src; commit first" >&2; exit 1; }
+MODE=${1:-preview}
+[[ "$MODE" == preview || "$MODE" == test ]] || { echo "Usage: $0 [preview|test]" >&2; exit 1; }
 set -a; . ./.env.local; set +a
+if [[ "$MODE" == test ]]; then
+  [[ "${STRIPE_SECRET_KEY:-}" == sk_test_* ]] || { echo "Test mode needs a Stripe TEST key (sk_test_...) in .env.local" >&2; exit 1; }
+  [[ -n "${MONGODB_URI:-}" ]] || { echo "Test mode needs MONGODB_URI in .env.local" >&2; exit 1; }
+  export TRAVELPORT_STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"
+fi
+export MODE
 for v in TRAVELPORT_USERNAME TRAVELPORT_PASSWORD TRAVELPORT_CLIENT_ID TRAVELPORT_CLIENT_SECRET TRAVELPORT_ACCESS_GROUP; do
   [[ -n "${!v:-}" ]] || { echo "Missing $v in .env.local" >&2; exit 1; }
 done
 
 echo "1/5 rollback point"
-aws lambda publish-version --function-name $FUNCTION $R --description "before Travelport preview" --query Version --output text
+aws lambda publish-version --function-name $FUNCTION $R --description "before Travelport $MODE" --query Version --output text
 
 echo "2/5 deploy API code from $(git rev-parse --short HEAD)"
 T=$(mktemp -d)
@@ -34,7 +44,7 @@ for f in search.mjs package.json package-lock.json; do git show "HEAD:infra/lamb
 aws lambda update-function-code --function-name $FUNCTION $R --zip-file "fileb://$T.zip" --query LastUpdateStatus --output text
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
-echo "3/5 settings (preview on, existing keys kept)"
+echo "3/5 settings ($MODE mode, existing keys kept)"
 ENV_FILE=$(mktemp); chmod 600 "$ENV_FILE"
 aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Environment.Variables' --output json |
   node -e '
@@ -44,8 +54,17 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
                        "TRAVELPORT_CLIENT_SECRET","TRAVELPORT_ACCESS_GROUP","TRAVELPORT_PCC"]) {
         if (process.env[k]) cur[k] = process.env[k];
       }
-      cur.TRAVELPORT_PREVIEW = "true";
       delete cur.TRAVELPORT_ENV;          // pre-production Travelport
+      if (process.env.MODE === "test") {
+        cur.TRAVELPORT_TEST_SITE = "true";
+        delete cur.TRAVELPORT_PREVIEW;
+        cur.TRAVELPORT_STRIPE_SECRET_KEY = process.env.TRAVELPORT_STRIPE_SECRET_KEY;
+        cur.MONGODB_URI = process.env.MONGODB_URI;
+        cur.MONGODB_DB_NAME = "lyrtrip_test";
+      } else {
+        cur.TRAVELPORT_PREVIEW = "true";
+        delete cur.TRAVELPORT_TEST_SITE;
+      }
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
       console.log("keys:", Object.keys(cur).join(", "));
     });' "$ENV_FILE"
@@ -74,4 +93,4 @@ for r in $ROUTES; do aws s3 cp "$r.html" "$BUCKET/$r" --content-type text/html -
 aws s3 sync . $BUCKET/ --delete $EXCL --only-show-errors
 for d in $DISTRIBUTIONS; do aws cloudfront create-invalidation --distribution-id $d --paths "/*" --query Invalidation.Id --output text; done
 
-echo "Done. In a minute, search hotels or flights on https://www.lyrtrip.com — you should see the Preview notice."
+echo "Done ($MODE). In a minute, search hotels or flights on https://www.lyrtrip.com — you should see the $MODE notice."

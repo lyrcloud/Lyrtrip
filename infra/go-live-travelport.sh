@@ -50,6 +50,8 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       for (const k of add) if (process.env[k]) cur[k] = process.env[k];
       cur.TRAVELPORT_ENV = "production";
       delete cur.TRAVELPORT_PREVIEW;      // bookings on
+      delete cur.TRAVELPORT_TEST_SITE;    // real bookings, paid with the main Stripe key
+      delete cur.TRAVELPORT_STRIPE_SECRET_KEY;
       cur.MONGODB_DB_NAME = cur.MONGODB_DB_NAME || "lyrtrip";
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
       console.log("keys:", Object.keys(cur).join(", "));
