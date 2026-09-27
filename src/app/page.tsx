@@ -761,7 +761,7 @@ export default function Home() {
 
     // Travelport booking path
     if (f._tvpt) {
-      if (flightPassengerDetails.some(p => !p.givenName.trim() || !p.familyName.trim() || !p.email.trim() || !p.dob || !p.nationality.trim())) return;
+      if (flightPassengerDetails.some(p => !p.givenName.trim() || !p.familyName.trim() || !p.email.trim() || !p.dob || !p.nationality.trim() || p.phone.replace(/\D/g, '').length < 7)) return;
       setFlightBookingLoading(true);
       setFlightBookingError(null);
       try {
@@ -800,7 +800,7 @@ export default function Home() {
 
     // Duffel booking path
     if (f.duffelOfferId) {
-      if (flightPassengerDetails.some(p => !p.givenName.trim() || !p.familyName.trim() || !p.email.trim() || !p.dob || !p.nationality.trim())) return;
+      if (flightPassengerDetails.some(p => !p.givenName.trim() || !p.familyName.trim() || !p.email.trim() || !p.dob || !p.nationality.trim() || p.phone.replace(/\D/g, '').length < 7)) return;
       setFlightBookingLoading(true);
       setFlightBookingError(null);
       try {
@@ -2149,7 +2149,7 @@ export default function Home() {
           if (f.duffelOfferId || f._tvpt) {
             const total     = f.totalPrice ?? ((f.price ?? 0) * flightPassengers);
             const allValid  = flightPassengerDetails.length > 0 && flightPassengerDetails.every(
-              p => p.givenName.trim() && p.familyName.trim() && p.email.trim() && p.dob && p.nationality.trim()
+              p => p.givenName.trim() && p.familyName.trim() && p.email.trim() && p.dob && p.nationality.trim() && p.phone.replace(/\D/g, '').length >= 7
             );
             const updatePax = (idx: number, field: keyof PassengerDetail, val: string) => {
               setFlightPassengerDetails(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
@@ -2240,7 +2240,7 @@ export default function Home() {
                             placeholder="passenger@email.com" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                         </div>
                         <div>
-                          <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-gray-400 font-normal">(with country code)</span></label>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(with country code)</span></label>
                           <input type="tel" value={pax.phone} onChange={e => updatePax(idx, 'phone', e.target.value)}
                             placeholder="+1 555 000 0000" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                         </div>

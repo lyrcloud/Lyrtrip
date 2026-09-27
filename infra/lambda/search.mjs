@@ -352,6 +352,12 @@ function tvptPaymentModeError() {
 const TVPT_AIR_MARKUP   = parseFloat(process.env.TRAVELPORT_AIR_MARKUP   || '1.12'); // 12%
 const TVPT_HOTEL_MARKUP = parseFloat(process.env.TRAVELPORT_HOTEL_MARKUP || '1.12'); // 12%
 
+// Ticketless airlines can only be ticketed with a payment card; we ticket with the agency
+// (cash) form of payment, so their fares are left out of Travelport results.
+const TVPT_EXCLUDED_CARRIERS = new Set(
+  (process.env.TRAVELPORT_EXCLUDE_CARRIERS ?? 'F9,NK,WN,G4').split(',').map(c => c.trim().toUpperCase()).filter(Boolean)
+);
+
 // Where Stripe sends the customer back to (override for local/staging testing)
 const SITE_URL = (process.env.SITE_URL || 'https://www.lyrtrip.com').replace(/\/$/, '');
 
@@ -455,7 +461,11 @@ async function searchFlightsTravelport({ from, to, depart, returnDate, passenger
     }
   }
 
-  return offerings.map((o, i) => {
+  const ticketable = offerings.filter(o =>
+    !(o.ProductBrandOptions?.[0]?.flightRefs ?? []).some(fr => TVPT_EXCLUDED_CARRIERS.has(flightLookup[fr]?.carrier))
+  );
+
+  return ticketable.map((o, i) => {
     const pbos  = o.ProductBrandOptions?.[0] ?? {};
     const pbo   = pbos.ProductBrandOffering?.[0] ?? {};
     const price = pbo.BestCombinablePrice ?? {};
@@ -745,8 +755,10 @@ async function handleTravelportFlightCheckout(event) {
 
   if (!sessionId || !offeringId)                                 return json(400, { error: 'sessionId and offeringId are required' });
   if (!Array.isArray(passengers) || passengers.length === 0)    return json(400, { error: 'passengers array is required' });
-  if (passengers.some(p => !p.givenName?.trim() || !p.familyName?.trim() || !p.dob || !p.email?.trim())) {
-    return json(400, { error: 'Every passenger needs a given name, family name, date of birth and email' });
+  // Airlines require a contact phone; Travelport rejects the booking without one
+  if (passengers.some(p => !p.givenName?.trim() || !p.familyName?.trim() || !p.dob || !p.email?.trim()
+      || (p.phone ?? '').replace(/\D/g, '').length < 7)) {
+    return json(400, { error: 'Every passenger needs a given name, family name, date of birth, email and phone number' });
   }
 
   // Step 0 — price on the server; this is the amount we charge
