@@ -103,8 +103,8 @@ Parameters:
     Description: Travelport access group GUID (XAUTH_TRAVELPORT_ACCESSGROUP header value).
   TravelportAirMarkup:
     Type: String
-    Default: "1.08"
-    Description: Multiplier applied to the Travelport air total fare incl. taxes (1.08 = 8% commission).
+    Default: "1.12"
+    Description: Multiplier applied to the Travelport air total fare incl. taxes (1.12 = 12% commission).
   TravelportHotelMarkup:
     Type: String
     Default: "1.12"
