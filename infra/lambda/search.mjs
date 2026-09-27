@@ -318,9 +318,21 @@ async function searchHotelsAmadeus({ lat, lng, checkin, checkout }) {
 // Travelport TripServices integration
 // ---------------------------------------------------------------------------
 
-const TVPT_AUTH_URL   = 'https://auth.pp.travelport.net/oauth/token';
-const TVPT_AIR_BASE   = 'https://api.pp.travelport.net/11/air';
-const TVPT_HOTEL_BASE = 'https://api.pp.travelport.net/11/hotel';
+// TRAVELPORT_ENV=production switches to live Travelport; anything else uses pre-production
+const TVPT_LIVE       = process.env.TRAVELPORT_ENV === 'production';
+const TVPT_HOST       = TVPT_LIVE ? 'travelport.net' : 'pp.travelport.net';
+const TVPT_AUTH_URL   = `https://auth.${TVPT_HOST}/oauth/token`;
+const TVPT_AIR_BASE   = `https://api.${TVPT_HOST}/11/air`;
+const TVPT_HOTEL_BASE = `https://api.${TVPT_HOST}/11/hotel`;
+
+// Never take real money for a booking in Travelport's test system
+function tvptPaymentModeError() {
+  const liveStripe = /^(sk|rk)_live_/.test(process.env.STRIPE_SECRET_KEY ?? '');
+  if (liveStripe && !TVPT_LIVE) {
+    return 'Online booking is not available yet. Please check back soon.';
+  }
+  return null;
+}
 
 // Configurable commission markup applied on top of Travelport base fare
 const TVPT_AIR_MARKUP   = parseFloat(process.env.TRAVELPORT_AIR_MARKUP   || '1.12'); // 12%
@@ -707,6 +719,8 @@ async function handleTravelportFlightCheckout(event) {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!secretKey)                          return json(500, { error: 'Stripe is not configured' });
   if (!process.env.TRAVELPORT_CLIENT_ID)  return json(500, { error: 'Travelport is not configured' });
+  const modeError = tvptPaymentModeError();
+  if (modeError) return json(503, { error: modeError });
 
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
   const { sessionId, offeringId, productId = 'p0', passengers, flightSummary } = body;
@@ -1071,6 +1085,8 @@ async function handleTravelportHotelCheckout(event) {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   if (!secretKey)                         return json(500, { error: 'Stripe is not configured' });
   if (!process.env.TRAVELPORT_CLIENT_ID) return json(500, { error: 'Travelport is not configured' });
+  const modeError = tvptPaymentModeError();
+  if (modeError) return json(503, { error: modeError });
 
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
   const { chainCode, propertyCode, bookingCode, checkin, checkout, guests = 1, guest = {}, hotelName } = body;
