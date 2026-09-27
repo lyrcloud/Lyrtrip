@@ -2394,7 +2394,8 @@ async function handleSearch(event) {
             console.error('SerpAPI flight search error (falling back to mock):', serpErr.message);
           }
         }
-        const results = makeMockFlights(from, to, depart);
+        // Placeholder flights: shown so the page isn't empty, never bookable
+        const results = makeMockFlights(from, to, depart).map(r => ({ ...r, demo: true }));
         return json(200, { success: true, service, results, total: results.length, source: 'mock' });
       }
     }
@@ -2429,7 +2430,7 @@ async function handleSearch(event) {
     }
 
     // --- Fallback to mock data for all services ---
-    const results = mockData[service] || [];
+    const results = (mockData[service] || []).map(r => ({ ...r, demo: true }));
     return json(200, { success: true, service, results, total: results.length, source: 'mock' });
 
   } catch (error) {

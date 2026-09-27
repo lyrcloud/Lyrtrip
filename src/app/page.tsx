@@ -72,6 +72,8 @@ interface SearchResult {
   duffelExpiresAt?: string;
   totalPrice?: number;
   basePrice?: number;
+  // placeholder result shown when no provider answered; not bookable
+  demo?: boolean;
   // travelport hotel property key (rooms are fetched on demand)
   _tvptHotel?: { chainCode: string; propertyCode: string; distanceMiles?: number };
   // travelport booking metadata
@@ -980,6 +982,9 @@ export default function Home() {
               </div>
               <div className="flex items-center justify-between mt-3">
                 {result.checkIn && <p className="text-xs text-gray-400">Check-in: {result.checkIn}</p>}
+                {result.demo ? (
+                  <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
+                ) : (
                 <button
                   onClick={() => result._tvptHotel
                     ? openHotelRooms(result)
@@ -988,6 +993,7 @@ export default function Home() {
                 >
                   {result._tvptHotel ? 'View rooms' : 'Book Now'}
                 </button>
+                )}
               </div>
             </div>
           </div>
@@ -1043,6 +1049,9 @@ export default function Home() {
           <div className="text-right shrink-0 ml-4 flex flex-col items-end gap-1">
             <p className="text-xl font-bold text-indigo-700">${r.price?.toLocaleString()}</p>
             <p className="text-xs text-gray-500">per person</p>
+            {r.demo ? (
+              <span className="mt-1 px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
+            ) : (
             <button
               onClick={() => {
                 const count = r.duffelPassengerCount ?? (r._tvpt ? formData.flightPassengers || 1 : 1);
@@ -1057,6 +1066,7 @@ export default function Home() {
             >
               Select
             </button>
+            )}
           </div>
         </div>
       );
