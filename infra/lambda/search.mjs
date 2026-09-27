@@ -1413,8 +1413,12 @@ let verifier;
 function getMongoClient() {
   if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is not configured.');
   if (!mongoClientPromise) {
-    const client = new MongoClient(process.env.MONGODB_URI);
-    mongoClientPromise = client.connect();
+    // Fail well inside API Gateway's 30s limit, and don't cache a failed connection
+    const client = new MongoClient(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 8000 });
+    mongoClientPromise = client.connect().catch(err => {
+      mongoClientPromise = null;
+      throw new Error(`Database unavailable: ${err.message}`);
+    });
   }
   return mongoClientPromise;
 }
