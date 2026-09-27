@@ -428,7 +428,8 @@ async function searchFlightsTravelport({ from, to, depart, returnDate, passenger
         '@type':                    'CatalogProductOfferingsRequestAir',
         offersPerPage:              20,
         maxNumberOfUpsellsToReturn: 0,
-        contentSourceList:          ['GDS', 'NDC'],
+        // GDS only: booking and ticketing below use the GDS workflow (NDC orders differ)
+        contentSourceList:          ['GDS'],
         PassengerCriteria:          [{ '@type': 'PassengerCriteria', number: passengers, passengerTypeCode: 'ADT' }],
         SearchCriteriaFlight:       searchLegs,
         PricingModifiersAir:        { '@type': 'PricingModifiersAir', currencyCode: 'USD' },
@@ -437,9 +438,12 @@ async function searchFlightsTravelport({ from, to, depart, returnDate, passenger
   });
 
   const resp = data.CatalogProductOfferingsResponse ?? {};
-  if (resp.Result?.Error?.length) throw new Error(resp.Result.Error[0].Message ?? 'Travelport search error');
+  const wrap = resp.CatalogProductOfferings ?? {};
+  // Errors can accompany valid offers (e.g. one content source failing); only fail when nothing came back
+  if (!wrap.CatalogProductOffering?.length && resp.Result?.Error?.length) {
+    throw new Error(resp.Result.Error[0].Message ?? 'Travelport search error');
+  }
 
-  const wrap      = resp.CatalogProductOfferings ?? {};
   const sessionId = wrap.Identifier?.value ?? '';
   const offerings = wrap.CatalogProductOffering ?? [];
 
