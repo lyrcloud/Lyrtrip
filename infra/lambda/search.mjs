@@ -325,8 +325,13 @@ const TVPT_AUTH_URL   = `https://auth.${TVPT_HOST}/oauth/token`;
 const TVPT_AIR_BASE   = `https://api.${TVPT_HOST}/11/air`;
 const TVPT_HOTEL_BASE = `https://api.${TVPT_HOST}/11/hotel`;
 
+// TRAVELPORT_PREVIEW=true: show Travelport results on the live site but take no bookings
+const TVPT_PREVIEW = process.env.TRAVELPORT_PREVIEW === 'true';
+const tvptMarkPreview = results => TVPT_PREVIEW ? results.map(r => ({ ...r, preview: true })) : results;
+
 // Never take real money for a booking in Travelport's test system
 function tvptPaymentModeError() {
+  if (TVPT_PREVIEW) return 'Online booking is not available yet. Please check back soon.';
   const liveStripe = /^(sk|rk)_live_/.test(process.env.STRIPE_SECRET_KEY ?? '');
   if (liveStripe && !TVPT_LIVE) {
     return 'Online booking is not available yet. Please check back soon.';
@@ -2445,7 +2450,7 @@ async function handleSearch(event) {
             lat: destinationLocation.lat, lng: destinationLocation.lng, checkin, checkout, guests,
           });
           if (results.length > 0) {
-            return json(200, { success: true, service, results, total: results.length, source: 'travelport' });
+            return json(200, { success: true, service, results: tvptMarkPreview(results), total: results.length, source: 'travelport' });
           }
         } catch (tvptErr) {
           console.error('Travelport hotel search error (falling back to SerpAPI):', tvptErr.message);
@@ -2496,7 +2501,7 @@ async function handleSearch(event) {
           try {
             const results = await searchFlightsTravelport({ from, to, depart, returnDate, passengers: Number(passengers || 1) });
             if (results.length > 0) {
-              return json(200, { success: true, service, results, total: results.length, source: 'travelport' });
+              return json(200, { success: true, service, results: tvptMarkPreview(results), total: results.length, source: 'travelport' });
             }
           } catch (tvptErr) {
             console.error('Travelport flight search error (falling back to Duffel):', tvptErr.message);

@@ -74,6 +74,8 @@ interface SearchResult {
   basePrice?: number;
   // placeholder result shown when no provider answered; not bookable
   demo?: boolean;
+  // live content shown before online booking opens
+  preview?: boolean;
   // travelport hotel property key (rooms are fetched on demand)
   _tvptHotel?: { chainCode: string; propertyCode: string; distanceMiles?: number };
   // travelport booking metadata
@@ -930,6 +932,12 @@ export default function Home() {
     </div>
   );
 
+  const PreviewNotice = () => results.some(r => r.preview) ? (
+    <div className="mt-6 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl px-4 py-3">
+      <span className="font-semibold">Preview:</span> online booking opens soon. Prices shown are indicative and can&apos;t be booked yet.
+    </div>
+  ) : null;
+
   const HotelList = () => {
     if (!hasSearched) return null;
     if (loading) return <p className="text-gray-500 mt-6">Searching hotels...</p>;
@@ -1504,6 +1512,7 @@ export default function Home() {
                   </div>
                   {searchBtn('hotels')}
                 </div>
+                <PreviewNotice />
                 <HotelList />
               </div>
             )}
@@ -1534,6 +1543,7 @@ export default function Home() {
                   </div>
                   {searchBtn('flights')}
                 </div>
+                <PreviewNotice />
                 <FlightList />
               </div>
             )}

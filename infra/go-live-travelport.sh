@@ -49,6 +49,7 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
                    "TRAVELPORT_ACCESS_GROUP","TRAVELPORT_PCC","MONGODB_URI","STRIPE_ISSUING_CARDHOLDER_ID","SES_FROM_EMAIL"];
       for (const k of add) if (process.env[k]) cur[k] = process.env[k];
       cur.TRAVELPORT_ENV = "production";
+      delete cur.TRAVELPORT_PREVIEW;      // bookings on
       cur.MONGODB_DB_NAME = cur.MONGODB_DB_NAME || "lyrtrip";
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
       console.log("keys:", Object.keys(cur).join(", "));
@@ -60,7 +61,8 @@ aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
 echo "4/4 API routes"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for route in "POST /api/travelport/{proxy+}" "OPTIONS /api/travelport/{proxy+}"; do
+# CORS preflight is answered by the API's CORS settings, so only POST is needed
+for route in "POST /api/travelport/{proxy+}"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$route'].RouteId" --output text | grep -q .; then
     echo "exists: $route"
   else
