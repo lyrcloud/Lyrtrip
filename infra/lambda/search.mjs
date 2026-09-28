@@ -633,8 +633,13 @@ async function tvptHotelRooms({ chainCode, propertyCode, checkin, checkout, gues
       perNight:       Math.ceil((total / nights) * 100) / 100,
       currency:       price.CurrencyCode?.value ?? 'USD',
     };
-  }).sort((a, b) => a.total - b.total);
+  })
+    // Rates that need proof of eligibility at check-in aren't sellable to the general public
+    .filter(r => !TVPT_RESTRICTED_RATE.test(`${r.name} ${r.rateDescription}`))
+    .sort((a, b) => a.total - b.total);
 }
+
+const TVPT_RESTRICTED_RATE = /\b(AAA|CAA|membership card|member rate|government|gov(ernmen)?t id|military|senior|AARP|employee|corporate id)\b/i;
 
 async function handleTravelportHotelRooms(event) {
   if (!process.env.TRAVELPORT_CLIENT_ID) return json(500, { error: 'Travelport is not configured' });
@@ -991,7 +996,7 @@ async function handleTravelportFlightConfirm(event) {
     } });
     return json(500, {
       error: refunded
-        ? `We couldn't issue this ticket (${err.message}). Your payment has been refunded in full. Order ID: ${orderId}`
+        ? `We couldn't issue this ticket with the airline. Your payment has been refunded in full. Order ID: ${orderId}`
         : `We couldn't issue this ticket and the automatic refund failed. Contact support@lyrtrip.com with order ID: ${orderId}`,
     });
   };
@@ -1207,6 +1212,10 @@ const TVPT_CARD_CODE = { visa: 'VI', mastercard: 'CA', amex: 'AX', 'american exp
 // Single-use virtual card, capped at the hotel's price, used to pay the hotel through Travelport
 async function issueHotelPaymentCard(stripe, { amount, currency, orderId }) {
   const cardholder = process.env.STRIPE_ISSUING_CARDHOLDER_ID;
+  if (!cardholder && !TVPT_LIVE) {
+    // Travelport pre-production only: its documented test Visa stands in for the virtual card
+    return { id: null, number: '4444333322221111', cvc: '343', exp_month: 12, exp_year: 2030, brand: 'Visa', cardholder: { name: 'Lyrtrip Test' } };
+  }
   if (!cardholder) throw new Error('STRIPE_ISSUING_CARDHOLDER_ID is not configured');
   const card = await stripe.issuing.cards.create({
     cardholder,
@@ -1277,7 +1286,7 @@ async function handleTravelportHotelConfirm(event) {
 
   const fail = async (stage, err, card) => {
     console.error(`Hotel booking failed at ${stage}:`, err.message);
-    if (card) await stripe.issuing.cards.update(card.id, { status: 'canceled' }).catch(e => console.error('Card cancel failed:', e.message));
+    if (card?.id) await stripe.issuing.cards.update(card.id, { status: 'canceled' }).catch(e => console.error('Card cancel failed:', e.message));
     let refunded = false;
     try {
       await stripe.refunds.create({ payment_intent: session.payment_intent, metadata: { hotelOrderId: orderId } });
@@ -1290,7 +1299,7 @@ async function handleTravelportHotelConfirm(event) {
     } });
     return json(500, {
       error: refunded
-        ? `We couldn't reserve this room (${err.message}). Your payment has been refunded in full. Order ID: ${orderId}`
+        ? `We couldn't reserve this room${err.customerReason ? ` (${err.customerReason})` : ''}. Your payment has been refunded in full. Order ID: ${orderId}`
         : `We couldn't reserve this room and the automatic refund failed. Contact support@lyrtrip.com with order ID: ${orderId}`,
     });
   };
@@ -1306,9 +1315,9 @@ async function handleTravelportHotelConfirm(event) {
   } catch (err) {
     return fail('availability', err);
   }
-  if (!room) return fail('availability', new Error('room no longer available'));
+  if (!room) return fail('availability', Object.assign(new Error('room no longer available'), { customerReason: 'the room is no longer available' }));
   if (room.supplierTotal > order.supplierTotal * 1.01) {
-    return fail('availability', new Error(`hotel price rose from ${order.supplierTotal} to ${room.supplierTotal}`));
+    return fail('availability', Object.assign(new Error(`hotel price rose from ${order.supplierTotal} to ${room.supplierTotal}`), { customerReason: "the hotel's price changed" }));
   }
 
   let card;
