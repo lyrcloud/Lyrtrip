@@ -92,7 +92,7 @@ export default function PrivacyPolicyPage() {
             <ul className="list-disc pl-6 space-y-2 mt-2">
               <li>
                 <span className="font-semibold">Travel suppliers and booking
-                platforms</span> &mdash; including Duffel, Amadeus, and Travelport, and
+                platforms</span> &mdash; including Duffel and Amadeus, and
                 the airlines and hotels they connect to. Traveler details are passed to
                 them to create your reservation, and they may be required to share them
                 with government authorities (for example, for airline security or

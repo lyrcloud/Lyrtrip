@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Put Travelport hotels/flights on www.lyrtrip.com using the TRIAL (pre-production) account.
+# Deploy www.lyrtrip.com: the search API Lambda (from HEAD) and the static frontend.
 #
-#   bash infra/deploy-preview.sh          # preview: results shown, every checkout refused
-#   bash infra/deploy-preview.sh test     # test site: full booking flow, Stripe TEST cards only
+#   bash infra/deploy-site.sh
 #
-# Test mode needs in .env.local: a Stripe TEST key (STRIPE_SECRET_KEY=sk_test_...), used only
-# for Travelport bookings as TRAVELPORT_STRIPE_SECRET_KEY (the site's own Stripe key is kept),
-# and MONGODB_URI. Bookings go to the MONGODB_DB_NAME=lyrtrip_test database and are marked
-# "TEST BOOKING — NOT VALID FOR TRAVEL". Switch to real booking with go-live-travelport.sh.
+# Needs DUFFEL_API_KEY in .env.local. While it is a duffel_test_ key, flight checkouts are paid
+# with the Stripe TEST key from .env.local (STRIPE_SECRET_KEY=sk_test_...) so no real card is
+# charged for a test ticket; the site's own Stripe key on the Lambda is left alone.
 #
-# Steps: rollback version → deploy API code from HEAD → merge settings → add
-# /api/travelport/* route → build and publish the frontend.
+# Steps: rollback version → deploy API code from HEAD → merge settings (Duffel in, leftover
+# TRAVELPORT_* out) → API routes → build and publish the frontend.
 set -euo pipefail
 
 FUNCTION=lyrtrip-search
@@ -21,21 +19,17 @@ R="--region us-east-1"
 
 cd "$(git rev-parse --show-toplevel)"
 [[ -z "$(git status --porcelain infra/lambda src)" ]] || { echo "Uncommitted changes in infra/lambda or src; commit first" >&2; exit 1; }
-MODE=${1:-preview}
-[[ "$MODE" == preview || "$MODE" == test ]] || { echo "Usage: $0 [preview|test]" >&2; exit 1; }
 set -a; . ./.env.local; set +a
-if [[ "$MODE" == test ]]; then
-  [[ "${STRIPE_SECRET_KEY:-}" == sk_test_* ]] || { echo "Test mode needs a Stripe TEST key (sk_test_...) in .env.local" >&2; exit 1; }
-  [[ -n "${MONGODB_URI:-}" ]] || { echo "Test mode needs MONGODB_URI in .env.local" >&2; exit 1; }
-  export TRAVELPORT_STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"
+[[ -n "${DUFFEL_API_KEY:-}" ]] || { echo "Missing DUFFEL_API_KEY in .env.local" >&2; exit 1; }
+if [[ "$DUFFEL_API_KEY" == duffel_test_* ]]; then
+  [[ "${STRIPE_SECRET_KEY:-}" == sk_test_* ]] || { echo "Duffel test mode needs a Stripe TEST key (sk_test_...) in .env.local" >&2; exit 1; }
+  export DUFFEL_STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"
+else
+  export DUFFEL_STRIPE_SECRET_KEY=""
 fi
-export MODE
-for v in TRAVELPORT_USERNAME TRAVELPORT_PASSWORD TRAVELPORT_CLIENT_ID TRAVELPORT_CLIENT_SECRET TRAVELPORT_ACCESS_GROUP; do
-  [[ -n "${!v:-}" ]] || { echo "Missing $v in .env.local" >&2; exit 1; }
-done
 
 echo "1/5 rollback point"
-aws lambda publish-version --function-name $FUNCTION $R --description "before Travelport $MODE" --query Version --output text
+aws lambda publish-version --function-name $FUNCTION $R --description "before deploy of $(git rev-parse --short HEAD)" --query Version --output text
 
 echo "2/5 deploy API code from $(git rev-parse --short HEAD)"
 T=$(mktemp -d)
@@ -44,42 +38,38 @@ for f in search.mjs package.json package-lock.json; do git show "HEAD:infra/lamb
 aws lambda update-function-code --function-name $FUNCTION $R --zip-file "fileb://$T.zip" --query LastUpdateStatus --output text
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
-echo "3/5 settings ($MODE mode, existing keys kept)"
+echo "3/5 settings (Duffel in, TRAVELPORT_* out, existing keys kept)"
 ENV_FILE=$(mktemp); chmod 600 "$ENV_FILE"
 aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Environment.Variables' --output json |
   node -e '
     let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
       const cur = JSON.parse(s || "{}") || {};
-      for (const k of ["TRAVELPORT_USERNAME","TRAVELPORT_PASSWORD","TRAVELPORT_CLIENT_ID",
-                       "TRAVELPORT_CLIENT_SECRET","TRAVELPORT_ACCESS_GROUP","TRAVELPORT_PCC"]) {
-        if (process.env[k]) cur[k] = process.env[k];
-      }
-      delete cur.TRAVELPORT_ENV;          // pre-production Travelport
-      if (process.env.MODE === "test") {
-        cur.TRAVELPORT_TEST_SITE = "true";
-        delete cur.TRAVELPORT_PREVIEW;
-        cur.TRAVELPORT_STRIPE_SECRET_KEY = process.env.TRAVELPORT_STRIPE_SECRET_KEY;
-        cur.MONGODB_URI = process.env.MONGODB_URI;
-        cur.MONGODB_DB_NAME = "lyrtrip_test";
-      } else {
-        cur.TRAVELPORT_PREVIEW = "true";
-        delete cur.TRAVELPORT_TEST_SITE;
-      }
+      const dropped = Object.keys(cur).filter(k => k.startsWith("TRAVELPORT_"));
+      for (const k of dropped) delete cur[k];
+      cur.DUFFEL_API_KEY = process.env.DUFFEL_API_KEY;
+      if (process.env.DUFFEL_STRIPE_SECRET_KEY) cur.DUFFEL_STRIPE_SECRET_KEY = process.env.DUFFEL_STRIPE_SECRET_KEY;
+      else delete cur.DUFFEL_STRIPE_SECRET_KEY;   // live Duffel pays with the main STRIPE_SECRET_KEY
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
-      console.log("keys:", Object.keys(cur).join(", "));
+      console.log("dropped:", dropped.join(", ") || "(none)");
     });' "$ENV_FILE"
 aws lambda update-function-configuration --function-name $FUNCTION $R --timeout 30 \
   --environment "file://$ENV_FILE" --query LastUpdateStatus --output text
 rm -f "$ENV_FILE"
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
-echo "4/5 API route"
+echo "4/5 API routes"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-ROUTE="POST /api/travelport/{proxy+}"
+ROUTE="POST /api/flight/{proxy+}"
 if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
   echo "exists: $ROUTE"
 else
   aws apigatewayv2 create-route --api-id $API_ID $R --route-key "$ROUTE" --target "$INTEGRATION" --query RouteKey --output text
+fi
+ROUTE_ID=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/travelport/{proxy+}'].RouteId" --output text)
+if [[ -n "$ROUTE_ID" && "$ROUTE_ID" != None ]]; then
+  aws apigatewayv2 delete-route --api-id $API_ID $R --route-id "$ROUTE_ID" && echo "removed: POST /api/travelport/{proxy+}"
+else
+  echo "no Travelport route"
 fi
 
 echo "5/5 frontend"
@@ -93,4 +83,4 @@ for r in $ROUTES; do aws s3 cp "$r.html" "$BUCKET/$r" --content-type text/html -
 aws s3 sync . $BUCKET/ --delete $EXCL --only-show-errors
 for d in $DISTRIBUTIONS; do aws cloudfront create-invalidation --distribution-id $d --paths "/*" --query Invalidation.Id --output text; done
 
-echo "Done ($MODE). In a minute, search hotels or flights on https://www.lyrtrip.com — you should see the $MODE notice."
+echo "Done. In a minute, check https://www.lyrtrip.com"

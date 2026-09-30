@@ -37,6 +37,9 @@ interface PassengerDetail {
   nationality: string;
   email: string;
   phone: string;
+  passportNumber?: string;
+  passportCountry?: string;
+  passportExpiry?: string;
 }
 
 interface SearchResult {
@@ -70,25 +73,14 @@ interface SearchResult {
   duffelPassengerIds?: string[];
   duffelPassengerCount?: number;
   duffelExpiresAt?: string;
+  // airline needs passport details for every passenger
+  idDocsRequired?: boolean;
+  // booked against the Duffel test environment with Stripe test cards
+  testBooking?: boolean;
   totalPrice?: number;
   basePrice?: number;
   // placeholder result shown when no provider answered; not bookable
   demo?: boolean;
-  // live content shown before online booking opens
-  preview?: boolean;
-  // bookable against the Travelport test system with Stripe test cards
-  testBooking?: boolean;
-  // travelport hotel property key (rooms are fetched on demand)
-  _tvptHotel?: { chainCode: string; propertyCode: string; distanceMiles?: number };
-  // travelport booking metadata
-  _tvpt?: {
-    sessionId: string;
-    offeringId: string;
-    productId: string;
-    contentSource: string;
-    basePrice: number;
-    currency: string;
-  };
   // job-specific
   company?: string;
   jobLocation?: string;
@@ -115,29 +107,6 @@ interface BookingDraft {
   hotel: SearchResult;
   checkin: string;
   checkout: string;
-}
-
-interface HotelRoom {
-  bookingCode: string;
-  name: string;
-  rateDescription: string;
-  refundable: boolean;
-  cancelPolicy: string;
-  guaranteeType: string;
-  nights: number;
-  taxes: number;
-  total: number;
-  perNight: number;
-  currency: string;
-}
-
-interface HotelRoomsDraft {
-  hotel: SearchResult;
-  checkin: string;
-  checkout: string;
-  rooms: HotelRoom[] | null;
-  error: string | null;
-  selected: HotelRoom | null;
 }
 
 interface FlightDraft {
@@ -327,9 +296,6 @@ export default function Home() {
   const [locationLoading, setLocationLoading] = useState(true);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
-  const [roomsDraft, setRoomsDraft] = useState<HotelRoomsDraft | null>(null);
-  const [hotelGuest, setHotelGuest] = useState({ givenName: '', familyName: '', email: '', phone: '' });
-  const [hotelBookingLoading, setHotelBookingLoading] = useState(false);
   const [bookingName, setBookingName] = useState('');
   const [bookingGuests, setBookingGuests] = useState(1);
   const [bookingSuccess, setBookingSuccess] = useState(false);
@@ -425,8 +391,8 @@ export default function Home() {
       window.history.replaceState({}, '', '/');
       if (draft.type === 'flight') {
         const { type: _type, ...flightOnly } = draft;
-        if (!(flightOnly.flight?._tvpt || flightOnly.flight?.duffelOfferId)) return;
-        const count = flightOnly.flight?.duffelPassengerCount ?? (flightOnly.flight?._tvpt ? formData.flightPassengers || 1 : 1);
+        if (!flightOnly.flight?.duffelOfferId) return;
+        const count = flightOnly.flight?.duffelPassengerCount ?? 1;
         const emptyPax: PassengerDetail = { title: 'mr', givenName: '', familyName: '', dob: '', gender: 'm', nationality: '', email: '', phone: '' };
         setActiveTab('flights');
         setTimeout(() => {
@@ -642,55 +608,6 @@ export default function Home() {
     }
   };
 
-  const openHotelRooms = async (hotel: SearchResult) => {
-    const draft: HotelRoomsDraft = { hotel, checkin: formData.checkin, checkout: formData.checkout, rooms: null, error: null, selected: null };
-    setRoomsDraft(draft);
-    try {
-      const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-      const res = await fetch(`${baseUrl}/api/travelport/hotel/rooms`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...hotel._tvptHotel, checkin: draft.checkin, checkout: draft.checkout, guests: 1 }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not load rooms');
-      setRoomsDraft(d => d && d.hotel.id === hotel.id ? { ...d, rooms: data.rooms ?? [] } : d);
-    } catch (err) {
-      setRoomsDraft(d => d && d.hotel.id === hotel.id ? { ...d, rooms: [], error: err instanceof Error ? err.message : 'Could not load rooms' } : d);
-    }
-  };
-
-  const payForHotelRoom = async () => {
-    if (!roomsDraft?.selected) return;
-    if (!user) { router.push('/login'); return; }
-    const { hotel, selected, checkin, checkout } = roomsDraft;
-    setHotelBookingLoading(true);
-    setRoomsDraft(d => d && { ...d, error: null });
-    try {
-      const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-      const res = await fetch(`${baseUrl}/api/travelport/hotel/checkout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...hotel._tvptHotel,
-          bookingCode: selected.bookingCode,
-          checkin,
-          checkout,
-          guests:    1,
-          guest:     hotelGuest,
-          hotelName: hotel.name,
-        }),
-      });
-      const data = await res.json();
-      if (data.url) { window.location.href = data.url; return; }
-      setRoomsDraft(d => d && { ...d, error: data.error ?? 'Booking failed. Please try again.' });
-    } catch {
-      setRoomsDraft(d => d && { ...d, error: 'Could not connect to booking service. Please try again.' });
-    } finally {
-      setHotelBookingLoading(false);
-    }
-  };
-
   const confirmBooking = async () => {
     if (!bookingDraft || !bookingName.trim()) return;
 
@@ -758,45 +675,6 @@ export default function Home() {
       return;
     }
     const f = flightDraft.flight;
-
-    // Travelport booking path
-    if (f._tvpt) {
-      if (flightPassengerDetails.some(p => !p.givenName.trim() || !p.familyName.trim() || !p.email.trim() || !p.dob || !p.nationality.trim() || p.phone.replace(/\D/g, '').length < 7)) return;
-      setFlightBookingLoading(true);
-      setFlightBookingError(null);
-      try {
-        const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-
-        // The server re-prices the offer and charges its own total (fare + taxes + fee)
-        const checkoutRes = await fetch(`${baseUrl}/api/travelport/flight/checkout`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId:  f._tvpt.sessionId,
-            offeringId: f._tvpt.offeringId,
-            productId:  f._tvpt.productId,
-            passengers: flightPassengerDetails,
-            flightSummary: {
-              legs:          f.legs,
-              totalDuration: f.totalDuration,
-              from:          flightDraft.from,
-              to:            flightDraft.to,
-              depart:        flightDraft.depart,
-              airline:       f.name,
-              route:         `${flightDraft.from} → ${flightDraft.to}`,
-            },
-          }),
-        });
-        const checkoutData = await checkoutRes.json();
-        if (checkoutData.url) { window.location.href = checkoutData.url; return; }
-        setFlightBookingError(checkoutData.error ?? 'Booking failed. Please try again.');
-      } catch {
-        setFlightBookingError('Could not connect to booking service. Please try again.');
-      } finally {
-        setFlightBookingLoading(false);
-      }
-      return;
-    }
 
     // Duffel booking path
     if (f.duffelOfferId) {
@@ -934,17 +812,6 @@ export default function Home() {
     </div>
   );
 
-  const PreviewNotice = () => results.some(r => r.preview) ? (
-    <div className="mt-6 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl px-4 py-3">
-      <span className="font-semibold">Preview:</span> online booking opens soon. Prices shown are indicative and can&apos;t be booked yet.
-    </div>
-  ) : results.some(r => r.testBooking) ? (
-    <div className="mt-6 bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl px-4 py-3">
-      <span className="font-semibold">Test mode:</span> bookings are made in the Travelport test system and are not real.
-      Pay with Stripe test card <span className="font-mono font-semibold">4242 4242 4242 4242</span>, any future date, any CVC. Real cards are not charged.
-    </div>
-  ) : null;
-
   const HotelList = () => {
     if (!hasSearched) return null;
     if (loading) return <p className="text-gray-500 mt-6">Searching hotels...</p>;
@@ -964,9 +831,8 @@ export default function Home() {
                   <h3 className="font-bold text-gray-900 text-base leading-tight">{result.name}</h3>
                   {result.pricePerNight != null && result.pricePerNight > 0 && (
                     <div className="shrink-0 text-right">
-                      {result._tvptHotel && <p className="text-xs text-gray-500">from</p>}
                       <p className="text-xl font-bold text-indigo-700">${result.pricePerNight}</p>
-                      <p className="text-xs text-gray-500">{result._tvptHotel ? 'per night + taxes' : 'per night'}</p>
+                      <p className="text-xs text-gray-500">per night</p>
                     </div>
                   )}
                 </div>
@@ -996,13 +862,6 @@ export default function Home() {
                 {result.checkIn && <p className="text-xs text-gray-400">Check-in: {result.checkIn}</p>}
                 {result.demo ? (
                   <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
-                ) : result._tvptHotel ? (
-                <button
-                  onClick={() => openHotelRooms(result)}
-                  className="ml-auto px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
-                >
-                  View rooms
-                </button>
                 ) : (
                 // Listing-only result (no reservation system behind it): send the guest to the provider
                 <a
@@ -1071,7 +930,7 @@ export default function Home() {
             <p className="text-xs text-gray-500">per person</p>
             {r.demo ? (
               <span className="mt-1 px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
-            ) : !(r._tvpt || r.duffelOfferId) ? (
+            ) : !r.duffelOfferId ? (
               // Listing-only result (no reservation system behind it): send the traveler to the provider
               <a
                 href={`https://www.google.com/travel/flights?q=${encodeURIComponent(`Flights from ${formData.from} to ${formData.to} on ${formData.depart}${formData.return ? ` returning ${formData.return}` : ''}`)}`}
@@ -1084,7 +943,7 @@ export default function Home() {
             ) : (
             <button
               onClick={() => {
-                const count = r.duffelPassengerCount ?? (r._tvpt ? formData.flightPassengers || 1 : 1);
+                const count = r.duffelPassengerCount ?? 1;
                 const emptyPax: PassengerDetail = { title: 'mr', givenName: '', familyName: '', dob: '', gender: 'm', nationality: '', email: '', phone: '' };
                 setFlightDraft({ flight: r, from: formData.from, to: formData.to, depart: formData.depart });
                 setFlightPassengerDetails(Array.from({ length: count }, () => ({ ...emptyPax })));
@@ -1519,7 +1378,6 @@ export default function Home() {
                   </div>
                   {searchBtn('hotels')}
                 </div>
-                <PreviewNotice />
                 <HotelList />
               </div>
             )}
@@ -1550,7 +1408,6 @@ export default function Home() {
                   </div>
                   {searchBtn('flights')}
                 </div>
-                <PreviewNotice />
                 <FlightList />
               </div>
             )}
@@ -1949,116 +1806,6 @@ export default function Home() {
         )}
 
         {/* Booking modal */}
-        {roomsDraft && (() => {
-          const { hotel, rooms, selected, error } = roomsDraft;
-          const close = () => { setRoomsDraft(null); setHotelBookingLoading(false); };
-          const guestValid = hotelGuest.givenName.trim() && hotelGuest.familyName.trim() && /\S+@\S+\.\S+/.test(hotelGuest.email);
-          const money = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          return (
-            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
-                <div className="flex items-start justify-between mb-1">
-                  <h2 className="text-xl font-bold text-gray-900">{selected ? 'Guest details' : 'Choose a room'}</h2>
-                  <button onClick={close} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
-                </div>
-                <p className="text-gray-600 text-sm">{hotel.name}</p>
-                <p className="text-gray-500 text-xs mb-4">{hotel.description} · {roomsDraft.checkin} → {roomsDraft.checkout}</p>
-
-                {!selected && (
-                  rooms === null ? (
-                    <p className="text-gray-500 text-sm py-6 text-center">Checking live room availability…</p>
-                  ) : rooms.length === 0 ? (
-                    <p className="text-gray-600 text-sm py-6 text-center">{error ?? 'No rooms available for these dates.'}</p>
-                  ) : (
-                    <div className="space-y-3">
-                      {rooms.map(room => (
-                        <div key={room.bookingCode} className="border border-gray-200 rounded-xl p-3 flex gap-3 items-start">
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-semibold text-gray-900">{room.name}</p>
-                            <p className={`text-xs mt-1 font-medium ${room.refundable ? 'text-green-600' : 'text-orange-600'}`}>
-                              {room.refundable ? 'Refundable' : 'Non-refundable'}
-                            </p>
-                            {room.cancelPolicy && <p className="text-xs text-gray-500 mt-1 line-clamp-2">{room.cancelPolicy}</p>}
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="text-lg font-bold text-indigo-700">{money(room.total)}</p>
-                            <p className="text-xs text-gray-500">{room.nights} night{room.nights !== 1 ? 's' : ''} · incl. taxes</p>
-                            <button
-                              onClick={() => setRoomsDraft(d => d && { ...d, selected: room, error: null })}
-                              className="mt-2 px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
-                            >
-                              Select
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )
-                )}
-
-                {selected && (
-                  <>
-                    <div className="bg-indigo-50 rounded-xl p-3 mb-4 text-sm">
-                      <div className="flex justify-between gap-3">
-                        <span className="font-medium text-gray-900">{selected.name}</span>
-                        <span className="font-bold text-indigo-700 shrink-0">{money(selected.total)}</span>
-                      </div>
-                      <p className="text-xs text-gray-600 mt-1">
-                        {selected.nights} night{selected.nights !== 1 ? 's' : ''} · prepaid, taxes & fees included · {selected.refundable ? 'refundable' : 'non-refundable'}
-                      </p>
-                      {selected.cancelPolicy && <p className="text-xs text-gray-500 mt-1">{selected.cancelPolicy}</p>}
-                    </div>
-                    <div className="grid grid-cols-2 gap-3 mb-3">
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">First name <span className="text-red-500">*</span></label>
-                        <input value={hotelGuest.givenName} onChange={e => setHotelGuest(g => ({ ...g, givenName: e.target.value }))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">Last name <span className="text-red-500">*</span></label>
-                        <input value={hotelGuest.familyName} onChange={e => setHotelGuest(g => ({ ...g, familyName: e.target.value }))}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-                      </div>
-                    </div>
-                    <div className="mb-3">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Email <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(confirmation will be sent here)</span></label>
-                      <input type="email" value={hotelGuest.email} onChange={e => setHotelGuest(g => ({ ...g, email: e.target.value }))}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-                    </div>
-                    <div className="mb-4">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
-                      <input type="tel" value={hotelGuest.phone} onChange={e => setHotelGuest(g => ({ ...g, phone: e.target.value }))}
-                        placeholder="+1 555 000 0000" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-                    </div>
-                  </>
-                )}
-
-                {error && rooms && rooms.length > 0 && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mt-4 text-sm text-red-700">{error}</div>
-                )}
-
-                <div className="flex gap-3 mt-4">
-                  <button
-                    onClick={() => selected ? setRoomsDraft(d => d && { ...d, selected: null, error: null }) : close()}
-                    className="flex-1 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition"
-                  >
-                    {selected ? 'Back to rooms' : 'Close'}
-                  </button>
-                  {selected && (
-                    <button
-                      onClick={payForHotelRoom}
-                      disabled={(user && !guestValid) || hotelBookingLoading}
-                      className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition"
-                    >
-                      {hotelBookingLoading ? 'Processing…' : user ? `Pay ${money(selected.total)} →` : 'Sign in to Book'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        })()}
-
         {bookingDraft && (() => {
           const nights        = calcNights(bookingDraft.checkin, bookingDraft.checkout);
           const pricePerNight = bookingDraft.hotel.pricePerNight ?? PRICE_PER_NIGHT[bookingDraft.hotel.priceLevel ?? '$$'] ?? 160;
@@ -2145,11 +1892,14 @@ export default function Home() {
           const stops = (f.legs?.length ?? 1) - 1;
           const stopLabel = stops === 0 ? 'Nonstop' : `${stops} stop${stops > 1 ? 's' : ''}`;
 
-          // Duffel / Travelport booking modal — full passenger details
-          if (f.duffelOfferId || f._tvpt) {
+          // Duffel booking modal — full passenger details
+          if (f.duffelOfferId) {
             const total     = f.totalPrice ?? ((f.price ?? 0) * flightPassengers);
+            const passportValid = (p: PassengerDetail) => (!f.idDocsRequired && !p.passportNumber?.trim()) ||
+              (!!p.passportNumber?.trim() && /^[A-Z]{2}$/.test(p.passportCountry ?? '') && !!p.passportExpiry);
             const allValid  = flightPassengerDetails.length > 0 && flightPassengerDetails.every(
-              p => p.givenName.trim() && p.familyName.trim() && p.email.trim() && p.dob && p.nationality.trim() && p.phone.replace(/\D/g, '').length >= 7
+              p => p.givenName.trim() && p.familyName.trim() && /\S+@\S+\.\S+/.test(p.email) && p.dob && /^[A-Z]{2}$/.test(p.nationality) &&
+                p.phone.trim().startsWith('+') && p.phone.replace(/\D/g, '').length >= 8 && passportValid(p)
             );
             const updatePax = (idx: number, field: keyof PassengerDetail, val: string) => {
               setFlightPassengerDetails(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
@@ -2242,11 +1992,31 @@ export default function Home() {
                         <div>
                           <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(with country code)</span></label>
                           <input type="tel" value={pax.phone} onChange={e => updatePax(idx, 'phone', e.target.value)}
-                            placeholder="+1 555 000 0000" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            placeholder="+1 415 555 2671" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                        </div>
+                        <div className="pt-1">
+                          <p className="text-xs font-medium text-gray-600 mb-1">
+                            Passport {f.idDocsRequired ? <span className="text-red-500">* required by the airline</span> : <span className="text-gray-400 font-normal">(optional)</span>}
+                          </p>
+                          <div className="grid grid-cols-3 gap-2">
+                            <input type="text" value={pax.passportNumber ?? ''} onChange={e => updatePax(idx, 'passportNumber', e.target.value.toUpperCase())}
+                              placeholder="Number" aria-label="Passport number" className="col-span-3 sm:col-span-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            <input type="text" value={pax.passportCountry ?? ''} onChange={e => updatePax(idx, 'passportCountry', e.target.value.toUpperCase().slice(0, 2))}
+                              placeholder="Issued by (US)" maxLength={2} aria-label="Passport issuing country" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            <input type="date" value={pax.passportExpiry ?? ''} onChange={e => updatePax(idx, 'passportExpiry', e.target.value)}
+                              aria-label="Passport expiry date" title="Expiry date" className="col-span-2 sm:col-span-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                          </div>
                         </div>
                       </div>
                     ))}
                   </div>
+
+                  {f.testBooking && (
+                    <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-4">
+                      <span className="font-semibold">Test mode:</span> this books a test ticket, not a real one. Pay with Stripe test card{' '}
+                      <span className="font-mono font-semibold">4242 4242 4242 4242</span>, any future date, any CVC.
+                    </div>
+                  )}
 
                   {flightBookingError && (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-700">

@@ -79,36 +79,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Verified SES sender address for flight e-ticket emails (e.g. tickets@lyrtrip.com).
-  TravelportUsername:
-    Type: String
-    Default: ""
-    Description: Travelport TripServices username (e.g. TP12345678).
-  TravelportPassword:
-    Type: String
-    NoEcho: true
-    Default: ""
-    Description: Travelport TripServices password.
-  TravelportClientId:
-    Type: String
-    Default: ""
-    Description: Travelport OAuth client ID.
-  TravelportClientSecret:
-    Type: String
-    NoEcho: true
-    Default: ""
-    Description: Travelport OAuth client secret.
-  TravelportAccessGroup:
-    Type: String
-    Default: ""
-    Description: Travelport access group GUID (XAUTH_TRAVELPORT_ACCESSGROUP header value).
-  TravelportAirMarkup:
-    Type: String
-    Default: "1.12"
-    Description: Multiplier applied to the Travelport air total fare incl. taxes (1.12 = 12% commission).
-  TravelportHotelMarkup:
-    Type: String
-    Default: "1.12"
-    Description: Multiplier applied to Travelport hotel base rate (1.12 = 12% commission).
 
 Conditions:
   UseRoute53:
@@ -199,13 +169,6 @@ Resources:
           UBER_CLIENT_ID: !Ref UberClientId
           DUFFEL_API_KEY: !Ref DuffelApiKey
           SES_FROM_EMAIL: !Ref SesFromEmail
-          TRAVELPORT_USERNAME: !Ref TravelportUsername
-          TRAVELPORT_PASSWORD: !Ref TravelportPassword
-          TRAVELPORT_CLIENT_ID: !Ref TravelportClientId
-          TRAVELPORT_CLIENT_SECRET: !Ref TravelportClientSecret
-          TRAVELPORT_ACCESS_GROUP: !Ref TravelportAccessGroup
-          TRAVELPORT_AIR_MARKUP: !Ref TravelportAirMarkup
-          TRAVELPORT_HOTEL_MARKUP: !Ref TravelportHotelMarkup
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:

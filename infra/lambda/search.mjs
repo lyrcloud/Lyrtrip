@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { MongoClient, ObjectId } from 'mongodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import {
   AdminCreateUserCommand,
   AdminGetUserCommand,
@@ -312,1116 +313,6 @@ async function searchHotelsAmadeus({ lat, lng, checkin, checkout }) {
       bedType:     offer?.room?.typeEstimated?.bedType  ?? undefined,
     };
   });
-}
-
-// ---------------------------------------------------------------------------
-// Travelport TripServices integration
-// ---------------------------------------------------------------------------
-
-// TRAVELPORT_ENV=production switches to live Travelport; anything else uses pre-production
-const TVPT_LIVE       = process.env.TRAVELPORT_ENV === 'production';
-const TVPT_HOST       = TVPT_LIVE ? 'travelport.net' : 'pp.travelport.net';
-const TVPT_AUTH_URL   = `https://auth.${TVPT_HOST}/oauth/token`;
-const TVPT_AIR_BASE   = `https://api.${TVPT_HOST}/11/air`;
-const TVPT_HOTEL_BASE = `https://api.${TVPT_HOST}/11/hotel`;
-
-// TRAVELPORT_PREVIEW=true: show Travelport results on the live site but take no bookings
-const TVPT_PREVIEW = process.env.TRAVELPORT_PREVIEW === 'true';
-// TRAVELPORT_TEST_SITE=true: full booking flow against Travelport pre-production, paid
-// with a Stripe TEST key (TRAVELPORT_STRIPE_SECRET_KEY) — test cards only, no real money
-const TVPT_TEST_SITE = process.env.TRAVELPORT_TEST_SITE === 'true';
-const tvptMarkPreview = results =>
-  TVPT_PREVIEW ? results.map(r => ({ ...r, preview: true }))
-  : TVPT_TEST_SITE ? results.map(r => ({ ...r, testBooking: true }))
-  : results;
-
-// Travelport bookings can be paid through a separate Stripe account/key
-const tvptStripeKey = () => process.env.TRAVELPORT_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
-
-// Never take real money for a booking in Travelport's test system
-function tvptPaymentModeError() {
-  if (TVPT_PREVIEW) return 'Online booking is not available yet. Please check back soon.';
-  const liveStripe = /^(sk|rk)_live_/.test(tvptStripeKey() ?? '');
-  if (liveStripe && !TVPT_LIVE) {
-    return 'Online booking is not available yet. Please check back soon.';
-  }
-  return null;
-}
-
-// Configurable commission markup applied on top of Travelport base fare
-const TVPT_AIR_MARKUP   = parseFloat(process.env.TRAVELPORT_AIR_MARKUP   || '1.12'); // 12%
-const TVPT_HOTEL_MARKUP = parseFloat(process.env.TRAVELPORT_HOTEL_MARKUP || '1.12'); // 12%
-
-// Ticketless airlines can only be ticketed with a payment card; we ticket with the agency
-// (cash) form of payment, so their fares are left out of Travelport results.
-const TVPT_EXCLUDED_CARRIERS = new Set(
-  (process.env.TRAVELPORT_EXCLUDE_CARRIERS ?? 'F9,NK,WN,G4').split(',').map(c => c.trim().toUpperCase()).filter(Boolean)
-);
-
-// Where Stripe sends the customer back to (override for local/staging testing)
-const SITE_URL = (process.env.SITE_URL || 'https://www.lyrtrip.com').replace(/\/$/, '');
-
-let tvptToken       = null;
-let tvptTokenExpiry = 0;
-
-async function getTvptToken() {
-  if (tvptToken && Date.now() < tvptTokenExpiry - 60_000) return tvptToken;
-  const res = await fetch(TVPT_AUTH_URL, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type:    'password',
-      username:      process.env.TRAVELPORT_USERNAME      ?? '',
-      password:      process.env.TRAVELPORT_PASSWORD      ?? '',
-      client_id:     process.env.TRAVELPORT_CLIENT_ID     ?? '',
-      client_secret: process.env.TRAVELPORT_CLIENT_SECRET ?? '',
-    }),
-  });
-  if (!res.ok) { const e = await res.text(); throw new Error(`Travelport auth (${res.status}): ${e}`); }
-  const d = await res.json();
-  tvptToken       = d.access_token;
-  tvptTokenExpiry = Date.now() + d.expires_in * 1000;
-  return tvptToken;
-}
-
-async function tvptAirFetch(path, body = null, method = 'POST') {
-  const token = await getTvptToken();
-  const hdrs  = {
-    'Authorization':                `Bearer ${token}`,
-    'XAUTH_TRAVELPORT_ACCESSGROUP': process.env.TRAVELPORT_ACCESS_GROUP ?? '',
-    'Accept':          'application/json',
-    'Accept-Encoding': 'gzip',
-    'Cache-Control':   'no-cache',
-    'Accept-Version':  '11',
-    'Content-Version': '11',
-  };
-  if (body) hdrs['Content-Type'] = 'application/json';
-  const res = await fetch(`${TVPT_AIR_BASE}${path}`, { method, headers: hdrs, body: body ? JSON.stringify(body) : undefined });
-  if (!res.ok) { const e = await res.text(); throw new Error(`Travelport Air ${method} ${path} (${res.status}): ${e}`); }
-  return res.json();
-}
-
-async function tvptHotelFetch(path, body = null, method = 'POST') {
-  const token = await getTvptToken();
-  const hdrs  = {
-    'Authorization':                `Bearer ${token}`,
-    'XAUTH_TRAVELPORT_ACCESSGROUP': process.env.TRAVELPORT_ACCESS_GROUP ?? '',
-    'Accept':          'application/json',
-    'Accept-Encoding': 'gzip',
-    'Cache-Control':   'no-cache',
-  };
-  if (body) hdrs['Content-Type'] = 'application/json';
-  const res = await fetch(`${TVPT_HOTEL_BASE}${path}`, { method, headers: hdrs, body: body ? JSON.stringify(body) : undefined });
-  if (!res.ok) { const e = await res.text(); throw new Error(`Travelport Hotel ${method} ${path} (${res.status}): ${e}`); }
-  return res.json();
-}
-
-// Search flights — returns results in the same shape as Duffel, plus _tvpt booking metadata
-async function searchFlightsTravelport({ from, to, depart, returnDate, passengers = 1 }) {
-  const origin = resolveIata(from) || from.toUpperCase().slice(0, 3);
-  const dest   = resolveIata(to)   || to.toUpperCase().slice(0, 3);
-
-  const searchLegs = [
-    { '@type': 'SearchCriteriaFlight', departureDate: depart, From: { value: origin }, To: { value: dest } },
-  ];
-  if (returnDate) {
-    searchLegs.push({ '@type': 'SearchCriteriaFlight', departureDate: returnDate, From: { value: dest }, To: { value: origin } });
-  }
-
-  const data = await tvptAirFetch('/catalog/search/catalogproductofferings', {
-    CatalogProductOfferingsQueryRequest: {
-      CatalogProductOfferingsRequest: {
-        '@type':                    'CatalogProductOfferingsRequestAir',
-        offersPerPage:              20,
-        maxNumberOfUpsellsToReturn: 0,
-        // GDS only: booking and ticketing below use the GDS workflow (NDC orders differ)
-        contentSourceList:          ['GDS'],
-        PassengerCriteria:          [{ '@type': 'PassengerCriteria', number: passengers, passengerTypeCode: 'ADT' }],
-        SearchCriteriaFlight:       searchLegs,
-        PricingModifiersAir:        { '@type': 'PricingModifiersAir', currencyCode: 'USD' },
-      },
-    },
-  });
-
-  const resp = data.CatalogProductOfferingsResponse ?? {};
-  const wrap = resp.CatalogProductOfferings ?? {};
-  // Errors can accompany valid offers (e.g. one content source failing); only fail when nothing came back
-  if (!wrap.CatalogProductOffering?.length && resp.Result?.Error?.length) {
-    throw new Error(resp.Result.Error[0].Message ?? 'Travelport search error');
-  }
-
-  const sessionId = wrap.Identifier?.value ?? '';
-  const offerings = wrap.CatalogProductOffering ?? [];
-
-  // Build flight segment lookup from ReferenceList
-  const flightLookup = {};
-  for (const g of resp.ReferenceList ?? []) {
-    if (g['@type'] === 'ReferenceListFlight') {
-      for (const f of g.Flight ?? []) flightLookup[f.id] = f;
-    }
-  }
-
-  const ticketable = offerings.filter(o =>
-    !(o.ProductBrandOptions?.[0]?.flightRefs ?? []).some(fr => TVPT_EXCLUDED_CARRIERS.has(flightLookup[fr]?.carrier))
-  );
-
-  return ticketable.map((o, i) => {
-    const pbos  = o.ProductBrandOptions?.[0] ?? {};
-    const pbo   = pbos.ProductBrandOffering?.[0] ?? {};
-    const price = pbo.BestCombinablePrice ?? {};
-    const frefs = pbos.flightRefs ?? [];
-
-    const legs = frefs.map(fr => {
-      const f   = flightLookup[fr] ?? {};
-      const dep = f.Departure ?? {};
-      const arr = f.Arrival   ?? {};
-      return {
-        airline:      f.carrier ?? '?',
-        airlineLogo:  null,
-        flightNumber: `${f.carrier ?? ''}${f.number ?? ''}`,
-        departure: {
-          airport: dep.AirportCode?.value ?? dep.location ?? o.Departure,
-          name:    dep.AirportCode?.value ?? dep.location ?? o.Departure,
-          time:    dep.value ?? '',
-        },
-        arrival: {
-          airport: arr.AirportCode?.value ?? arr.location ?? o.Arrival,
-          name:    arr.AirportCode?.value ?? arr.location ?? o.Arrival,
-          time:    arr.value ?? '',
-        },
-        duration:    f.duration ? parseDuffelDuration(f.duration) : 0,
-        airplane:    f.equipment ?? '',
-        travelClass: 'Economy',
-        extensions:  [],
-      };
-    });
-
-    const base     = price.Base ?? 0;
-    // Markup applies to the full fare (base + taxes) — the airline collects both
-    const markedUp = Math.ceil((price.TotalPrice ?? base) * TVPT_AIR_MARKUP * 100) / 100;
-
-    return {
-      id:            `tvpt_${sessionId}_${o.id}`,
-      type:          'flight',
-      isBest:        i === 0,
-      name:          legs[0]?.airline ?? 'GDS Flight',
-      description:   `${o.Departure} → ${o.Arrival}`,
-      price:         Math.ceil((markedUp / passengers) * 100) / 100,
-      totalPrice:    markedUp,
-      totalDuration: legs.reduce((s, l) => s + (l.duration ?? 0), 0),
-      airlineLogo:   null,
-      layovers:      frefs.length > 1 ? frefs.slice(1).map(() => ({})) : [],
-      extensions:    ['GDS fare · all taxes included'],
-      legs,
-      // Booking metadata — kept in response so frontend can pass to checkout
-      _tvpt: {
-        sessionId,
-        offeringId:    o.id,
-        productId:     pbo.Product?.[0]?.productRef ?? 'p0',
-        contentSource: pbo.ContentSource ?? 'GDS',
-        basePrice:     base,
-        currency:      price.CurrencyCode?.value ?? 'USD',
-      },
-    };
-  });
-}
-
-const titleCase = s => (s ?? '').toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-
-// Hotels near a coordinate — returns results in the same shape as SerpAPI hotels, plus _tvptHotel keys
-async function searchHotelsTravelport({ lat, lng, checkin, checkout, guests = 1 }) {
-  const data = await tvptHotelFetch('/search/properties/search', {
-    PropertiesQuerySearch: {
-      CheckInDate:    checkin,
-      CheckOutDate:   checkout,
-      AggregatorList: ['TVPT'],
-      RoomStayCandidate: [{
-        '@type':     'RoomStayCandidate',
-        GuestCounts: { '@type': 'GuestCounts', GuestCount: [{ '@type': 'GuestCount', count: Number(guests) || 1 }] },
-      }],
-      SearchBy: {
-        '@type':      'SearchByGeoLocation',
-        SearchRadius: { value: '10', unitOfDistance: 'Miles' },
-        Latitude:     String(lat),
-        Longitude:    String(lng),
-      },
-    },
-  });
-
-  const props = data.PropertiesResponse?.Properties?.PropertyInfo ?? [];
-  return props
-    // Only properties with a bookable rate for these dates
-    .filter(pi => pi.LowestAvailableRate?.value && pi.availability !== 'Closed')
-    .slice(0, 30)
-    .map(pi => {
-      const p    = pi.Property ?? {};
-      const addr = p.Address ?? {};
-      const key  = p.PropertyKey ?? {};
-      const stars = p.Rating?.find(r => r.provider === 'AAA')?.value ?? p.Rating?.[0]?.value;
-      return {
-        id:            `tvpth_${key.chainCode}_${key.propertyCode}`,
-        name:          p.name === p.name?.toUpperCase() ? titleCase(p.name) : p.name,
-        description:   [...(addr.AddressLine ?? []), addr.City, addr.StateProv?.value].filter(Boolean).join(', '),
-        rating:        stars,
-        hotelClass:    stars,
-        // Lowest nightly rate before taxes; the room list shows the full price incl. taxes
-        pricePerNight: Math.ceil(pi.LowestAvailableRate.value * TVPT_HOTEL_MARKUP),
-        currency:      pi.LowestAvailableRate.code ?? 'USD',
-        imageUrl:      p.Image?.[0]?.value,
-        amenities:     (p.PropertyAmenity ?? []).map(a => a.description).filter(Boolean).slice(0, 6),
-        _tvptHotel:    { chainCode: key.chainCode, propertyCode: key.propertyCode, distanceMiles: pi.Distance?.value },
-      };
-    });
-}
-
-// Room offers for one property. Prices include taxes; the charge is marked up on TotalPrice.
-async function tvptHotelRooms({ chainCode, propertyCode, checkin, checkout, guests = 1 }) {
-  const data = await tvptHotelFetch('/availability/catalogofferingshospitality', {
-    CatalogOfferingsQueryRequest: {
-      CatalogOfferingsRequest: [{
-        '@type':           'CatalogOfferingsRequestHospitality',
-        requestedCurrency: 'USD',
-        StayDates:         { start: checkin, end: checkout },
-        HotelSearchCriterion: {
-          '@type':         'HotelSearchCriterion',
-          numberOfRooms:   1,
-          AggregatorList:  ['TVPT'],
-          PropertyRequest: [{ '@type': 'PropertyRequest', PropertyKey: { '@type': 'PropertyKey', chainCode, propertyCode } }],
-          RoomStayCandidates: {
-            '@type': 'RoomStayCandidates',
-            RoomStayCandidate: [{
-              '@type': 'RoomStayCandidate',
-              GuestCounts: {
-                '@type': 'GuestCounts',
-                GuestCount: [{ '@type': 'GuestCount', count: String(Number(guests) || 1), ageQualifyingCode: '10' }],
-              },
-            }],
-          },
-        },
-      }],
-    },
-  });
-
-  const resp = data.CatalogOfferingsHospitalityResponse ?? {};
-  const err  = resp.Result?.Error?.[0];
-  if (err && !resp.CatalogOfferings) throw Object.assign(new Error(err.Message ?? 'Hotel availability failed'), { status: 400 });
-
-  const nights = Math.max(1, Math.round((new Date(checkout) - new Date(checkin)) / 86_400_000));
-  return (resp.CatalogOfferings?.CatalogOffering ?? []).map(o => {
-    const prod    = o.ProductOptions?.[0]?.Product?.[0] ?? {};
-    const room    = prod.RoomType ?? {};
-    const chars   = room.RoomCharacteristics ?? {};
-    const bed     = chars.BedConfiguration?.[0] ?? {};
-    const tc      = o.TermsAndConditions ?? {};
-    const penalty = tc.CancelPenalty?.[0] ?? {};
-    const price   = o.Price ?? {};
-    const supplierTotal = price.TotalPrice ?? price.Base ?? 0;
-    const total   = Math.ceil(supplierTotal * TVPT_HOTEL_MARKUP * 100) / 100;
-    return {
-      offerId:        o.id ?? o.Identifier?.value,
-      bookingCode:    prod.bookingCode ?? '',
-      name:           [room.Description?.value, bed.quantity && bed.bedType ? `${bed.quantity} × ${bed.bedType}` : bed.bedType].filter(Boolean).join(' · ') || 'Room',
-      rateDescription: (tc.Description ?? []).map(d => d.value ?? d).filter(v => typeof v === 'string').join(' ').slice(0, 300),
-      smoking:        chars.smokingAllowed,
-      refundable:     penalty.Refundable !== 'No',
-      cancelPolicy:   penalty.Description ?? '',
-      guaranteeType:  tc.Guarantee?.[0]?.guaranteeType ?? '',
-      nights,
-      supplierTotal,
-      taxes:          price.TotalTaxes ?? 0,
-      total,
-      perNight:       Math.ceil((total / nights) * 100) / 100,
-      currency:       price.CurrencyCode?.value ?? 'USD',
-    };
-  })
-    // Rates that need proof of eligibility at check-in aren't sellable to the general public
-    .filter(r => !TVPT_RESTRICTED_RATE.test(`${r.name} ${r.rateDescription}`))
-    .sort((a, b) => a.total - b.total);
-}
-
-const TVPT_RESTRICTED_RATE = /\b(AAA|CAA|membership card|member rate|government|gov(ernmen)?t id|military|senior|AARP|employee|corporate id)\b/i;
-
-async function handleTravelportHotelRooms(event) {
-  if (!process.env.TRAVELPORT_CLIENT_ID) return json(500, { error: 'Travelport is not configured' });
-  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { chainCode, propertyCode, checkin, checkout, guests = 1 } = body;
-  if (!chainCode || !propertyCode || !checkin || !checkout) {
-    return json(400, { error: 'chainCode, propertyCode, checkin and checkout are required' });
-  }
-  try {
-    const rooms = await tvptHotelRooms({ chainCode, propertyCode, checkin, checkout, guests });
-    // offerId and supplier cost stay on the server
-    return json(200, { rooms: rooms.map(({ offerId: _o, supplierTotal: _s, ...r }) => r) });
-  } catch (err) {
-    return json(err.status ?? 500, { error: err.message });
-  }
-}
-
-// Price a catalog offering with Travelport. The charge is always computed here from
-// Travelport's TotalPrice (base + taxes), never from a price sent by the browser.
-async function tvptPriceOffering({ sessionId, offeringId, productId = 'p0', passengers = 1 }) {
-  const data = await tvptAirFetch('/price/offers/buildfromcatalogproductofferings', {
-    OfferQueryBuildFromCatalogProductOfferings: {
-      BuildFromCatalogProductOfferingsRequestAir: {
-        '@type': 'BuildFromCatalogProductOfferingsRequestAir',
-        CatalogProductOfferingsIdentifier: { Identifier: { value: sessionId } },
-        CatalogProductOfferingSelection: [{
-          CatalogProductOfferingIdentifier: { Identifier: { value: offeringId } },
-          ProductIdentifier: [{ Identifier: { value: productId } }],
-        }],
-        PassengerCriteria: [{ '@type': 'PassengerCriteria', passengerTypeCode: 'ADT', number: passengers }],
-      },
-    },
-  });
-
-  const resp   = data.OfferListResponse ?? {};
-  const errors = resp.Result?.Error;
-  if (errors?.length) throw Object.assign(new Error(errors[0].Message ?? 'Pricing failed'), { status: 400 });
-
-  const offer   = resp.OfferID?.[0] ?? {};
-  const price   = offer.Price ?? {};
-  const product = offer.Product?.[0] ?? {};
-  const base    = price.Base ?? 0;
-  const total   = price.TotalPrice ?? base;
-  return {
-    // Strip _PC suffix from identifier so it can be used in subsequent workbench calls
-    pricedSessionId: (resp.Identifier?.value ?? sessionId).replace(/_PC$/, ''),
-    offerId:         offer.id ?? 'o0',
-    productId:       product.id ?? productId,
-    product,
-    basePrice:       base,
-    taxes:           price.TotalTaxes ?? Math.round((total - base) * 100) / 100,
-    supplierTotal:   total,
-    markedUpPrice:   Math.ceil(total * TVPT_AIR_MARKUP * 100) / 100,
-    currency:        price.CurrencyCode?.value ?? 'USD',
-  };
-}
-
-// Price a specific offer (step between search and checkout)
-async function handleTravelportAirPrice(event) {
-  if (!process.env.TRAVELPORT_CLIENT_ID) return json(500, { error: 'Travelport is not configured' });
-
-  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { sessionId, offeringId, productId = 'p0', passengers = 1 } = body;
-  if (!sessionId || !offeringId) return json(400, { error: 'sessionId and offeringId are required' });
-
-  let priced;
-  try {
-    priced = await tvptPriceOffering({ sessionId, offeringId, productId, passengers });
-  } catch (err) {
-    return json(err.status ?? 500, { error: err.message });
-  }
-  const { product } = priced;
-
-  const segments = (product.FlightSegment ?? []).map(seg => {
-    const f   = seg.Flight ?? {};
-    const dep = f.Departure ?? {};
-    const arr = f.Arrival   ?? {};
-    return {
-      carrier:       f.carrier,
-      flightNumber:  `${f.carrier ?? ''}${f.number ?? ''}`,
-      from:          dep.location,
-      to:            arr.location,
-      departureDate: dep.date,
-      departureTime: dep.time,
-      arrivalDate:   arr.date,
-      arrivalTime:   arr.time,
-      duration:      f.duration,
-      aircraft:      f.equipment,
-    };
-  });
-
-  return json(200, {
-    pricedSessionId: priced.pricedSessionId,
-    offerId:         priced.offerId,
-    productId:       priced.productId,
-    basePrice:       priced.basePrice,
-    markedUpPrice:   priced.markedUpPrice,
-    currency:        priced.currency,
-    taxes:           priced.taxes,
-    totalPaid:       priced.markedUpPrice,
-    segments,
-    fareClass: product.PassengerFlight?.[0]?.FlightProduct?.[0]?.classOfService,
-    cabin:     product.PassengerFlight?.[0]?.FlightProduct?.[0]?.cabin ?? 'Economy',
-    fareBasis: product.PassengerFlight?.[0]?.FlightProduct?.[0]?.fareBasisCode,
-  });
-}
-
-// Create workbench + Stripe checkout session for a Travelport flight
-async function handleTravelportFlightCheckout(event) {
-  const secretKey = tvptStripeKey();
-  if (!secretKey)                          return json(500, { error: 'Stripe is not configured' });
-  if (!process.env.TRAVELPORT_CLIENT_ID)  return json(500, { error: 'Travelport is not configured' });
-  const modeError = tvptPaymentModeError();
-  if (modeError) return json(503, { error: modeError });
-
-  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { sessionId, offeringId, productId = 'p0', passengers, flightSummary } = body;
-
-  if (!sessionId || !offeringId)                                 return json(400, { error: 'sessionId and offeringId are required' });
-  if (!Array.isArray(passengers) || passengers.length === 0)    return json(400, { error: 'passengers array is required' });
-  // Airlines require a contact phone; Travelport rejects the booking without one
-  if (passengers.some(p => !p.givenName?.trim() || !p.familyName?.trim() || !p.dob || !p.email?.trim()
-      || (p.phone ?? '').replace(/\D/g, '').length < 7)) {
-    return json(400, { error: 'Every passenger needs a given name, family name, date of birth, email and phone number' });
-  }
-
-  // Step 0 — price on the server; this is the amount we charge
-  let priced;
-  try {
-    priced = await tvptPriceOffering({ sessionId, offeringId, productId, passengers: passengers.length });
-  } catch (err) {
-    return json(err.status ?? 500, { error: `Could not confirm fare: ${err.message}` });
-  }
-  const { pricedSessionId, offerId } = priced;
-
-  // Step 1 — create reservation workbench
-  let workbenchId;
-  try {
-    const wbRes = await tvptAirFetch('/book/session/reservationworkbench', { ReservationID: {} });
-    workbenchId = wbRes.ReservationResponse?.Reservation?.Identifier?.value;
-    if (!workbenchId) throw new Error('No workbench ID in response');
-  } catch (err) {
-    return json(500, { error: `Workbench creation failed: ${err.message}` });
-  }
-
-  // Step 2 — add the priced offer to the workbench
-  try {
-    await tvptAirFetch(`/book/airoffer/reservationworkbench/${workbenchId}/offers/buildfromcatalogproductofferings`, {
-      OfferQueryBuildFromCatalogProductOfferings: {
-        BuildFromCatalogProductOfferingsRequest: {
-          '@type': 'BuildFromCatalogProductOfferingsRequestAir',
-          CatalogProductOfferingsIdentifier: { Identifier: { value: pricedSessionId } },
-          CatalogProductOfferingSelection: [{
-            CatalogProductOfferingIdentifier: { Identifier: { value: offerId } },
-            ProductIdentifier: [{ Identifier: { value: priced.productId } }],
-          }],
-        },
-      },
-    });
-  } catch (err) {
-    return json(500, { error: `Add offer to workbench failed: ${err.message}` });
-  }
-
-  const basePrice   = priced.basePrice;
-  const markedUp    = priced.markedUpPrice;
-  const amountCents = Math.round(markedUp * 100);
-  const currency    = priced.currency;
-  const numPax      = passengers.length;
-
-  const db  = await getDb();
-  const now = new Date().toISOString();
-
-  const result  = await db.collection('flight_bookings').insertOne({
-    status:          'pending_stripe',
-    provider:        'travelport',
-    workbenchId,
-    pricedSessionId,
-    offerId,
-    productId:       priced.productId,
-    passengers,
-    flightSummary:   { ...(flightSummary ?? {}), basePrice, taxes: priced.taxes, supplierTotal: priced.supplierTotal, currency },
-    basePrice,
-    taxes:           priced.taxes,
-    supplierTotal:   priced.supplierTotal,
-    markedUpPrice:   markedUp,
-    currency,
-    numPassengers:   numPax,
-    createdAt:       now,
-    updatedAt:       now,
-  });
-  const orderId = result.insertedId.toString();
-
-  const stripe  = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-  const session = await stripe.checkout.sessions.create({
-    mode:                 'payment',
-    payment_method_types: ['card'],
-    line_items: [{
-      price_data: {
-        currency:    currency.toLowerCase(),
-        unit_amount: amountCents,
-        product_data: {
-          name:        `${TVPT_LIVE ? '' : '[TEST] '}${flightSummary?.airline ?? 'Flight'} — ${flightSummary?.route ?? 'Flight'}`,
-          description: `${numPax} passenger${numPax !== 1 ? 's' : ''} · all taxes & Lyrtrip service fee included`,
-        },
-      },
-      quantity: 1,
-    }],
-    metadata:       { type: 'travelport_flight', flightOrderId: orderId },
-    customer_email: passengers[0]?.email || undefined,
-    success_url:    `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=travelport_flight`,
-    cancel_url:     `${SITE_URL}/booking/cancel`,
-  });
-
-  await db.collection('flight_bookings').updateOne(
-    { _id: result.insertedId },
-    { $set: { stripeSessionId: session.id, updatedAt: new Date().toISOString() } }
-  );
-
-  return json(200, { url: session.url, orderId });
-}
-
-// Flight segments exactly as the airline holds them, from a Travelport reservation
-function tvptItinerary(reservation) {
-  const product = reservation.Offer?.[0]?.Product?.[0] ?? {};
-  const pf      = product.PassengerFlight?.[0]?.FlightProduct ?? [];
-  return (product.FlightSegment ?? []).map((seg, i) => {
-    const f   = seg.Flight ?? {};
-    const dep = f.Departure ?? {};
-    const arr = f.Arrival ?? {};
-    const fp  = pf.find(p => (p.segmentSequence ?? []).includes(seg.sequence)) ?? pf[i] ?? pf[0] ?? {};
-    return {
-      carrier:       f.carrier,
-      flightNumber:  `${f.carrier ?? ''}${f.number ?? ''}`,
-      operatingCarrier: f.operatingCarrier ?? null,
-      from:          dep.location,
-      to:            arr.location,
-      departureDate: dep.date,
-      departureTime: (dep.time ?? '').slice(0, 5),
-      arrivalDate:   arr.date,
-      arrivalTime:   (arr.time ?? '').slice(0, 5),
-      duration:      f.duration ? parseDuffelDuration(f.duration) : null,
-      aircraft:      f.equipment ?? null,
-      cabin:         fp.cabin ?? 'Economy',
-      bookingClass:  fp.classOfService ?? null,
-      fareBasis:     fp.fareBasisCode ?? null,
-    };
-  });
-}
-
-// Issue e-tickets for a held GDS booking. The agency pays the airline through its
-// settlement plan (ARC/BSP), so the form of payment to the airline is cash/agency.
-async function tvptIssueTickets({ locator, offerId, amount, currency }) {
-  const wb = (await tvptAirFetch(`/book/session/reservationworkbench/buildfromlocator?Locator=${encodeURIComponent(locator)}`))
-    .ReservationResponse?.Reservation?.Identifier?.value;
-  if (!wb) throw new Error('Could not open ticketing workbench');
-
-  const fopRes = await tvptAirFetch(`/payment/reservationworkbench/${wb}/formofpayment`, {
-    FormOfPaymentCash: { '@type': 'FormOfPaymentCash', id: 'formOfPayment_1', FormOfPaymentRef: 'formOfPayment_1' },
-  });
-  const fopErr = fopRes.FormOfPaymentResponse?.Result?.Error?.[0];
-  if (fopErr) throw new Error(`Form of payment: ${fopErr.Message}`);
-  const fopId = fopRes.FormOfPaymentResponse?.FormOfPayment?.Identifier?.value;
-
-  const payRes = await tvptAirFetch(`/paymentoffer/reservationworkbench/${wb}/payments`, {
-    Payment: {
-      '@type': 'Payment',
-      Amount:  { code: currency, value: amount },
-      FormOfPaymentIdentifier: {
-        id: 'formOfPayment_1', FormOfPaymentRef: 'formOfPayment_1',
-        ...(fopId ? { Identifier: { authority: 'Travelport', value: fopId } } : {}),
-      },
-      OfferIdentifier: [{ id: 'offer_1', offerRef: 'offer_1', Identifier: { authority: 'Travelport', value: offerId } }],
-    },
-  });
-  const payErr = payRes.PaymentResponse?.Result?.Error?.[0];
-  if (payErr) throw new Error(`Payment: ${payErr.Message}`);
-
-  const res = await tvptAirFetch(`/book/reservation/reservations/${wb}`);
-  const reservation = res.ReservationResponse?.Reservation ?? {};
-  const docs = (reservation.Receipt ?? []).flatMap(r => r.Document ?? []).filter(d => d.Number);
-  if (docs.length === 0) {
-    const msg = res.ReservationResponse?.Result?.Error?.[0]?.Message;
-    throw new Error(msg ? `Ticketing: ${msg}` : 'No ticket number returned');
-  }
-  return { reservation, docs };
-}
-
-// Verify Stripe payment, create the booking, issue e-tickets, email the ticket.
-// Any failure after payment refunds the customer automatically.
-async function handleTravelportFlightConfirm(event) {
-  const secretKey = tvptStripeKey();
-  if (!secretKey) return json(500, { error: 'Stripe is not configured' });
-
-  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { sessionId } = body;
-  if (!sessionId) return json(400, { error: 'sessionId is required' });
-
-  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-  let session;
-  try {
-    session = await stripe.checkout.sessions.retrieve(sessionId);
-  } catch {
-    return json(400, { error: 'Invalid session ID' });
-  }
-
-  if (session.payment_status !== 'paid')              return json(402, { error: 'Payment not completed' });
-  if (session.metadata?.type !== 'travelport_flight') return json(400, { error: 'Not a Travelport flight session' });
-
-  const orderId = session.metadata?.flightOrderId;
-  if (!orderId || !ObjectId.isValid(orderId)) return json(400, { error: 'Invalid order ID' });
-
-  const db   = await getDb();
-  const coll = db.collection('flight_bookings');
-  const ticketView = o => ({
-    success:        true,
-    orderId,
-    pnr:            o.pnr,
-    airlineLocator: o.airlineLocator ?? null,
-    bookingRef:     o.tvptBookingRef,
-    tickets:        o.tickets ?? [],
-    itinerary:      o.itinerary ?? [],
-    passengers:     (o.passengers ?? []).map(p => ({ title: p.title, givenName: p.givenName, familyName: p.familyName, email: p.email })),
-    totalPrice:     o.markedUpPrice,
-    currency:       o.currency,
-    issuedAt:       o.ticketedAt ?? o.confirmedAt,
-    testBooking:    !TVPT_LIVE,
-  });
-
-  // Claim the order atomically so two confirm calls can never book twice
-  const order = await coll.findOneAndUpdate(
-    { _id: new ObjectId(orderId), status: 'pending_stripe' },
-    { $set: { status: 'processing', stripePaymentIntent: session.payment_intent, updatedAt: new Date().toISOString() } },
-    { returnDocument: 'after' }
-  );
-  if (!order) {
-    const existing = await coll.findOne({ _id: new ObjectId(orderId) });
-    if (!existing) return json(404, { error: 'Order not found' });
-    if (existing.status === 'ticketed') return json(200, ticketView(existing));
-    if (existing.status === 'processing') return json(202, { pending: true, message: 'Your ticket is being issued. Please refresh in a moment.' });
-    return json(500, { error: `This booking could not be completed and your payment has been refunded. Order ID: ${orderId}` });
-  }
-
-  const fail = async (stage, err) => {
-    console.error(`Flight booking failed at ${stage}:`, err.message);
-    let refunded = false;
-    try {
-      await stripe.refunds.create({ payment_intent: session.payment_intent, metadata: { flightOrderId: orderId } });
-      refunded = true;
-    } catch (e) {
-      console.error('Refund failed:', e.message);
-    }
-    await coll.updateOne({ _id: order._id }, { $set: {
-      status: refunded ? 'refunded' : 'booking_failed', bookingError: `${stage}: ${err.message}`, updatedAt: new Date().toISOString(),
-    } });
-    return json(500, {
-      error: refunded
-        ? `We couldn't issue this ticket with the airline. Your payment has been refunded in full. Order ID: ${orderId}`
-        : `We couldn't issue this ticket and the automatic refund failed. Contact support@lyrtrip.com with order ID: ${orderId}`,
-    });
-  };
-
-  const { workbenchId } = order;
-
-  // Step 3 — add traveler details to the workbench (one Traveler per call)
-  try {
-    for (const p of order.passengers) {
-      const digits = (p.phone ?? '').replace(/[^\d+]/g, '');
-      const intl   = digits.match(/^\+(\d{1,3})(\d{6,})$/);
-      await tvptAirFetch(`/book/traveler/reservationworkbench/${workbenchId}/travelers`, {
-        Traveler: {
-          '@type':           'Traveler',
-          passengerTypeCode: 'ADT',
-          birthDate:         p.dob,
-          gender:            String(p.gender).toLowerCase().startsWith('m') ? 'Male' : 'Female',
-          PersonName:        { '@type': 'PersonNameDetail', Given: p.givenName.trim(), Surname: p.familyName.trim() },
-          Email:             [{ value: p.email.trim() }],
-          ...(digits ? { Telephone: [{
-            '@type':           'Telephone',
-            countryAccessCode: intl ? intl[1] : '1',
-            phoneNumber:       intl ? intl[2] : digits.replace(/^\+/, ''),
-            role:              'Home',
-          }] } : {}),
-        },
-      });
-    }
-  } catch (err) {
-    return fail('travelers', err);
-  }
-
-  // Step 4 — commit the workbench to create the (held) reservation
-  let reservation;
-  try {
-    reservation = (await tvptAirFetch(`/book/reservation/reservations/${workbenchId}`)).ReservationResponse?.Reservation ?? {};
-  } catch (err) {
-    return fail('booking', err);
-  }
-  const locators       = (reservation.Receipt ?? []).map(r => r.Confirmation?.Locator).filter(Boolean);
-  const pnr            = locators.find(l => l.source === '1G')?.value ?? locators[0]?.value;
-  const airlineLocator = locators.find(l => l.source && l.source !== '1G')?.value ?? null;
-  const offerId        = reservation.Offer?.[0]?.Identifier?.value;
-  if (!pnr || !offerId) return fail('booking', new Error('no booking reference returned'));
-  const bookingRef     = reservation.Receipt?.find(r => r.Confirmation?.Locator)?.Identifier?.value ?? pnr;
-  const itinerary      = tvptItinerary(reservation);
-
-  await coll.updateOne({ _id: order._id }, { $set: {
-    pnr, airlineLocator, tvptBookingRef: bookingRef, itinerary, confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-  } });
-
-  // Step 5 — issue the e-tickets
-  let issued;
-  try {
-    issued = await tvptIssueTickets({
-      locator:  pnr,
-      offerId,
-      amount:   order.supplierTotal ?? reservation.Offer?.[0]?.Price?.TotalPrice,
-      currency: order.currency,
-    });
-  } catch (err) {
-    return fail(`ticketing (PNR ${pnr})`, err);
-  }
-
-  // Match each ticket to its traveler (tickets reference travelers by identifier)
-  const travelers = issued.reservation.Traveler ?? reservation.Traveler ?? [];
-  const tickets = issued.docs.map((d, i) => {
-    const t = travelers.find(tr => tr.Identifier?.value === d.TravelerIdentifierRef?.value) ?? travelers[i];
-    const name = t?.PersonName ? `${t.PersonName.Given} ${t.PersonName.Surname}` : `${order.passengers[i]?.givenName ?? ''} ${order.passengers[i]?.familyName ?? ''}`.trim();
-    return { number: d.Number, passenger: name, amount: d.Amount?.Total ?? null };
-  });
-
-  const ticketedAt = new Date().toISOString();
-  await coll.updateOne({ _id: order._id }, { $set: { status: 'ticketed', tickets, ticketedAt, updatedAt: ticketedAt } });
-  const done = { ...order, pnr, airlineLocator, tvptBookingRef: bookingRef, itinerary, tickets, ticketedAt };
-
-  // Email the e-ticket
-  const sesFrom  = process.env.SES_FROM_EMAIL;
-  const paxEmail = order.passengers?.[0]?.email;
-  if (sesFrom && paxEmail) {
-    try {
-      const ses  = new SESClient({});
-      const html = generateTicketEmail({
-        pnr,
-        airlineLocator,
-        tickets,
-        passengers:    order.passengers,
-        flightSummary: { legs: itinerary.map(s => ({
-          airline:      s.carrier,
-          flightNumber: s.flightNumber,
-          travelClass:  s.cabin,
-          departure:    { airport: s.from, time: `${s.departureDate} ${s.departureTime}` },
-          arrival:      { airport: s.to,   time: `${s.arrivalDate} ${s.arrivalTime}` },
-        })) },
-        duffelOrderId: bookingRef,
-        totalPrice:    order.markedUpPrice,
-        currency:      order.currency,
-      });
-      await ses.send(new SendEmailCommand({
-        Source:      sesFrom,
-        Destination: { ToAddresses: [paxEmail] },
-        Message: {
-          Subject: { Data: `Your Lyrtrip E-Ticket — ${pnr}` },
-          Body: {
-            Html: { Data: html },
-            Text: { Data: `Ticket issued. Booking reference: ${pnr}. E-ticket: ${tickets.map(t => `${t.passenger} ${t.number}`).join(', ')}` },
-          },
-        },
-      }));
-    } catch (emailErr) {
-      console.error('SES email failed:', emailErr);
-    }
-  }
-
-  return json(200, ticketView(done));
-}
-
-// Stripe checkout for a Travelport hotel room (prepaid model).
-// The guest pays Lyrtrip through Stripe; after payment Lyrtrip pays the hotel with a
-// single-use Stripe Issuing virtual card (see handleTravelportHotelConfirm).
-async function handleTravelportHotelCheckout(event) {
-  const secretKey = tvptStripeKey();
-  if (!secretKey)                         return json(500, { error: 'Stripe is not configured' });
-  if (!process.env.TRAVELPORT_CLIENT_ID) return json(500, { error: 'Travelport is not configured' });
-  const modeError = tvptPaymentModeError();
-  if (modeError) return json(503, { error: modeError });
-
-  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { chainCode, propertyCode, bookingCode, checkin, checkout, guests = 1, guest = {}, hotelName } = body;
-
-  if (!chainCode || !propertyCode || !bookingCode || !checkin || !checkout) {
-    return json(400, { error: 'chainCode, propertyCode, bookingCode, checkin and checkout are required' });
-  }
-  if (!guest.givenName?.trim() || !guest.familyName?.trim() || !guest.email?.trim()) {
-    return json(400, { error: 'Guest first name, last name and email are required' });
-  }
-
-  // Price on the server from a fresh availability call; this is the amount we charge
-  let room;
-  try {
-    const rooms = await tvptHotelRooms({ chainCode, propertyCode, checkin, checkout, guests });
-    room = rooms.find(r => r.bookingCode === bookingCode);
-  } catch (err) {
-    return json(err.status ?? 500, { error: `Could not confirm room price: ${err.message}` });
-  }
-  if (!room) return json(409, { error: 'That room is no longer available. Please choose another room.' });
-
-  const db  = await getDb();
-  const now = new Date().toISOString();
-  const result = await db.collection('hotel_bookings').insertOne({
-    status:        'pending_stripe',
-    provider:      'travelport',
-    chainCode,
-    propertyCode,
-    bookingCode,
-    roomName:      room.name,
-    cancelPolicy:  room.cancelPolicy,
-    refundable:    room.refundable,
-    checkin,
-    checkout,
-    nights:        room.nights,
-    guests:        Number(guests) || 1,
-    guest:         {
-      givenName:  guest.givenName.trim(),
-      familyName: guest.familyName.trim(),
-      email:      guest.email.trim(),
-      phone:      guest.phone?.trim() ?? '',
-    },
-    guestName:     `${guest.givenName.trim()} ${guest.familyName.trim()}`,
-    guestEmail:    guest.email.trim(),
-    hotelName:     hotelName ?? `${chainCode} ${propertyCode}`,
-    supplierTotal: room.supplierTotal,
-    taxes:         room.taxes,
-    markedUpPrice: room.total,
-    currency:      room.currency,
-    createdAt:     now,
-    updatedAt:     now,
-  });
-  const orderId = result.insertedId.toString();
-
-  const stripe  = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-  const session = await stripe.checkout.sessions.create({
-    mode:                 'payment',
-    payment_method_types: ['card'],
-    line_items: [{
-      price_data: {
-        currency:    room.currency.toLowerCase(),
-        unit_amount: Math.round(room.total * 100),
-        product_data: {
-          name:        `${TVPT_LIVE ? '' : '[TEST] '}${hotelName ?? 'Hotel'} — ${room.name}`.slice(0, 250),
-          description: `${room.nights} night${room.nights !== 1 ? 's' : ''} · ${checkin} → ${checkout} · taxes & Lyrtrip fee included · ${room.refundable ? 'refundable' : 'non-refundable'}`,
-        },
-      },
-      quantity: 1,
-    }],
-    metadata:       { type: 'travelport_hotel', hotelOrderId: orderId },
-    customer_email: guest.email.trim(),
-    success_url:    `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=travelport_hotel`,
-    cancel_url:     `${SITE_URL}/booking/cancel`,
-  });
-
-  await db.collection('hotel_bookings').updateOne(
-    { _id: result.insertedId },
-    { $set: { stripeSessionId: session.id, updatedAt: new Date().toISOString() } }
-  );
-
-  return json(200, { url: session.url, orderId });
-}
-
-// Travelport card-type codes for Stripe card brands
-const TVPT_CARD_CODE = { visa: 'VI', mastercard: 'CA', amex: 'AX', 'american express': 'AX', discover: 'DS' };
-
-// Single-use virtual card, capped at the hotel's price, used to pay the hotel through Travelport
-async function issueHotelPaymentCard(stripe, { amount, currency, orderId }) {
-  const cardholder = process.env.STRIPE_ISSUING_CARDHOLDER_ID;
-  if (!cardholder && !TVPT_LIVE) {
-    // Travelport pre-production only: its documented test Visa stands in for the virtual card
-    return { id: null, number: '4444333322221111', cvc: '343', exp_month: 12, exp_year: 2030, brand: 'Visa', cardholder: { name: 'Lyrtrip Test' } };
-  }
-  if (!cardholder) throw new Error('STRIPE_ISSUING_CARDHOLDER_ID is not configured');
-  const card = await stripe.issuing.cards.create({
-    cardholder,
-    currency: currency.toLowerCase(),
-    type:     'virtual',
-    status:   'active',
-    // 2% headroom for FX/rounding at the hotel; nothing beyond this can be charged
-    spending_controls: { spending_limits: [{ amount: Math.ceil(amount * 100 * 1.02), interval: 'all_time' }] },
-    metadata: { hotelOrderId: orderId },
-  });
-  const full = await stripe.issuing.cards.retrieve(card.id, { expand: ['number', 'cvc'] });
-  return full;
-}
-
-// Verify Stripe payment, pay the hotel with a virtual card, and create the Travelport reservation.
-// Any failure after payment refunds the guest and cancels the card.
-async function handleTravelportHotelConfirm(event) {
-  const secretKey = tvptStripeKey();
-  if (!secretKey) return json(500, { error: 'Stripe is not configured' });
-
-  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { sessionId } = body;
-  if (!sessionId) return json(400, { error: 'sessionId is required' });
-
-  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-  let session;
-  try {
-    session = await stripe.checkout.sessions.retrieve(sessionId);
-  } catch {
-    return json(400, { error: 'Invalid session ID' });
-  }
-
-  if (session.payment_status !== 'paid')            return json(402, { error: 'Payment not completed' });
-  if (session.metadata?.type !== 'travelport_hotel') return json(400, { error: 'Not a hotel session' });
-
-  const orderId = session.metadata?.hotelOrderId;
-  if (!orderId || !ObjectId.isValid(orderId)) return json(400, { error: 'Invalid order ID' });
-
-  const db   = await getDb();
-  const coll = db.collection('hotel_bookings');
-  const summary = o => ({
-    orderId,
-    hotelName:  o.hotelName,
-    roomName:   o.roomName,
-    checkin:    o.checkin,
-    checkout:   o.checkout,
-    nights:     o.nights,
-    totalPrice: o.markedUpPrice,
-    currency:   o.currency,
-    testBooking: !TVPT_LIVE,
-  });
-
-  // Claim the order atomically so two confirm calls can never book twice
-  const order = await coll.findOneAndUpdate(
-    { _id: new ObjectId(orderId), status: 'pending_stripe' },
-    { $set: { status: 'processing', stripePaymentIntent: session.payment_intent, updatedAt: new Date().toISOString() } },
-    { returnDocument: 'after' }
-  );
-  if (!order) {
-    const existing = await coll.findOne({ _id: new ObjectId(orderId) });
-    if (!existing) return json(404, { error: 'Order not found' });
-    if (existing.status === 'confirmed') {
-      return json(200, { success: true, bookingRef: existing.tvptBookingRef, hotelConfirmation: existing.hotelConfirmation, ...summary(existing) });
-    }
-    if (existing.status === 'processing') return json(202, { pending: true, message: 'Your booking is being confirmed. Please refresh in a moment.' });
-    return json(500, { error: `This booking could not be completed and your payment has been refunded. Order ID: ${orderId}` });
-  }
-
-  const fail = async (stage, err, card) => {
-    console.error(`Hotel booking failed at ${stage}:`, err.message);
-    if (card?.id) await stripe.issuing.cards.update(card.id, { status: 'canceled' }).catch(e => console.error('Card cancel failed:', e.message));
-    let refunded = false;
-    try {
-      await stripe.refunds.create({ payment_intent: session.payment_intent, metadata: { hotelOrderId: orderId } });
-      refunded = true;
-    } catch (e) {
-      console.error('Refund failed:', e.message);
-    }
-    await coll.updateOne({ _id: order._id }, { $set: {
-      status: refunded ? 'refunded' : 'booking_failed', bookingError: `${stage}: ${err.message}`, updatedAt: new Date().toISOString(),
-    } });
-    return json(500, {
-      error: refunded
-        ? `We couldn't reserve this room${err.customerReason ? ` (${err.customerReason})` : ''}. Your payment has been refunded in full. Order ID: ${orderId}`
-        : `We couldn't reserve this room and the automatic refund failed. Contact support@lyrtrip.com with order ID: ${orderId}`,
-    });
-  };
-
-  // Re-check the room: offer IDs expire, so match on the room's booking code and hold the price
-  let room;
-  try {
-    const rooms = await tvptHotelRooms({
-      chainCode: order.chainCode, propertyCode: order.propertyCode,
-      checkin: order.checkin, checkout: order.checkout, guests: order.guests,
-    });
-    room = rooms.find(r => r.bookingCode === order.bookingCode);
-  } catch (err) {
-    return fail('availability', err);
-  }
-  if (!room) return fail('availability', Object.assign(new Error('room no longer available'), { customerReason: 'the room is no longer available' }));
-  if (room.supplierTotal > order.supplierTotal * 1.01) {
-    return fail('availability', Object.assign(new Error(`hotel price rose from ${order.supplierTotal} to ${room.supplierTotal}`), { customerReason: "the hotel's price changed" }));
-  }
-
-  let card;
-  try {
-    card = await issueHotelPaymentCard(stripe, { amount: room.supplierTotal, currency: room.currency, orderId });
-  } catch (err) {
-    return fail('virtual card', err);
-  }
-
-  let reservationRes;
-  try {
-    reservationRes = await tvptHotelFetch('/book/reservations/build', {
-      ReservationQueryBuild: {
-        '@type': 'ReservationQueryBuild',
-        ReservationBuild: {
-          '@type': 'ReservationBuildFromCatalogOffering',
-          BuildFromCatalogOfferingHospitality: {
-            '@type': 'BuildFromCatalogOfferingHospitality',
-            CatalogOfferingIdentifier: { value: room.offerId },
-          },
-          Traveler: [{
-            '@type':    'Traveler',
-            PersonName: { Given: order.guest.givenName, Surname: order.guest.familyName },
-            Email:      [{ value: order.guest.email }],
-            ...(order.guest.phone ? { Telephone: [{ '@type': 'TelephoneDetail', phoneNumber: order.guest.phone.replace(/[^\d]/g, '') }] } : {}),
-          }],
-          FormOfPayment: [{
-            '@type': 'FormOfPaymentPaymentCard',
-            PaymentCard: {
-              '@type':        'PaymentCardDetail',
-              expireDate:     `${String(card.exp_month).padStart(2, '0')}${String(card.exp_year).slice(-2)}`,
-              CardType:       'Credit',
-              CardCode:       TVPT_CARD_CODE[card.brand?.toLowerCase()] ?? 'VI',
-              CardHolderName: card.cardholder?.name ?? 'Lyrtrip',
-              CardNumber:     { '@type': 'CardNumber', PlainText: card.number },
-              SeriesCode:     { '@type': 'SeriesCode', PlainText: card.cvc },
-            },
-          }],
-          Payment: [{
-            '@type':      'Payment',
-            Amount:       { code: room.currency, value: room.supplierTotal },
-            guaranteeInd: room.guaranteeType !== 'DepositRequired',
-            depositInd:   room.guaranteeType === 'DepositRequired',
-          }],
-        },
-      },
-    });
-  } catch (err) {
-    return fail('reservation', err, card);
-  }
-
-  const reservation = reservationRes.ReservationResponse?.Reservation ?? {};
-  const locators    = (reservation.Receipt ?? []).map(r => r.Confirmation?.Locator).filter(Boolean);
-  const pnr         = locators.find(l => l.sourceContext === 'Travelport')?.value;
-  const hotelConf   = locators.find(l => l.sourceContext === 'Supplier')?.value;
-  if (!pnr && !hotelConf) return fail('reservation', new Error('no confirmation number returned'), card);
-
-  const bookingRef = pnr ?? hotelConf;
-  await coll.updateOne(
-    { _id: order._id },
-    { $set: {
-      status: 'confirmed', tvptBookingRef: bookingRef, hotelConfirmation: hotelConf ?? null,
-      issuingCardId: card.id, supplierTotal: room.supplierTotal,
-      confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    } }
-  );
-
-  const sesFrom = process.env.SES_FROM_EMAIL;
-  if (sesFrom && order.guestEmail) {
-    try {
-      const ses = new SESClient({});
-      await ses.send(new SendEmailCommand({
-        Source:      sesFrom,
-        Destination: { ToAddresses: [order.guestEmail] },
-        Message: {
-          Subject: { Data: `Hotel Confirmed — ${order.hotelName}` },
-          Body: {
-            Text: {
-              Data: [
-                `Hotel booking confirmed!`,
-                ``,
-                `Property : ${order.hotelName}`,
-                `Room     : ${order.roomName}`,
-                `Check-in : ${order.checkin}`,
-                `Check-out: ${order.checkout}`,
-                `Nights   : ${order.nights}`,
-                `Hotel confirmation: ${hotelConf ?? '—'}`,
-                `Booking reference : ${bookingRef}`,
-                ``,
-                `Total paid: ${order.currency} ${order.markedUpPrice.toFixed(2)} (prepaid — nothing to pay at the hotel)`,
-                `Cancellation: ${order.cancelPolicy || 'see hotel policy'}`,
-                ``,
-                `Questions? support@lyrtrip.com`,
-              ].join('\n'),
-            },
-          },
-        },
-      }));
-    } catch (emailErr) {
-      console.error('Hotel confirmation email failed:', emailErr);
-    }
-  }
-
-  return json(200, { success: true, bookingRef, hotelConfirmation: hotelConf ?? null, ...summary(order) });
 }
 
 // ---------------------------------------------------------------------------
@@ -1763,6 +654,8 @@ async function searchFlightsDuffel({ from, to, depart, returnDate, passengers = 
       duffelPassengerIds:   offer.passengers?.map(p => p.id) ?? [],
       duffelPassengerCount: passengers,
       duffelExpiresAt:      offer.expires_at,
+      idDocsRequired:       !!offer.passenger_identity_documents_required,
+      testBooking:          DUFFEL_TEST(),
       isBest:               i < 3,
       price:                pricePerPerson,
       totalPrice:           markedUp,
@@ -1970,73 +863,128 @@ function generateTicketEmail({ pnr, airlineLocator = null, tickets = [], passeng
 // Flight checkout — stores pending order, creates Stripe session
 // ---------------------------------------------------------------------------
 
+// Duffel test orders are paid with Stripe test cards only, so a test booking can never charge
+// a real card. DUFFEL_STRIPE_SECRET_KEY overrides the site's key for flight checkouts.
+const DUFFEL_TEST = () => (process.env.DUFFEL_API_KEY ?? '').startsWith('duffel_test_');
+
+function duffelStripe() {
+  const key = process.env.DUFFEL_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+  if (!key) return { error: 'Stripe is not configured' };
+  if (DUFFEL_TEST() && !key.startsWith('sk_test_')) {
+    return { error: 'Flight booking is in test mode but no Stripe test key is configured' };
+  }
+  return { stripe: new Stripe(key, { apiVersion: '2024-06-20' }) };
+}
+
+const SITE_URL = (process.env.SITE_URL || 'https://www.lyrtrip.com').replace(/\/$/, '');
+
+const PAX_TITLES = new Set(['mr', 'ms', 'mrs', 'miss', 'dr']);
+
+// Validates and normalises one passenger from the booking form; returns an error string or the passenger.
+function cleanPassenger(p, idDocsRequired) {
+  const s = v => String(v ?? '').trim();
+  const parsed = parsePhoneNumberFromString(s(p.phone).startsWith('+') ? s(p.phone) : `+${s(p.phone)}`);
+  const phone = parsed?.isValid() ? parsed.number : '';
+  const out = {
+    title:       s(p.title).toLowerCase(),
+    givenName:   s(p.givenName),
+    familyName:  s(p.familyName),
+    dob:         s(p.dob),
+    gender:      s(p.gender).toLowerCase() === 'f' ? 'f' : 'm',
+    nationality: s(p.nationality).toUpperCase(),
+    email:       s(p.email),
+    phone,
+  };
+  if (!PAX_TITLES.has(out.title)) return 'Invalid title';
+  if (!out.givenName || !out.familyName) return 'Every passenger needs a first and last name';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(out.dob) || new Date(out.dob) >= new Date()) return 'Invalid date of birth';
+  if (!/^[A-Z]{2}$/.test(out.nationality)) return 'Nationality must be a 2-letter country code';
+  if (!/^\S+@\S+\.\S+$/.test(out.email)) return 'Invalid email address';
+  if (!phone) return 'Phone number must include the country code, e.g. +1 555 000 0000';
+  const passport = s(p.passportNumber);
+  if (passport || idDocsRequired) {
+    const passportCountry = s(p.passportCountry).toUpperCase();
+    const passportExpiry  = s(p.passportExpiry);
+    if (!passport) return 'Passport number is required for this flight';
+    if (!/^[A-Z]{2}$/.test(passportCountry)) return 'Passport issuing country must be a 2-letter code';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(passportExpiry) || new Date(passportExpiry) <= new Date()) return 'Passport expiry date is invalid';
+    Object.assign(out, { passportNumber: passport.toUpperCase(), passportCountry, passportExpiry });
+  }
+  return out;
+}
+
 async function handleFlightCheckout(event) {
-  const secretKey = process.env.STRIPE_SECRET_KEY;
-  if (!secretKey) return json(500, { error: 'Stripe is not configured' });
   if (!process.env.DUFFEL_API_KEY) return json(500, { error: 'Duffel is not configured' });
+  const { stripe, error: stripeError } = duffelStripe();
+  if (stripeError) return json(500, { error: stripeError });
 
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { duffelOfferId, duffelPassengerIds, passengers, flightSummary } = body;
-
+  const { duffelOfferId, flightSummary } = body;
   if (!duffelOfferId) return json(400, { error: 'duffelOfferId is required' });
-  if (!Array.isArray(passengers) || passengers.length === 0) return json(400, { error: 'passengers array is required' });
+  if (!Array.isArray(body.passengers) || body.passengers.length === 0) return json(400, { error: 'passengers array is required' });
 
   // Fetch current offer to verify validity and get live price
   let offer;
   try {
-    const offerData = await duffelFetch(`/air/offers/${duffelOfferId}`);
-    offer = offerData.data;
+    offer = (await duffelFetch(`/air/offers/${duffelOfferId}`)).data;
   } catch (err) {
     return json(400, { error: `Flight offer no longer available: ${err.message}` });
   }
-
   if (offer.expires_at && new Date(offer.expires_at) < new Date()) {
     return json(400, { error: 'Flight offer has expired. Please search again.' });
+  }
+
+  const offerPaxIds = offer.passengers?.map(p => p.id) ?? [];
+  if (body.passengers.length !== offerPaxIds.length) {
+    return json(400, { error: `This fare is for ${offerPaxIds.length} passenger(s); please search again` });
+  }
+  const passengers = [];
+  for (const p of body.passengers) {
+    const clean = cleanPassenger(p, offer.passenger_identity_documents_required);
+    if (typeof clean === 'string') return json(400, { error: clean });
+    passengers.push(clean);
   }
 
   const numPassengers  = passengers.length;
   const baseTotal      = parseFloat(offer.total_amount || '0');
   const markedUpTotal  = Math.ceil(baseTotal * FLIGHT_MARKUP * 100) / 100;
-  const amountCents    = Math.round(markedUpTotal * 100);
   const currency       = offer.total_currency ?? 'USD';
 
-  const slice    = offer.slices?.[0];
-  const segs     = slice?.segments ?? [];
+  const segs     = offer.slices?.[0]?.segments ?? [];
   const firstSeg = segs[0];
   const lastSeg  = segs[segs.length - 1];
-  const routeName  = firstSeg && lastSeg
-    ? `${firstSeg.origin?.iata_code} → ${lastSeg.destination?.iata_code}`
+  const routeName = firstSeg && lastSeg
+    ? `${firstSeg.origin?.iata_code} ${offer.slices.length > 1 ? '⇄' : '→'} ${lastSeg.destination?.iata_code}`
     : 'Flight';
-  const airlineName  = firstSeg?.marketing_carrier?.name ?? 'Flight';
+  const airlineName = offer.owner?.name ?? firstSeg?.marketing_carrier?.name ?? 'Flight';
 
+  const user = await getAuthenticatedUser(event).catch(() => null);
   const db  = await getDb();
   const now = new Date().toISOString();
-
-  const pendingDoc = {
-    status:              'pending_stripe',
+  const result = await db.collection('flight_bookings').insertOne({
+    status:             'pending_stripe',
+    testBooking:        DUFFEL_TEST(),
+    userSub:            user?.sub ?? null,
     duffelOfferId,
-    duffelPassengerIds:  duffelPassengerIds ?? (offer.passengers?.map(p => p.id) ?? []),
+    duffelPassengerIds: offerPaxIds,
     passengers,
-    flightSummary:       flightSummary ?? {},
-    basePrice:           baseTotal,
-    markedUpPrice:       markedUpTotal,
+    flightSummary:      flightSummary ?? {},
+    basePrice:          baseTotal,
+    markedUpPrice:      markedUpTotal,
     currency,
     numPassengers,
-    createdAt:           now,
-    updatedAt:           now,
-  };
-
-  const result       = await db.collection('flight_bookings').insertOne(pendingDoc);
+    createdAt:          now,
+    updatedAt:          now,
+  });
   const flightOrderId = result.insertedId.toString();
 
-  const stripe  = new Stripe(secretKey, { apiVersion: '2024-06-20' });
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
     payment_method_types: ['card'],
     line_items: [{
       price_data: {
         currency:     currency.toLowerCase(),
-        unit_amount:  amountCents,
+        unit_amount:  Math.round(markedUpTotal * 100),
         product_data: {
           name:        `${airlineName} — ${routeName}`,
           description: `${numPassengers} passenger${numPassengers !== 1 ? 's' : ''} · includes taxes & service fees`,
@@ -2045,9 +993,11 @@ async function handleFlightCheckout(event) {
       quantity: 1,
     }],
     metadata: { type: 'flight', flightOrderId },
-    customer_email: passengers[0]?.email || undefined,
-    success_url: `https://www.lyrtrip.com/booking/success?session_id={CHECKOUT_SESSION_ID}&type=flight`,
-    cancel_url:  'https://www.lyrtrip.com/booking/cancel',
+    customer_email: passengers[0].email,
+    // Book or refund well before the offer lapses
+    expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+    success_url: `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=flight`,
+    cancel_url:  `${SITE_URL}/booking/cancel`,
   });
 
   await db.collection('flight_bookings').updateOne(
@@ -2062,54 +1012,135 @@ async function handleFlightCheckout(event) {
 // Flight confirm — verifies payment, creates Duffel order, sends e-ticket
 // ---------------------------------------------------------------------------
 
+// Receipt fields the success page renders; stored on the booking so a refresh shows the same receipt
+function flightReceipt(order, flightOrderId) {
+  return {
+    success:       true,
+    testBooking:   !!order.testBooking,
+    pnr:           order.pnr,
+    duffelOrderId: order.duffelOrderId,
+    orderId:       flightOrderId,
+    issuedAt:      order.confirmedAt,
+    tickets:       order.tickets ?? [],
+    itinerary:     order.itinerary ?? [],
+    passengers:    order.passengers.map(p => ({ title: p.title, givenName: p.givenName, familyName: p.familyName, email: p.email })),
+    contact:       { email: order.passengers[0]?.email, phone: order.passengers[0]?.phone },
+    payment:       order.payment ?? null,
+    flightSummary: order.flightSummary,
+    totalPrice:    order.markedUpPrice,
+    basePrice:     order.basePrice,
+    currency:      order.currency,
+  };
+}
+
+function orderItinerary(duffelOrder) {
+  const hhmm = t => (t ?? '').slice(11, 16);
+  return (duffelOrder.slices ?? []).flatMap((slice, sliceIdx) => (slice.segments ?? []).map(seg => ({
+    direction:        sliceIdx === 0 ? 'Outbound' : 'Return',
+    carrier:          seg.marketing_carrier?.name ?? '',
+    flightNumber:     `${seg.marketing_carrier?.iata_code ?? ''}${seg.marketing_carrier_flight_number ?? ''}`,
+    operatingCarrier: seg.operating_carrier?.name ?? null,
+    from:             seg.origin?.iata_code ?? '',
+    fromName:         seg.origin?.name ?? '',
+    to:               seg.destination?.iata_code ?? '',
+    toName:           seg.destination?.name ?? '',
+    departureDate:    (seg.departing_at ?? '').slice(0, 10),
+    departureTime:    hhmm(seg.departing_at),
+    arrivalDate:      (seg.arriving_at ?? '').slice(0, 10),
+    arrivalTime:      hhmm(seg.arriving_at),
+    duration:         parseDuffelDuration(seg.duration) || null,
+    aircraft:         seg.aircraft?.name ?? null,
+    cabin:            seg.passengers?.[0]?.cabin_class_marketing_name ?? duffelOrder.cabin_class ?? 'Economy',
+    fareBasis:        seg.passengers?.[0]?.fare_basis_code ?? null,
+  })));
+}
+
+async function stripePaymentDetails(stripe, session) {
+  try {
+    const pi = await stripe.paymentIntents.retrieve(session.payment_intent, { expand: ['latest_charge'] });
+    const charge = pi.latest_charge;
+    const card = charge?.payment_method_details?.card;
+    return {
+      brand:      card?.brand ?? null,
+      last4:      card?.last4 ?? null,
+      paidAt:     new Date((charge?.created ?? pi.created) * 1000).toISOString(),
+      receiptUrl: charge?.receipt_url ?? null,
+      reference:  pi.id,
+    };
+  } catch (err) {
+    console.error('Stripe payment lookup failed:', err.message);
+    return { paidAt: new Date().toISOString(), reference: session.payment_intent };
+  }
+}
+
 async function handleFlightConfirm(event) {
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
   const { sessionId } = body;
   if (!sessionId) return json(400, { error: 'sessionId is required' });
 
-  const secretKey = process.env.STRIPE_SECRET_KEY;
-  if (!secretKey) return json(500, { error: 'Stripe is not configured' });
+  const { stripe, error: stripeError } = duffelStripe();
+  if (stripeError) return json(500, { error: stripeError });
 
   // 1. Verify Stripe payment
-  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
   let session;
   try {
     session = await stripe.checkout.sessions.retrieve(sessionId);
   } catch {
     return json(400, { error: 'Invalid session ID' });
   }
-
   if (session.payment_status !== 'paid') return json(402, { error: 'Payment not completed' });
   if (session.metadata?.type !== 'flight') return json(400, { error: 'Not a flight session' });
 
   const flightOrderId = session.metadata?.flightOrderId;
   if (!flightOrderId || !ObjectId.isValid(flightOrderId)) return json(400, { error: 'Invalid flight order ID' });
 
-  const db = await getDb();
-  const order = await db.collection('flight_bookings').findOne({ _id: new ObjectId(flightOrderId) });
-  if (!order) return json(404, { error: 'Flight order not found' });
+  const db   = await getDb();
+  const coll = db.collection('flight_bookings');
+  const _id  = new ObjectId(flightOrderId);
 
-  // Idempotent — already confirmed
-  if (order.status === 'confirmed') {
-    return json(200, {
-      success: true, pnr: order.pnr, duffelOrderId: order.duffelOrderId,
-      flightOrderId, flightSummary: order.flightSummary,
-      passengers: order.passengers, totalPrice: order.markedUpPrice, currency: order.currency,
-    });
-  }
-
-  if (order.status === 'booking_failed') {
-    return json(500, { error: `Booking failed. Contact support@lyrtrip.com with order ID: ${flightOrderId}` });
-  }
-
-  await db.collection('flight_bookings').updateOne(
-    { _id: order._id },
-    { $set: { status: 'processing', updatedAt: new Date().toISOString() } }
+  // Claim the order atomically so a refresh or second tab can never book twice
+  const claimed = await coll.findOneAndUpdate(
+    { _id, status: 'pending_stripe', stripeSessionId: sessionId },
+    { $set: { status: 'processing', updatedAt: new Date().toISOString() } },
+    { returnDocument: 'after' },
   );
+  const order = claimed?.value !== undefined ? claimed.value : claimed;
+  if (!order) {
+    const existing = await coll.findOne({ _id });
+    if (!existing) return json(404, { error: 'Flight order not found' });
+    if (existing.status === 'confirmed') return json(200, flightReceipt(existing, flightOrderId));
+    if (existing.status === 'processing') return json(202, { pending: true, message: 'Your ticket is being issued' });
+    return json(500, { error: existing.customerMessage ?? `Booking failed. Contact support@lyrtrip.com with order ID: ${flightOrderId}` });
+  }
 
-  // 2. Create Duffel order
+  const payment = await stripePaymentDetails(stripe, session);
+
+  const fail = async (reason) => {
+    console.error('Duffel booking failed:', reason);
+    let refunded = false;
+    try {
+      await stripe.refunds.create({ payment_intent: session.payment_intent });
+      refunded = true;
+    } catch (err) {
+      console.error('Stripe refund failed:', err.message);
+    }
+    const customerMessage = refunded
+      ? `We couldn't issue this ticket with the airline, so your payment has been refunded in full. Please search again. Order ID: ${flightOrderId}`
+      : `We couldn't issue this ticket. Please contact support@lyrtrip.com with order ID ${flightOrderId} for a refund.`;
+    await coll.updateOne({ _id }, { $set: {
+      status: refunded ? 'refunded' : 'booking_failed', bookingError: String(reason), customerMessage, payment,
+      updatedAt: new Date().toISOString(),
+    } });
+    return json(500, { error: customerMessage });
+  };
+
+  // 2. Re-check the fare, then create the Duffel order paid from the Duffel balance
   let duffelOrder;
   try {
+    const offer = (await duffelFetch(`/air/offers/${order.duffelOfferId}`)).data;
+    if (parseFloat(offer.total_amount) > order.basePrice + 0.005) {
+      return fail(`fare rose from ${order.basePrice} to ${offer.total_amount}`);
+    }
     const passengerData = order.passengers.map((p, i) => ({
       id:           order.duffelPassengerIds[i],
       title:        p.title,
@@ -2117,93 +1148,86 @@ async function handleFlightConfirm(event) {
       family_name:  p.familyName,
       born_on:      p.dob,
       gender:       p.gender,
-      nationality:  p.nationality,
       email:        p.email,
       phone_number: p.phone,
+      ...(p.passportNumber && { identity_documents: [{
+        type: 'passport', unique_identifier: p.passportNumber,
+        issuing_country_code: p.passportCountry, expires_on: p.passportExpiry,
+      }] }),
     }));
-
-    const orderRes = await duffelFetch('/air/orders', {
+    duffelOrder = (await duffelFetch('/air/orders', {
       method: 'POST',
-      body: JSON.stringify({
-        data: {
-          type:             'instant',
-          selected_offers:  [order.duffelOfferId],
-          passengers:       passengerData,
-          payments: [{
-            type:     'balance',
-            amount:   order.basePrice.toFixed(2),
-            currency: order.currency,
-          }],
-        },
-      }),
-    });
-    duffelOrder = orderRes.data;
+      body: JSON.stringify({ data: {
+        type:            'instant',
+        selected_offers: [order.duffelOfferId],
+        passengers:      passengerData,
+        payments:        [{ type: 'balance', amount: offer.total_amount, currency: offer.total_currency }],
+        metadata:        { lyrtrip_order_id: flightOrderId },
+      } }),
+    })).data;
   } catch (err) {
-    console.error('Duffel order failed:', err);
-    await db.collection('flight_bookings').updateOne(
-      { _id: order._id },
-      { $set: { status: 'booking_failed', bookingError: err.message, updatedAt: new Date().toISOString() } }
-    );
-    return json(500, {
-      error: `Ticket issuance failed: ${err.message}. Your payment was collected — contact support@lyrtrip.com with order ID: ${flightOrderId}`,
-    });
+    return fail(err.message);
   }
 
-  const pnr           = duffelOrder.booking_reference;
-  const ticketNumbers = (duffelOrder.documents ?? []).map(d => d.unique_identifier).filter(Boolean);
+  const paxName = Object.fromEntries((duffelOrder.passengers ?? []).map(p => [p.id, `${p.family_name}/${p.given_name}`.toUpperCase()]));
+  const tickets = (duffelOrder.documents ?? [])
+    .filter(d => d.type === 'electronic_ticket' && d.unique_identifier)
+    .map(d => ({ number: d.unique_identifier, passenger: paxName[d.passenger_ids?.[0]] ?? '' }));
+  // Line tickets up with the passenger list the receipt prints
+  const orderedTickets = order.duffelPassengerIds.map(id => tickets.find(t => t.passenger === paxName[id]) ?? { number: '', passenger: paxName[id] ?? '' });
 
-  await db.collection('flight_bookings').updateOne(
-    { _id: order._id },
-    { $set: {
-      status:        'confirmed',
-      duffelOrderId: duffelOrder.id,
-      pnr,
-      ticketNumbers,
-      confirmedAt:   new Date().toISOString(),
-      updatedAt:     new Date().toISOString(),
-    }},
-  );
+  const confirmed = {
+    status:        'confirmed',
+    duffelOrderId: duffelOrder.id,
+    pnr:           duffelOrder.booking_reference,
+    tickets:       orderedTickets,
+    itinerary:     orderItinerary(duffelOrder),
+    payment,
+    confirmedAt:   new Date().toISOString(),
+    updatedAt:     new Date().toISOString(),
+  };
+  await coll.updateOne({ _id }, { $set: confirmed });
+  const receipt = flightReceipt({ ...order, ...confirmed }, flightOrderId);
 
   // 3. Send e-ticket via SES
-  const sesFrom = process.env.SES_FROM_EMAIL;
+  const sesFrom  = process.env.SES_FROM_EMAIL;
   const paxEmail = order.passengers?.[0]?.email;
   if (sesFrom && paxEmail) {
     try {
-      const ses  = new SESClient({});
+      const legs = receipt.itinerary.map(s => ({
+        airline: s.carrier, flightNumber: s.flightNumber, travelClass: s.cabin,
+        departure: { airport: s.from, name: s.fromName, time: `${s.departureDate}T${s.departureTime}` },
+        arrival:   { airport: s.to,   name: s.toName,   time: `${s.arrivalDate}T${s.arrivalTime}` },
+      }));
       const html = generateTicketEmail({
-        pnr,
+        pnr:           receipt.pnr,
+        tickets:       receipt.tickets,
         passengers:    order.passengers,
-        flightSummary: order.flightSummary,
+        flightSummary: { ...order.flightSummary, legs },
         duffelOrderId: duffelOrder.id,
         totalPrice:    order.markedUpPrice,
         currency:      order.currency,
       });
-      await ses.send(new SendEmailCommand({
+      await new SESClient({}).send(new SendEmailCommand({
         Source:      sesFrom,
         Destination: { ToAddresses: [paxEmail] },
         Message: {
-          Subject: { Data: `Your Lyrtrip Flight Ticket — PNR: ${pnr}` },
+          Subject: { Data: `${order.testBooking ? '[TEST] ' : ''}Your Lyrtrip Flight Ticket — PNR: ${receipt.pnr}` },
           Body: {
             Html: { Data: html },
-            Text: { Data: `Your flight is confirmed! PNR: ${pnr}. Check in using this code. Booking ref: ${duffelOrder.id}` },
+            Text: { Data: `Your flight is confirmed! PNR: ${receipt.pnr}. Lyrtrip order: ${flightOrderId}` },
           },
         },
       }));
-      await db.collection('flight_bookings').updateOne(
-        { _id: order._id },
-        { $set: { emailSent: true, updatedAt: new Date().toISOString() } }
-      );
+      await coll.updateOne({ _id }, { $set: { emailSent: true, updatedAt: new Date().toISOString() } });
     } catch (emailErr) {
       console.error('SES email failed:', emailErr);
     }
   }
 
-  return json(200, {
-    success: true, pnr, duffelOrderId: duffelOrder.id,
-    flightOrderId, flightSummary: order.flightSummary,
-    passengers: order.passengers, totalPrice: order.markedUpPrice, currency: order.currency,
-  });
+  return json(200, receipt);
 }
+
 
 const CITY_TO_IATA = {
   // North America
@@ -2481,23 +1505,6 @@ async function handleSearch(event) {
       return json(400, { error: 'Invalid service type' });
     }
 
-    // --- Hotel: Travelport (bookable) when configured and we have coordinates ---
-    if (service === 'hotels' && process.env.TRAVELPORT_CLIENT_ID) {
-      const { destinationLocation, checkin, checkout, guests } = body;
-      if (destinationLocation?.lat && destinationLocation?.lng && checkin && checkout) {
-        try {
-          const results = await searchHotelsTravelport({
-            lat: destinationLocation.lat, lng: destinationLocation.lng, checkin, checkout, guests,
-          });
-          if (results.length > 0) {
-            return json(200, { success: true, service, results: tvptMarkPreview(results), total: results.length, source: 'travelport' });
-          }
-        } catch (tvptErr) {
-          console.error('Travelport hotel search error (falling back to SerpAPI):', tvptErr.message);
-        }
-      }
-    }
-
     // --- Hotel: try SerpAPI ---
     if (service === 'hotels' && process.env.SERPAPI_KEY) {
       const { destination, checkin, checkout, guests } = body;
@@ -2533,20 +1540,10 @@ async function handleSearch(event) {
       }
     }
 
-    // --- Flights: Travelport → Duffel → SerpAPI → mock ---
+    // --- Flights: Duffel → SerpAPI → mock ---
     if (service === 'flights') {
       const { from, to, depart, returnDate, passengers } = body;
       if (from && to && depart) {
-        if (process.env.TRAVELPORT_CLIENT_ID) {
-          try {
-            const results = await searchFlightsTravelport({ from, to, depart, returnDate, passengers: Number(passengers || 1) });
-            if (results.length > 0) {
-              return json(200, { success: true, service, results: tvptMarkPreview(results), total: results.length, source: 'travelport' });
-            }
-          } catch (tvptErr) {
-            console.error('Travelport flight search error (falling back to Duffel):', tvptErr.message);
-          }
-        }
         if (process.env.DUFFEL_API_KEY) {
           try {
             const results = await searchFlightsDuffel({ from, to, depart, returnDate, passengers: Number(passengers || 1) });
@@ -2893,14 +1890,6 @@ async function routeRequest(event) {
     if (path.endsWith('/api/stripe-checkout')        && method === 'POST')         return handleStripeCheckout(event);
     if (path.endsWith('/api/flight/checkout')        && method === 'POST')         return handleFlightCheckout(event);
     if (path.endsWith('/api/flight/confirm')         && method === 'POST')         return handleFlightConfirm(event);
-    // Travelport — air
-    if (path.endsWith('/api/travelport/air/price')   && method === 'POST')         return handleTravelportAirPrice(event);
-    if (path.endsWith('/api/travelport/flight/checkout') && method === 'POST')     return handleTravelportFlightCheckout(event);
-    if (path.endsWith('/api/travelport/flight/confirm')  && method === 'POST')     return handleTravelportFlightConfirm(event);
-    // Travelport — hotel
-    if (path.endsWith('/api/travelport/hotel/rooms')    && method === 'POST')      return handleTravelportHotelRooms(event);
-    if (path.endsWith('/api/travelport/hotel/checkout') && method === 'POST')      return handleTravelportHotelCheckout(event);
-    if (path.endsWith('/api/travelport/hotel/confirm')  && method === 'POST')      return handleTravelportHotelConfirm(event);
     if (path.includes('/api/uber/estimates')         && method === 'GET')          return handleUberEstimates(event);
     if (path.includes('/api/uber/checkout')          && method === 'POST')         return handleUberCheckout(event);
     if (path.includes('/api/uber/token')             && method === 'POST')         return handleUberToken(event);
