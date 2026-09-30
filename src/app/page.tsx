@@ -43,12 +43,23 @@ interface PassengerDetail {
 }
 
 // What still needs fixing before a flight can be paid for; empty when the form is complete
-function passengerProblems(pax: PassengerDetail[], idDocsRequired?: boolean): string[] {
+// Only adult fares are searched, so every passenger must be 18+ on the day they fly
+const ADULT_AGE = 18;
+
+function ageOn(dob: string, on: string): number {
+  const [by, bm, bd] = dob.split('-').map(Number);
+  const [y, m, d] = on.slice(0, 10).split('-').map(Number);
+  return y - by - (m < bm || (m === bm && d < bd) ? 1 : 0);
+}
+
+function passengerProblems(pax: PassengerDetail[], idDocsRequired?: boolean, departDate?: string): string[] {
+  const travelDate = departDate || new Date().toISOString().slice(0, 10);
   return pax.flatMap((p, i) => {
     const missing: string[] = [];
     if (!p.givenName.trim()) missing.push('first name');
     if (!p.familyName.trim()) missing.push('last name');
     if (!p.dob) missing.push('date of birth');
+    else if (ageOn(p.dob, travelDate) < ADULT_AGE) missing.push(`date of birth (must be ${ADULT_AGE}+ on the travel date — child and infant tickets can't be booked online yet)`);
     if (!/^[A-Z]{2}$/.test(p.nationality)) missing.push('nationality (2-letter code)');
     if (!/\S+@\S+\.\S+/.test(p.email)) missing.push('email');
     if (p.phone.replace(/\D/g, '').length < 7) missing.push('phone number');
@@ -698,7 +709,7 @@ export default function Home() {
 
     // Duffel booking path
     if (f.duffelOfferId) {
-      const problems = passengerProblems(flightPassengerDetails, f.idDocsRequired);
+      const problems = passengerProblems(flightPassengerDetails, f.idDocsRequired, f.legs?.[0]?.departure.time || flightDraft.depart);
       if (problems.length) { setFlightBookingError(`Please complete: ${problems.join('; ')}`); return; }
       setFlightBookingLoading(true);
       setFlightBookingError(null);
@@ -1983,6 +1994,7 @@ export default function Home() {
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">Date of Birth <span className="text-red-500">*</span></label>
                             <input type="date" value={pax.dob} onChange={e => updatePax(idx, 'dob', e.target.value)}
+                              max={`${new Date().getFullYear() - ADULT_AGE}-${new Date().toISOString().slice(5, 10)}`}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                           </div>
                           <div>

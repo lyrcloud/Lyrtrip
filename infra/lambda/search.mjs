@@ -878,10 +878,20 @@ function duffelStripe() {
 
 const SITE_URL = (process.env.SITE_URL || 'https://www.lyrtrip.com').replace(/\/$/, '');
 
+const ADULT_AGE = 18;
+
+// Whole years between a YYYY-MM-DD birth date and another date
+function ageOn(dob, on) {
+  const [by, bm, bd] = dob.split('-').map(Number);
+  const d = new Date(on || Date.now());
+  const [y, m, day] = [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()];
+  return y - by - (m < bm || (m === bm && day < bd) ? 1 : 0);
+}
+
 const PAX_TITLES = new Set(['mr', 'ms', 'mrs', 'miss', 'dr']);
 
 // Validates and normalises one passenger from the booking form; returns an error string or the passenger.
-function cleanPassenger(p, idDocsRequired) {
+function cleanPassenger(p, idDocsRequired, departDate) {
   const s = v => String(v ?? '').trim();
   const out = {
     title:       s(p.title).toLowerCase(),
@@ -899,6 +909,10 @@ function cleanPassenger(p, idDocsRequired) {
   if (!PAX_TITLES.has(out.title)) return 'Invalid title';
   if (!out.givenName || !out.familyName) return 'Every passenger needs a first and last name';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(out.dob) || new Date(out.dob) >= new Date()) return 'Invalid date of birth';
+  // Searches only price adult fares, and the airline rejects an adult ticket for a minor's birth date
+  if (ageOn(out.dob, departDate) < ADULT_AGE) {
+    return `${out.givenName} ${out.familyName} must be ${ADULT_AGE} or older on the travel date (date of birth ${out.dob}). Child and infant tickets can't be booked online yet.`;
+  }
   if (!/^[A-Z]{2}$/.test(out.nationality)) return 'Nationality must be a 2-letter country code';
   if (!/^\S+@\S+\.\S+$/.test(out.email)) return 'Invalid email address';
   if (!phone) return `Phone number ${s(p.phone) || '(empty)'} isn't valid — add the country code, e.g. +1 415 555 2671`;
@@ -941,7 +955,7 @@ async function handleFlightCheckout(event) {
   }
   const passengers = [];
   for (const p of body.passengers) {
-    const clean = cleanPassenger(p, offer.passenger_identity_documents_required);
+    const clean = cleanPassenger(p, offer.passenger_identity_documents_required, offer.slices?.[0]?.segments?.[0]?.departing_at);
     if (typeof clean === 'string') return json(400, { error: clean });
     passengers.push(clean);
   }
