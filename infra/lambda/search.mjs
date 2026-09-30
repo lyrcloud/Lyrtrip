@@ -552,7 +552,7 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests }) {
 // Duffel flight API integration
 // ---------------------------------------------------------------------------
 
-const FLIGHT_MARKUP = 1.08; // 8% profit margin on base ticket price
+const FLIGHT_MARKUP = 1.12; // 12% Lyrtrip margin on the Duffel total (fare + taxes)
 
 async function duffelFetch(path, { method = 'GET', body } = {}) {
   const apiKey = process.env.DUFFEL_API_KEY;
