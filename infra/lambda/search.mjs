@@ -883,8 +883,6 @@ const PAX_TITLES = new Set(['mr', 'ms', 'mrs', 'miss', 'dr']);
 // Validates and normalises one passenger from the booking form; returns an error string or the passenger.
 function cleanPassenger(p, idDocsRequired) {
   const s = v => String(v ?? '').trim();
-  const parsed = parsePhoneNumberFromString(s(p.phone).startsWith('+') ? s(p.phone) : `+${s(p.phone)}`);
-  const phone = parsed?.isValid() ? parsed.number : '';
   const out = {
     title:       s(p.title).toLowerCase(),
     givenName:   s(p.givenName),
@@ -893,14 +891,17 @@ function cleanPassenger(p, idDocsRequired) {
     gender:      s(p.gender).toLowerCase() === 'f' ? 'f' : 'm',
     nationality: s(p.nationality).toUpperCase(),
     email:       s(p.email),
-    phone,
   };
+  // Numbers typed without a country code are read as local to the passenger's nationality
+  const parsed = parsePhoneNumberFromString(s(p.phone), /^[A-Z]{2}$/.test(out.nationality) ? out.nationality : undefined);
+  const phone = parsed?.isValid() ? parsed.number : '';
+  out.phone = phone;
   if (!PAX_TITLES.has(out.title)) return 'Invalid title';
   if (!out.givenName || !out.familyName) return 'Every passenger needs a first and last name';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(out.dob) || new Date(out.dob) >= new Date()) return 'Invalid date of birth';
   if (!/^[A-Z]{2}$/.test(out.nationality)) return 'Nationality must be a 2-letter country code';
   if (!/^\S+@\S+\.\S+$/.test(out.email)) return 'Invalid email address';
-  if (!phone) return 'Phone number must include the country code, e.g. +1 555 000 0000';
+  if (!phone) return `Phone number ${s(p.phone) || '(empty)'} isn't valid — add the country code, e.g. +1 415 555 2671`;
   const passport = s(p.passportNumber);
   if (passport || idDocsRequired) {
     const passportCountry = s(p.passportCountry).toUpperCase();

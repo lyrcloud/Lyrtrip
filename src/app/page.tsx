@@ -42,6 +42,26 @@ interface PassengerDetail {
   passportExpiry?: string;
 }
 
+// What still needs fixing before a flight can be paid for; empty when the form is complete
+function passengerProblems(pax: PassengerDetail[], idDocsRequired?: boolean): string[] {
+  return pax.flatMap((p, i) => {
+    const missing: string[] = [];
+    if (!p.givenName.trim()) missing.push('first name');
+    if (!p.familyName.trim()) missing.push('last name');
+    if (!p.dob) missing.push('date of birth');
+    if (!/^[A-Z]{2}$/.test(p.nationality)) missing.push('nationality (2-letter code)');
+    if (!/\S+@\S+\.\S+/.test(p.email)) missing.push('email');
+    if (p.phone.replace(/\D/g, '').length < 7) missing.push('phone number');
+    if (idDocsRequired || p.passportNumber?.trim()) {
+      if (!p.passportNumber?.trim()) missing.push('passport number');
+      if (!/^[A-Z]{2}$/.test(p.passportCountry ?? '')) missing.push('passport issuing country');
+      if (!p.passportExpiry) missing.push('passport expiry date');
+    }
+    if (!missing.length) return [];
+    return [`${pax.length > 1 ? `Passenger ${i + 1}: ` : ''}${missing.join(', ')}`];
+  });
+}
+
 interface SearchResult {
   id: string;
   name: string;
@@ -678,7 +698,8 @@ export default function Home() {
 
     // Duffel booking path
     if (f.duffelOfferId) {
-      if (flightPassengerDetails.some(p => !p.givenName.trim() || !p.familyName.trim() || !p.email.trim() || !p.dob || !p.nationality.trim() || p.phone.replace(/\D/g, '').length < 7)) return;
+      const problems = passengerProblems(flightPassengerDetails, f.idDocsRequired);
+      if (problems.length) { setFlightBookingError(`Please complete: ${problems.join('; ')}`); return; }
       setFlightBookingLoading(true);
       setFlightBookingError(null);
       try {
@@ -1895,12 +1916,6 @@ export default function Home() {
           // Duffel booking modal — full passenger details
           if (f.duffelOfferId) {
             const total     = f.totalPrice ?? ((f.price ?? 0) * flightPassengers);
-            const passportValid = (p: PassengerDetail) => (!f.idDocsRequired && !p.passportNumber?.trim()) ||
-              (!!p.passportNumber?.trim() && /^[A-Z]{2}$/.test(p.passportCountry ?? '') && !!p.passportExpiry);
-            const allValid  = flightPassengerDetails.length > 0 && flightPassengerDetails.every(
-              p => p.givenName.trim() && p.familyName.trim() && /\S+@\S+\.\S+/.test(p.email) && p.dob && /^[A-Z]{2}$/.test(p.nationality) &&
-                p.phone.trim().startsWith('+') && p.phone.replace(/\D/g, '').length >= 8 && passportValid(p)
-            );
             const updatePax = (idx: number, field: keyof PassengerDetail, val: string) => {
               setFlightPassengerDetails(prev => prev.map((p, i) => i === idx ? { ...p, [field]: val } : p));
             };
@@ -1990,7 +2005,7 @@ export default function Home() {
                             placeholder="passenger@email.com" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                         </div>
                         <div>
-                          <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(with country code)</span></label>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(add country code if not from your nationality)</span></label>
                           <input type="tel" value={pax.phone} onChange={e => updatePax(idx, 'phone', e.target.value)}
                             placeholder="+1 415 555 2671" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
                         </div>
@@ -2031,7 +2046,7 @@ export default function Home() {
                     </button>
                     <button
                       onClick={confirmFlightBooking}
-                      disabled={(user && !allValid) || flightBookingLoading}
+                      disabled={flightBookingLoading}
                       className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition flex items-center justify-center gap-2"
                     >
                       {flightBookingLoading ? (
