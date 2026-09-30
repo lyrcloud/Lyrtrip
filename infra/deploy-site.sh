@@ -52,7 +52,7 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
       console.log("dropped:", dropped.join(", ") || "(none)");
     });' "$ENV_FILE"
-aws lambda update-function-configuration --function-name $FUNCTION $R --timeout 30 \
+aws lambda update-function-configuration --function-name $FUNCTION $R --timeout 120 \
   --environment "file://$ENV_FILE" --query LastUpdateStatus --output text
 rm -f "$ENV_FILE"
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R

@@ -105,22 +105,33 @@ export default function BookingSuccessPage() {
     // Duffel flight confirm
     if (type === 'flight' && sessionId) {
       setFlightLoading(true);
-      // A refresh or second tab can arrive while the ticket is still being issued (202)
-      const confirm = (attempt: number): Promise<void> =>
-        fetch(`${baseUrl}/api/flight/confirm`, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ sessionId }),
-        })
-          .then(r => r.json())
-          .then(data => {
-            if (data.success) setFlightConfirm(data as FlightConfirmation);
-            else if (data.pending && attempt < 10) return new Promise<void>(res => setTimeout(res, 3000)).then(() => confirm(attempt + 1));
-            else setFlightError(data.error ?? data.message ?? 'Booking confirmation failed.');
+      // Some airlines take longer to ticket than the API gateway waits (it answers 503/504), and a
+      // refresh can arrive mid-booking (202). The booking carries on server-side, so keep asking.
+      const MAX_ATTEMPTS = 45;  // ~4 minutes
+      const confirm = async (attempt: number): Promise<void> => {
+        let data: { success?: boolean; pending?: boolean; error?: string; message?: string } | null = null;
+        let retry = false;
+        try {
+          const res = await fetch(`${baseUrl}/api/flight/confirm`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ sessionId }),
           });
-      confirm(0)
-        .catch(() => setFlightError('Could not reach booking service. Please contact support@lyrtrip.com.'))
-        .finally(() => setFlightLoading(false));
+          data = await res.json().catch(() => null);
+          retry = res.status >= 502 || !!data?.pending || !data;
+        } catch {
+          retry = true;  // network hiccup
+        }
+        if (data?.success) { setFlightConfirm(data as unknown as FlightConfirmation); return; }
+        if (retry && attempt < MAX_ATTEMPTS) {
+          await new Promise(res => setTimeout(res, 5000));
+          return confirm(attempt + 1);
+        }
+        setFlightError(retry
+          ? 'Your ticket is taking longer than usual. We will email you when it is issued, or contact support@lyrtrip.com.'
+          : data?.error ?? data?.message ?? 'Booking confirmation failed.');
+      };
+      confirm(0).finally(() => setFlightLoading(false));
       return;
     }
 
@@ -159,7 +170,7 @@ export default function BookingSuccessPage() {
         <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
           <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl animate-pulse">✈️</div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Issuing Your Ticket…</h1>
-          <p className="text-gray-500">We&apos;re confirming your booking with the airline. This takes a few seconds.</p>
+          <p className="text-gray-500">We&apos;re confirming your booking with the airline. This usually takes a few seconds, but some airlines take up to a couple of minutes — please keep this page open.</p>
           <div className="mt-6 flex justify-center gap-1">
             {[0,1,2].map(i => (
               <div key={i} className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />

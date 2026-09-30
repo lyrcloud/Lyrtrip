@@ -554,7 +554,7 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests }) {
 
 const FLIGHT_MARKUP = 1.12; // 12% Lyrtrip margin on the Duffel total (fare + taxes)
 
-async function duffelFetch(path, { method = 'GET', body } = {}) {
+async function duffelFetch(path, { method = 'GET', body, timeoutMs } = {}) {
   const apiKey = process.env.DUFFEL_API_KEY;
   if (!apiKey) throw new Error('Duffel not configured');
   const headers = {
@@ -563,10 +563,13 @@ async function duffelFetch(path, { method = 'GET', body } = {}) {
     'Accept': 'application/json',
   };
   if (body) headers['Content-Type'] = 'application/json';
-  const res = await fetch(`https://api.duffel.com${path}`, { method, headers, body });
+  const res = await fetch(`https://api.duffel.com${path}`, {
+    method, headers, body, ...(timeoutMs && { signal: AbortSignal.timeout(timeoutMs) }),
+  });
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Duffel (${res.status}) ${path}: ${err}`);
+    const err = new Error(`Duffel (${res.status}) ${path}: ${await res.text()}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -1088,6 +1091,25 @@ async function stripePaymentDetails(stripe, session) {
   }
 }
 
+// Some airlines take longer than API Gateway's 30s to ticket. The Lambda runs for up to 120s and
+// keeps going after the gateway gives up; the receipt page polls until the order settles.
+const DUFFEL_ORDER_TIMEOUT_MS = 90_000;
+// A booking still "processing" after this long belongs to a Lambda run that no longer exists
+const STALE_PROCESSING_MS = 150_000;
+
+// Finds the Duffel order tagged with this Lyrtrip order id (orders list newest first)
+async function findDuffelOrder(flightOrderId, since) {
+  let after = '';
+  for (let page = 0; page < 4; page++) {
+    const res = await duffelFetch(`/air/orders?limit=50${after && `&after=${after}`}`);
+    const hit = (res.data ?? []).find(o => o.metadata?.lyrtrip_order_id === flightOrderId);
+    if (hit) return hit;
+    if (!res.meta?.after || (res.data ?? []).some(o => o.created_at < since)) return null;
+    after = res.meta.after;
+  }
+  return null;
+}
+
 async function handleFlightConfirm(event) {
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
   const { sessionId } = body;
@@ -1119,13 +1141,27 @@ async function handleFlightConfirm(event) {
     { $set: { status: 'processing', updatedAt: new Date().toISOString() } },
     { returnDocument: 'after' },
   );
-  const order = claimed?.value !== undefined ? claimed.value : claimed;
+  let order = claimed?.value !== undefined ? claimed.value : claimed;
+  let recovering = false;
   if (!order) {
     const existing = await coll.findOne({ _id });
     if (!existing) return json(404, { error: 'Flight order not found' });
     if (existing.status === 'confirmed') return json(200, flightReceipt(existing, flightOrderId));
-    if (existing.status === 'processing') return json(202, { pending: true, message: 'Your ticket is being issued' });
-    return json(500, { error: existing.customerMessage ?? `Booking failed. Contact support@lyrtrip.com with order ID: ${flightOrderId}` });
+    if (existing.status !== 'processing') {
+      return json(500, { error: existing.customerMessage ?? `Booking failed. Contact support@lyrtrip.com with order ID: ${flightOrderId}` });
+    }
+    if (Date.now() - new Date(existing.updatedAt).getTime() < STALE_PROCESSING_MS) {
+      return json(202, { pending: true, message: 'Your ticket is being issued' });
+    }
+    // The run that claimed this order died mid-booking; take it over (atomically) and settle it
+    const retaken = await coll.findOneAndUpdate(
+      { _id, status: 'processing', updatedAt: existing.updatedAt },
+      { $set: { updatedAt: new Date().toISOString() } },
+      { returnDocument: 'after' },
+    );
+    order = retaken?.value !== undefined ? retaken.value : retaken;
+    if (!order) return json(202, { pending: true, message: 'Your ticket is being issued' });
+    recovering = true;
   }
 
   const payment = await stripePaymentDetails(stripe, session);
@@ -1151,7 +1187,15 @@ async function handleFlightConfirm(event) {
 
   // 2. Re-check the fare, then create the Duffel order paid from the Duffel balance
   let duffelOrder;
-  try {
+  if (recovering) {
+    try {
+      duffelOrder = await findDuffelOrder(flightOrderId, order.createdAt);
+    } catch (err) {
+      await coll.updateOne({ _id }, { $set: { updatedAt: new Date(0).toISOString() } });  // retry on next poll
+      return json(503, { pending: true, message: `Checking booking status: ${err.message}` });
+    }
+    if (!duffelOrder) return fail('booking run timed out and Duffel has no order for it');
+  } else try {
     const offer = (await duffelFetch(`/air/offers/${order.duffelOfferId}`)).data;
     if (parseFloat(offer.total_amount) > order.basePrice + 0.005) {
       return fail(`fare rose from ${order.basePrice} to ${offer.total_amount}`);
@@ -1179,9 +1223,13 @@ async function handleFlightConfirm(event) {
         payments:        [{ type: 'balance', amount: offer.total_amount, currency: offer.total_currency }],
         metadata:        { lyrtrip_order_id: flightOrderId },
       } }),
+      timeoutMs: DUFFEL_ORDER_TIMEOUT_MS,
     })).data;
   } catch (err) {
-    return fail(err.message);
+    // A 4xx is a definite no; a timeout or 5xx may still have booked, so look before refunding
+    if (err.status >= 400 && err.status < 500) return fail(err.message);
+    duffelOrder = await findDuffelOrder(flightOrderId, order.createdAt).catch(() => null);
+    if (!duffelOrder) return fail(err.message);
   }
 
   const paxName = Object.fromEntries((duffelOrder.passengers ?? []).map(p => [p.id, `${p.family_name}/${p.given_name}`.toUpperCase()]));
