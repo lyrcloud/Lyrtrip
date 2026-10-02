@@ -866,8 +866,8 @@ function generateTicketEmail({ pnr, airlineLocator = null, tickets = [], passeng
 // Flight checkout — stores pending order, creates Stripe session
 // ---------------------------------------------------------------------------
 
-// Duffel test orders are paid with Stripe test cards only, so a test booking can never charge
-// a real card. DUFFEL_STRIPE_SECRET_KEY overrides the site's key for flight checkouts.
+// Duffel test orders are paid with Stripe test cards only, and live orders with live cards only,
+// so a test booking never charges a real card and a real ticket is never paid with a test card. DUFFEL_STRIPE_SECRET_KEY overrides the site's key for flight checkouts.
 const DUFFEL_TEST = () => (process.env.DUFFEL_API_KEY ?? '').startsWith('duffel_test_');
 
 function duffelStripe() {
@@ -875,6 +875,10 @@ function duffelStripe() {
   if (!key) return { error: 'Stripe is not configured' };
   if (DUFFEL_TEST() && !key.startsWith('sk_test_')) {
     return { error: 'Flight booking is in test mode but no Stripe test key is configured' };
+  }
+  // A live Duffel ticket costs real money, so it must never be paid for with a test card
+  if (!DUFFEL_TEST() && !key.startsWith('sk_live_')) {
+    return { error: 'Flight booking is temporarily unavailable' };
   }
   return { stripe: new Stripe(key, { apiVersion: '2024-06-20' }) };
 }

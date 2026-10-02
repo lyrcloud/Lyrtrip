@@ -5,7 +5,9 @@
 #
 # Needs DUFFEL_API_KEY in .env.local. While it is a duffel_test_ key, flight checkouts are paid
 # with the Stripe TEST key from .env.local (STRIPE_SECRET_KEY=sk_test_...) so no real card is
-# charged for a test ticket; the site's own Stripe key on the Lambda is left alone.
+# charged for a test ticket; the site's own Stripe key on the Lambda is left alone. With a
+# duffel_live_ key, flights are paid with the Lambda's main STRIPE_SECRET_KEY, which must be
+# sk_live_ (checkout refuses otherwise).
 #
 # Steps: rollback version → deploy API code from HEAD → merge settings (Duffel in, leftover
 # TRAVELPORT_* out) → API routes → build and publish the frontend.
