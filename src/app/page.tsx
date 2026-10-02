@@ -297,7 +297,7 @@ const PENDING_BOOKING_KEY = 'lyrtrip_pending_booking';
 export default function Home() {
   const { user } = useAuth();
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState('hotels');
+  const [activeTab, setActiveTab] = useState('flights');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
@@ -831,8 +831,9 @@ export default function Home() {
   };
 
   const tabs = [
-    { id: 'hotels',  label: '🏨 Hotels' },
     { id: 'flights', label: '✈️ Flights' },
+    { id: 'shipping', label: '📦 Shipping' },
+    { id: 'hotels',  label: '🏨 Hotels' },
     { id: 'car',     label: '🚗 Car' },
     { id: 'bus',     label: '🚌 Bus' },
     { id: 'train',   label: '🚂 Train' },
@@ -841,7 +842,6 @@ export default function Home() {
     { id: 'tourism', label: '🎒 Tourism' },
     { id: 'study',   label: '🎓 Study' },
     { id: 'career',  label: '💼 Jobs' },
-    { id: 'shipping', label: '📦 Shipping' },
   ];
 
   const inputClass = "w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-600 focus:border-transparent";
