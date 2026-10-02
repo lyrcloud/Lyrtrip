@@ -840,6 +840,7 @@ export default function Home() {
     { id: 'dash',    label: '🍔 Dash' },
     { id: 'tourism', label: '🎒 Tourism' },
     { id: 'career',  label: '💼 Jobs' },
+    { id: 'shipping', label: '📦 Shipping' },
   ];
 
   const inputClass = "w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-600 focus:border-transparent";
@@ -1848,6 +1849,15 @@ export default function Home() {
                   {searchBtn('career')}
                 </div>
                 <JobList />
+              </div>
+            )}
+
+            {/* Shipping */}
+            {activeTab === 'shipping' && (
+              <div className="py-10 text-center">
+                <p className="text-4xl mb-3">📦</p>
+                <h3 className="text-lg font-bold text-gray-900">Shipping is coming soon</h3>
+                <p className="text-sm text-gray-600 mt-1">Send parcels and compare courier rates right here on Lyrtrip.</p>
               </div>
             )}
 
