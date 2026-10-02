@@ -49,6 +49,9 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       const dropped = Object.keys(cur).filter(k => k.startsWith("TRAVELPORT_"));
       for (const k of dropped) delete cur[k];
       cur.DUFFEL_API_KEY = process.env.DUFFEL_API_KEY;
+      // Hotel requests: emails from the verified lyrtrip.com domain, admin sign-in via Cognito ID tokens
+      cur.SES_FROM_EMAIL = cur.SES_FROM_EMAIL || "bookings@lyrtrip.com";
+      for (const k of ["COGNITO_USER_POOL_ID", "COGNITO_USER_POOL_CLIENT_ID"]) if (process.env[k]) cur[k] = process.env[k];
       if (process.env.DUFFEL_STRIPE_SECRET_KEY) cur.DUFFEL_STRIPE_SECRET_KEY = process.env.DUFFEL_STRIPE_SECRET_KEY;
       else delete cur.DUFFEL_STRIPE_SECRET_KEY;   // live Duffel pays with the main STRIPE_SECRET_KEY
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
@@ -61,12 +64,13 @@ aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
 echo "4/5 API routes"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-ROUTE="POST /api/flight/{proxy+}"
-if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
-  echo "exists: $ROUTE"
-else
-  aws apigatewayv2 create-route --api-id $API_ID $R --route-key "$ROUTE" --target "$INTEGRATION" --query RouteKey --output text
-fi
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}"; do
+  if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
+    echo "exists: $ROUTE"
+  else
+    aws apigatewayv2 create-route --api-id $API_ID $R --route-key "$ROUTE" --target "$INTEGRATION" --query RouteKey --output text
+  fi
+done
 ROUTE_ID=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/travelport/{proxy+}'].RouteId" --output text)
 if [[ -n "$ROUTE_ID" && "$ROUTE_ID" != None ]]; then
   aws apigatewayv2 delete-route --api-id $API_ID $R --route-id "$ROUTE_ID" && echo "removed: POST /api/travelport/{proxy+}"

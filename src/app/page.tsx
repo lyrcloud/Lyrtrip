@@ -5,7 +5,7 @@ import React from 'react';
 import { useRouter } from 'next/navigation';
 import LocationMap from '@/components/LocationMap';
 import LocationPicker from '@/components/LocationPicker';
-import { saveBooking, calcNights, PRICE_PER_NIGHT } from '@/lib/bookings';
+import { calcNights } from '@/lib/bookings';
 import { useAuth } from '@/context/AuthContext';
 
 interface FlightLeg {
@@ -104,6 +104,8 @@ interface SearchResult {
   duffelPassengerIds?: string[];
   duffelPassengerCount?: number;
   duffelExpiresAt?: string;
+  // SerpAPI hotel id; present when the hotel can be requested through Lyrtrip
+  propertyToken?: string | null;
   // airline needs passport details for every passenger
   idDocsRequired?: boolean;
   // booked against the Duffel test environment with Stripe test cards
@@ -134,11 +136,14 @@ function fmtTime(datetime: string): string {
   return datetime?.split(' ')[1] ?? datetime ?? '';
 }
 
-interface BookingDraft {
+interface HotelRequestDraft {
   hotel: SearchResult;
   checkin: string;
   checkout: string;
 }
+
+// Lyrtrip's margin on the hotel total; the server re-prices and applies the same rate
+const HOTEL_MARKUP = 1.12;
 
 interface FlightDraft {
   flight: SearchResult;
@@ -326,9 +331,12 @@ export default function Home() {
   const [userLocation, setUserLocation] = useState({ lat: 40.7128, lng: -74.0060 });
   const [locationLoading, setLocationLoading] = useState(true);
   const [locationError, setLocationError] = useState<string | null>(null);
-  const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
-  const [bookingName, setBookingName] = useState('');
-  const [bookingGuests, setBookingGuests] = useState(1);
+  const [hotelDraft, setHotelDraft] = useState<HotelRequestDraft | null>(null);
+  const [hotelForm, setHotelForm] = useState({ givenName: '', familyName: '', email: '', phone: '', adults: 1, roomPreference: '', specialRequests: '' });
+  // Price the server quoted for a given dates/guests combination, when it differs from search
+  const [hotelServerQuote, setHotelServerQuote] = useState<{ key: string; totalPrice: number } | null>(null);
+  const [hotelSubmitting, setHotelSubmitting] = useState(false);
+  const [hotelError, setHotelError] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState(false);
   const [flightDraft, setFlightDraft] = useState<FlightDraft | null>(null);
   const [flightPassengerName, setFlightPassengerName] = useState('');
@@ -639,63 +647,67 @@ export default function Home() {
     }
   };
 
-  const confirmBooking = async () => {
-    if (!bookingDraft || !bookingName.trim()) return;
-
-    if (!user) {
-      sessionStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify(bookingDraft));
-      router.push('/login');
-      return;
+  const openHotelRequest = (hotel: SearchResult) => {
+    setHotelDraft({ hotel, checkin: formData.checkin, checkout: formData.checkout });
+    setHotelServerQuote(null);
+    setHotelError(null);
+    if (user && !hotelForm.email) {
+      const [givenName = '', ...rest] = (user.name ?? '').split(' ');
+      setHotelForm(f => ({ ...f, email: user.email ?? '', givenName: f.givenName || givenName, familyName: f.familyName || rest.join(' ') }));
     }
+  };
 
-    const nights        = calcNights(bookingDraft.checkin, bookingDraft.checkout);
-    const pricePerNight = bookingDraft.hotel.pricePerNight ?? PRICE_PER_NIGHT[bookingDraft.hotel.priceLevel ?? '$$'] ?? 160;
-    const totalPrice    = pricePerNight * nights * bookingGuests;
+  const hotelQuoteKey = (d: HotelRequestDraft) => `${d.checkin}|${d.checkout}|${hotelForm.adults}`;
 
-    saveBooking({
-      hotelName:    bookingDraft.hotel.name,
-      address:      bookingDraft.hotel.description ?? '',
-      checkin:      bookingDraft.checkin,
-      checkout:     bookingDraft.checkout,
-      guests:       bookingGuests,
-      guestName:    bookingName.trim(),
-      priceLevel:   bookingDraft.hotel.priceLevel,
-      pricePerNight,
-      nights,
-      totalPrice,
-    });
+  // Total shown to the guest: the server's quote when it has re-priced these dates, else the search price
+  const hotelShownTotal = (d: HotelRequestDraft): number | null => {
+    if (hotelServerQuote?.key === hotelQuoteKey(d)) return hotelServerQuote.totalPrice;
+    const nights = calcNights(d.checkin, d.checkout);
+    if (!d.hotel.pricePerNight || nights < 1) return null;
+    return Math.ceil(Number((d.hotel.pricePerNight * nights * HOTEL_MARKUP * 100).toFixed(6))) / 100;
+  };
 
+  const submitHotelRequest = async () => {
+    if (!hotelDraft) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const missing: string[] = [];
+    if (!hotelDraft.checkin || hotelDraft.checkin < today) missing.push('check-in date');
+    if (!hotelDraft.checkout || hotelDraft.checkout <= hotelDraft.checkin) missing.push('check-out date (after check-in)');
+    if (!hotelForm.givenName.trim()) missing.push('first name');
+    if (!hotelForm.familyName.trim()) missing.push('last name');
+    if (!/\S+@\S+\.\S+/.test(hotelForm.email)) missing.push('email');
+    if (hotelForm.phone.replace(/\D/g, '').length < 7) missing.push('phone number');
+    if (missing.length) { setHotelError(`Please complete: ${missing.join(', ')}`); return; }
+
+    const quotedTotal = hotelShownTotal(hotelDraft);
+    setHotelSubmitting(true);
+    setHotelError(null);
     try {
-      const res = await fetch(process.env.NEXT_PUBLIC_STRIPE_LAMBDA_URL!, {
+      const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${baseUrl}/api/hotel/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          hotelName:  bookingDraft.hotel.name,
-          address:    bookingDraft.hotel.description ?? '',
-          checkin:    bookingDraft.checkin,
-          checkout:   bookingDraft.checkout,
-          guests:     bookingGuests,
-          guestName:  bookingName.trim(),
-          priceLevel: bookingDraft.hotel.priceLevel,
-          nights,
-          totalPrice,
+          propertyToken:   hotelDraft.hotel.propertyToken,
+          destination:     formData.destination || formData.destinationLocation?.address || '',
+          checkin:         hotelDraft.checkin,
+          checkout:        hotelDraft.checkout,
+          adults:          hotelForm.adults,
+          guest:           { givenName: hotelForm.givenName, familyName: hotelForm.familyName, email: hotelForm.email, phone: hotelForm.phone },
+          roomPreference:  hotelForm.roomPreference,
+          specialRequests: hotelForm.specialRequests,
+          quotedTotal,
         }),
       });
-      const data = await res.json();
-      if (data.url) {
-        window.location.href = data.url;
-        return;
-      }
-      console.error('Stripe checkout error:', data.error);
-    } catch (err) {
-      console.error('Stripe fetch failed:', err);
+      const data = await res.json().catch(() => ({}));
+      if (data.url) { window.location.href = data.url; return; }
+      if (data.priceChanged) setHotelServerQuote({ key: hotelQuoteKey(hotelDraft), totalPrice: data.totalPrice });
+      setHotelError(data.error ?? 'Could not start the booking. Please try again.');
+    } catch {
+      setHotelError('Could not connect to the booking service. Please try again.');
+    } finally {
+      setHotelSubmitting(false);
     }
-
-    // Fallback: go to dashboard if Stripe redirect didn't happen
-    setBookingDraft(null);
-    setBookingName('');
-    setBookingGuests(1);
-    router.push('/dashboard');
   };
 
   const confirmFlightBooking = async () => {
@@ -894,6 +906,18 @@ export default function Home() {
                 {result.checkIn && <p className="text-xs text-gray-400">Check-in: {result.checkIn}</p>}
                 {result.demo ? (
                   <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
+                ) : result.propertyToken && result.pricePerNight ? (
+                <div className="ml-auto flex items-center gap-3">
+                  {result.link && (
+                    <a href={result.link} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-500 hover:text-indigo-600 underline">Hotel site ↗</a>
+                  )}
+                  <button
+                    onClick={() => openHotelRequest(result)}
+                    className="px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+                  >
+                    Book
+                  </button>
+                </div>
                 ) : (
                 // Listing-only result (no reservation system behind it): send the guest to the provider
                 <a
@@ -1837,78 +1861,113 @@ export default function Home() {
           </div>
         )}
 
-        {/* Booking modal */}
-        {bookingDraft && (() => {
-          const nights        = calcNights(bookingDraft.checkin, bookingDraft.checkout);
-          const pricePerNight = bookingDraft.hotel.pricePerNight ?? PRICE_PER_NIGHT[bookingDraft.hotel.priceLevel ?? '$$'] ?? 160;
-          const total         = pricePerNight * nights * bookingGuests;
+        {/* Hotel booking request modal */}
+        {hotelDraft && (() => {
+          const d      = hotelDraft;
+          const nights = d.checkin && d.checkout && d.checkout > d.checkin ? calcNights(d.checkin, d.checkout) : 0;
+          const total  = nights ? hotelShownTotal(d) : null;
+          const fee    = total != null ? Math.round((total - total / HOTEL_MARKUP) * 100) / 100 : null;
+          const input  = 'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500';
+          const label  = 'block text-xs font-medium text-gray-600 mb-1';
+          const setF   = (k: keyof typeof hotelForm, v: string | number) => { setHotelForm(f => ({ ...f, [k]: v })); setHotelError(null); };
+          const setDate = (k: 'checkin' | 'checkout', v: string) => { setHotelDraft(h => h && { ...h, [k]: v }); setHotelError(null); };
+          const close  = () => { setHotelDraft(null); setHotelError(null); };
           return (
-            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
-                <h2 className="text-xl font-bold text-gray-900 mb-1">Book Hotel</h2>
-                <p className="text-gray-600 text-sm mb-4">{bookingDraft.hotel.name}</p>
+            <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 px-4 py-6 overflow-y-auto">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 my-auto">
+                <div className="flex items-start justify-between mb-4 gap-3">
+                  <div className="min-w-0">
+                    <h2 className="text-xl font-bold text-gray-900">Book Hotel</h2>
+                    <p className="text-sm text-gray-600 truncate">{d.hotel.name}</p>
+                  </div>
+                  <button onClick={close} className="text-gray-400 hover:text-gray-600 text-2xl leading-none" aria-label="Close">&times;</button>
+                </div>
 
-                <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm text-gray-700 space-y-1">
-                  <p><span className="font-medium">Address:</span> {bookingDraft.hotel.description}</p>
-                  <p><span className="font-medium">Check-in:</span> {bookingDraft.checkin || '—'}</p>
-                  <p><span className="font-medium">Check-out:</span> {bookingDraft.checkout || '—'}</p>
-                  {bookingDraft.hotel.priceLevel && <p><span className="font-medium">Price level:</span> {bookingDraft.hotel.priceLevel}</p>}
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  <div>
+                    <label className={label}>Check-in <span className="text-red-500">*</span></label>
+                    <input type="date" value={d.checkin} min={new Date().toISOString().slice(0, 10)} onChange={e => setDate('checkin', e.target.value)} className={input} />
+                  </div>
+                  <div>
+                    <label className={label}>Check-out <span className="text-red-500">*</span></label>
+                    <input type="date" value={d.checkout} min={d.checkin || undefined} onChange={e => setDate('checkout', e.target.value)} className={input} />
+                  </div>
+                  <div>
+                    <label className={label}>Guests</label>
+                    <select value={hotelForm.adults} onChange={e => setF('adults', Number(e.target.value))} className={`${input} bg-white`}>
+                      {[1, 2, 3, 4].map(n => <option key={n} value={n}>{n} adult{n > 1 ? 's' : ''}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="bg-indigo-50 rounded-xl p-4 mb-4 text-sm">
+                  {total != null ? (
+                    <>
+                      <div className="flex justify-between text-gray-600"><span>Room, {nights} night{nights !== 1 ? 's' : ''}, incl. taxes &amp; fees</span><span>${(total - (fee ?? 0)).toFixed(2)}</span></div>
+                      <div className="flex justify-between text-gray-600 mt-1"><span>Lyrtrip service fee (12%)</span><span>${(fee ?? 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between font-bold text-gray-900 text-base mt-2 pt-2 border-t border-indigo-100"><span>Total</span><span>${total.toFixed(2)}</span></div>
+                      {!hotelServerQuote && <p className="text-xs text-gray-500 mt-2">Estimated from today&apos;s rate; the exact price is checked before you pay.</p>}
+                    </>
+                  ) : (
+                    <p className="text-gray-600">Choose your dates to see the price.</p>
+                  )}
                 </div>
 
                 <div className="space-y-3 mb-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
-                    <input
-                      type="text"
-                      value={bookingName}
-                      onChange={e => setBookingName(e.target.value)}
-                      placeholder="Enter your full name"
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className={label}>First name <span className="text-red-500">*</span></label>
+                      <input value={hotelForm.givenName} onChange={e => setF('givenName', e.target.value)} className={input} />
+                    </div>
+                    <div>
+                      <label className={label}>Last name <span className="text-red-500">*</span></label>
+                      <input value={hotelForm.familyName} onChange={e => setF('familyName', e.target.value)} className={input} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className={label}>Email <span className="text-red-500">*</span></label>
+                      <input type="email" value={hotelForm.email} onChange={e => setF('email', e.target.value)} className={input} />
+                    </div>
+                    <div>
+                      <label className={label}>Phone <span className="text-red-500">*</span></label>
+                      <input type="tel" value={hotelForm.phone} onChange={e => setF('phone', e.target.value)} placeholder="+1 415 555 2671" className={input} />
+                    </div>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Guests</label>
-                    <input
-                      type="number"
-                      value={bookingGuests}
-                      onChange={e => setBookingGuests(Math.max(1, +e.target.value))}
-                      min={1}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
+                    <label className={label}>Room preference</label>
+                    <select value={hotelForm.roomPreference} onChange={e => setF('roomPreference', e.target.value)} className={`${input} bg-white`}>
+                      <option value="">No preference</option>
+                      <option value="1 king bed">1 king bed</option>
+                      <option value="2 beds">2 beds</option>
+                      <option value="Non-smoking">Non-smoking</option>
+                      <option value="Accessible room">Accessible room</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className={label}>Special requests</label>
+                    <textarea value={hotelForm.specialRequests} onChange={e => setF('specialRequests', e.target.value)} rows={2} maxLength={500}
+                      placeholder="Late arrival, high floor…" className={input} />
                   </div>
                 </div>
 
-                {/* Price breakdown */}
-                <div className="bg-indigo-50 rounded-lg p-3 mb-5 text-sm space-y-1">
-                  <div className="flex justify-between text-gray-700">
-                    <span>${pricePerNight}/night × {nights} night{nights > 1 ? 's' : ''}</span>
-                    <span>${pricePerNight * nights}</span>
-                  </div>
-                  {bookingGuests > 1 && (
-                    <div className="flex justify-between text-gray-700">
-                      <span>× {bookingGuests} guests</span>
-                      <span>${total}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between font-bold text-indigo-700 border-t border-indigo-200 pt-1 mt-1">
-                    <span>Total estimate</span>
-                    <span>${total.toLocaleString()}</span>
-                  </div>
-                </div>
+                <p className="text-xs text-gray-500 mb-4">
+                  You pay Lyrtrip now. We book this room directly with the hotel and email your hotel confirmation number,
+                  usually within 24 hours. If the hotel can&apos;t confirm, we refund you in full.
+                </p>
+
+                {hotelError && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-700">{hotelError}</div>
+                )}
 
                 <div className="flex gap-3">
+                  <button onClick={close} className="flex-1 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition">Cancel</button>
                   <button
-                    onClick={() => setBookingDraft(null)}
-                    className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition"
+                    onClick={submitHotelRequest}
+                    disabled={hotelSubmitting}
+                    className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition"
                   >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={confirmBooking}
-                    disabled={!bookingName.trim()}
-                    className="flex-1 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition"
-                  >
-                    {user ? 'Confirm Booking →' : 'Sign in to Book'}
+                    {hotelSubmitting ? 'Checking price…' : total != null ? `Pay $${total.toFixed(2)} →` : 'Continue'}
                   </button>
                 </div>
               </div>

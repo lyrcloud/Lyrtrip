@@ -531,6 +531,7 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests }) {
 
   return (data.properties ?? []).map((p, i) => ({
     id:           p.property_token ?? String(i),
+    propertyToken: p.property_token ?? null,
     name:         p.name ?? 'Hotel',
     description:  p.description ?? p.neighborhood ?? '',
     rating:       p.overall_rating,
@@ -551,6 +552,9 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests }) {
 // ---------------------------------------------------------------------------
 // Duffel flight API integration
 // ---------------------------------------------------------------------------
+
+// Price plus margin, rounded up to the cent (toFixed drops float noise: 400 * 1.12 * 100 = 44800.000000000004)
+const withMarkup = (amount, markup) => Math.ceil(Number((amount * markup * 100).toFixed(6))) / 100;
 
 const FLIGHT_MARKUP = 1.12; // 12% Lyrtrip margin on the Duffel total (fare + taxes)
 
@@ -612,7 +616,7 @@ async function searchFlightsDuffel({ from, to, depart, returnDate, passengers = 
     const firstSeg   = segments[0];
     const lastSeg    = segments[segments.length - 1];
     const baseTotal  = parseFloat(offer.total_amount || '0');
-    const markedUp   = Math.ceil(baseTotal * FLIGHT_MARKUP * 100) / 100;
+    const markedUp   = withMarkup(baseTotal, FLIGHT_MARKUP);
     const pricePerPerson = Math.ceil(markedUp / passengers * 100) / 100;
 
     const legs = segments.map(seg => ({
@@ -969,7 +973,7 @@ async function handleFlightCheckout(event) {
 
   const numPassengers  = passengers.length;
   const baseTotal      = parseFloat(offer.total_amount || '0');
-  const markedUpTotal  = Math.ceil(baseTotal * FLIGHT_MARKUP * 100) / 100;
+  const markedUpTotal  = withMarkup(baseTotal, FLIGHT_MARKUP);
   const currency       = offer.total_currency ?? 'USD';
 
   const segs     = offer.slices?.[0]?.segments ?? [];
@@ -1295,6 +1299,329 @@ async function handleFlightConfirm(event) {
   return json(200, receipt);
 }
 
+
+// ---------------------------------------------------------------------------
+// Hotel booking requests — the guest pays Lyrtrip (hotel total + 12%), then
+// Lyrtrip books the room directly with the property and confirms or refunds
+// from the admin page (/admin/hotels).
+// ---------------------------------------------------------------------------
+
+const HOTEL_MARKUP = 1.12; // 12% Lyrtrip margin on the hotel's total incl. taxes & fees
+const HOTEL_MAX_NIGHTS = 30;
+const adminEmails = () => (process.env.ADMIN_EMAILS || 'lyrclouds@gmail.com').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+const bookingsAlertEmail = () => process.env.BOOKINGS_ALERT_EMAIL || 'lyrtrips@gmail.com';
+
+let idVerifier;
+// Admin calls carry the Cognito ID token in the body (the API's CORS only allows content-type)
+async function requireAdmin(idToken) {
+  if (!process.env.COGNITO_USER_POOL_ID || !process.env.COGNITO_USER_POOL_CLIENT_ID) throw new Error('Admin sign-in is not configured');
+  idVerifier ??= CognitoJwtVerifier.create({
+    userPoolId: process.env.COGNITO_USER_POOL_ID,
+    tokenUse:   'id',
+    clientId:   process.env.COGNITO_USER_POOL_CLIENT_ID,
+  });
+  const claims = await idVerifier.verify(String(idToken ?? ''));
+  const email = String(claims.email ?? '').toLowerCase();
+  if (!adminEmails().includes(email)) throw new Error('Not an admin account');
+  return email;
+}
+
+async function sendEmail({ to, subject, html, text }) {
+  const from = process.env.SES_FROM_EMAIL;
+  if (!from || !to) return false;
+  try {
+    await new SESClient({}).send(new SendEmailCommand({
+      Source: `Lyrtrip <${from}>`,
+      Destination: { ToAddresses: [to] },
+      Message: { Subject: { Data: subject }, Body: { Html: { Data: html }, Text: { Data: text } } },
+    }));
+    return true;
+  } catch (err) {
+    console.error('SES email failed:', to, err.message);
+    return false;
+  }
+}
+
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const usd = n => `USD ${Number(n).toFixed(2)}`;
+
+function hotelEmailHtml(title, lines, cta) {
+  const rows = lines.map(([k, v]) => `<tr><td style="padding:6px 0;color:#6b7280;font-size:13px;width:40%">${esc(k)}</td><td style="padding:6px 0;color:#111827;font-size:14px;font-weight:600">${esc(v)}</td></tr>`).join('');
+  return `<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
+  <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;border-radius:12px;overflow:hidden">
+    <tr><td style="padding:20px 28px;border-bottom:4px solid #4f46e5"><img src="${SITE_URL}/logo.png" alt="Lyrtrip" height="36"></td></tr>
+    <tr><td style="padding:24px 28px"><h1 style="margin:0 0 16px;font-size:20px;color:#111827">${esc(title)}</h1>
+      <table width="100%" cellpadding="0" cellspacing="0">${rows}</table>
+      ${cta ? `<p style="margin:24px 0 0"><a href="${esc(cta.url)}" style="background:#4f46e5;color:#fff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:bold;display:inline-block">${esc(cta.label)}</a></p>` : ''}
+    </td></tr>
+    <tr><td style="padding:16px 28px;background:#f9fafb;color:#9ca3af;font-size:11px">Lyrtrip · www.lyrtrip.com · support@lyrtrip.com</td></tr>
+  </table></td></tr></table></body></html>`;
+}
+
+// Re-prices one property from SerpAPI so the charge never trusts a price sent by the browser
+async function serpHotelQuote({ propertyToken, destination, checkin, checkout, adults }) {
+  if (!process.env.SERPAPI_KEY) throw new Error('Hotel pricing is not configured');
+  const params = new URLSearchParams({
+    engine: 'google_hotels', q: destination ? `Hotels in ${destination}` : 'Hotels',
+    property_token: propertyToken, check_in_date: checkin, check_out_date: checkout,
+    adults: String(adults), currency: 'USD', gl: 'us', hl: 'en', api_key: process.env.SERPAPI_KEY,
+  });
+  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(25_000) });
+  const p = await res.json().catch(() => ({}));
+  if (!res.ok || p.error) throw new Error(`Hotel price lookup failed: ${p.error ?? res.status}`);
+  const nights  = nightsBetween(checkin, checkout);
+  const nightly = p.rate_per_night?.extracted_lowest;
+  const total   = p.total_rate?.extracted_lowest ?? (nightly ? nightly * nights : null);
+  if (!total) throw new Error('This hotel has no price for these dates. Please try other dates or another hotel.');
+  return {
+    name: p.name ?? 'Hotel', address: p.address ?? '', phone: p.phone ?? '', link: p.link ?? '',
+    imageUrl: p.images?.[0]?.thumbnail ?? null, nights, nightly: nightly ?? total / nights,
+    hotelTotal: Math.round(total * 100) / 100,
+  };
+}
+
+function hotelReceipt(b) {
+  return {
+    success:           true,
+    status:            b.status,                 // requested | confirmed | declined
+    requestRef:        String(b._id),
+    hotel:             b.hotel,
+    checkin:           b.checkin,
+    checkout:          b.checkout,
+    nights:            b.nights,
+    adults:            b.adults,
+    roomPreference:    b.roomPreference,
+    specialRequests:   b.specialRequests,
+    guest:             b.guest,
+    hotelTotal:        b.hotelTotal,
+    serviceFee:        Math.round((b.totalPrice - b.hotelTotal) * 100) / 100,
+    totalPrice:        b.totalPrice,
+    currency:          b.currency,
+    payment:           b.payment ?? null,
+    requestedAt:       b.requestedAt,
+    hotelConfirmation: b.hotelConfirmation ?? null,
+    confirmedAt:       b.confirmedAt ?? null,
+    declineReason:     b.declineReason ?? null,
+    refunded:          !!b.refunded,
+  };
+}
+
+async function handleHotelCheckout(event) {
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) return json(500, { error: 'Payments are not configured' });
+  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
+  const s = v => String(v ?? '').trim();
+
+  const propertyToken = s(body.propertyToken);
+  const checkin  = s(body.checkin), checkout = s(body.checkout);
+  const adults   = Number(body.adults ?? 1);
+  const today    = new Date().toISOString().slice(0, 10);
+  if (!propertyToken) return json(400, { error: 'propertyToken is required' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(checkin) || !/^\d{4}-\d{2}-\d{2}$/.test(checkout) || checkin < today || checkout <= checkin) {
+    return json(400, { error: 'Please choose valid check-in and check-out dates' });
+  }
+  if (nightsBetween(checkin, checkout) > HOTEL_MAX_NIGHTS) return json(400, { error: `Stays are limited to ${HOTEL_MAX_NIGHTS} nights online` });
+  if (!Number.isInteger(adults) || adults < 1 || adults > 4) return json(400, { error: 'Guests must be between 1 and 4' });
+
+  const g = body.guest ?? {};
+  const guest = { givenName: s(g.givenName), familyName: s(g.familyName), email: s(g.email), country: s(g.country).toUpperCase() };
+  if (!guest.givenName || !guest.familyName) return json(400, { error: 'Please enter the guest’s first and last name' });
+  if (!/^\S+@\S+\.\S+$/.test(guest.email)) return json(400, { error: 'Please enter a valid email address' });
+  const phone = parsePhoneNumberFromString(s(g.phone), /^[A-Z]{2}$/.test(guest.country) ? guest.country : 'US');
+  if (!phone?.isValid()) return json(400, { error: `Phone number ${s(g.phone) || '(empty)'} isn't valid — include the country code, e.g. +1 415 555 2671` });
+  guest.phone = phone.number;
+
+  let quote;
+  try {
+    quote = await serpHotelQuote({ propertyToken, destination: s(body.destination), checkin, checkout, adults });
+  } catch (err) {
+    return json(502, { error: err.message });
+  }
+  const totalPrice = withMarkup(quote.hotelTotal, HOTEL_MARKUP);
+  // The guest agreed to a price in the form; if the hotel's rate rose since, show the new one first
+  const agreed = Number(body.quotedTotal);
+  if (!(agreed > 0) || totalPrice > agreed + 0.5) {
+    return json(409, { priceChanged: true, totalPrice, hotelTotal: quote.hotelTotal, nightly: quote.nightly, nights: quote.nights,
+      error: `The price for these dates is now ${usd(totalPrice)}. Please review and continue.` });
+  }
+
+  const now = new Date().toISOString();
+  const db = await getDb();
+  const doc = {
+    status:          'pending_stripe',
+    propertyToken,
+    hotel:           { name: quote.name, address: quote.address, phone: quote.phone, link: quote.link, imageUrl: quote.imageUrl },
+    checkin, checkout, nights: quote.nights, adults,
+    roomPreference:  s(body.roomPreference).slice(0, 60),
+    specialRequests: s(body.specialRequests).slice(0, 500),
+    guest,
+    hotelNightly:    quote.nightly,
+    hotelTotal:      quote.hotelTotal,
+    totalPrice,
+    currency:        'USD',
+    createdAt:       now,
+    updatedAt:       now,
+  };
+  const { insertedId } = await db.collection('hotel_bookings').insertOne(doc);
+  const hotelBookingId = insertedId.toString();
+
+  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    payment_method_types: ['card'],
+    line_items: [{
+      price_data: {
+        currency:     'usd',
+        unit_amount:  Math.round(totalPrice * 100),
+        product_data: {
+          name:        `${quote.name} — ${quote.nights} night${quote.nights !== 1 ? 's' : ''}`,
+          description: `${checkin} → ${checkout} · ${adults} guest${adults !== 1 ? 's' : ''} · incl. taxes, fees & Lyrtrip service fee`,
+        },
+      },
+      quantity: 1,
+    }],
+    metadata:       { type: 'hotel_request', hotelBookingId },
+    customer_email: guest.email,
+    expires_at:     Math.floor(Date.now() / 1000) + 30 * 60,
+    success_url:    `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=hotel`,
+    cancel_url:     `${SITE_URL}/booking/cancel`,
+  });
+  await db.collection('hotel_bookings').updateOne({ _id: insertedId }, { $set: { stripeSessionId: session.id } });
+  return json(200, { url: session.url, hotelBookingId });
+}
+
+// Called by the receipt page after Stripe; also how the guest re-opens their booking later
+async function handleHotelConfirm(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
+  if (!body.sessionId) return json(400, { error: 'sessionId is required' });
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) return json(500, { error: 'Payments are not configured' });
+  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
+
+  let session;
+  try { session = await stripe.checkout.sessions.retrieve(body.sessionId); } catch { return json(400, { error: 'Invalid session ID' }); }
+  if (session.metadata?.type !== 'hotel_request') return json(400, { error: 'Not a hotel booking' });
+  if (session.payment_status !== 'paid') return json(402, { error: 'Payment not completed' });
+  const id = session.metadata.hotelBookingId;
+  if (!ObjectId.isValid(id)) return json(400, { error: 'Invalid booking' });
+
+  const coll = (await getDb()).collection('hotel_bookings');
+  const _id = new ObjectId(id);
+  const payment = await stripePaymentDetails(stripe, session);
+  const claimed = await coll.findOneAndUpdate(
+    { _id, status: 'pending_stripe', stripeSessionId: session.id },
+    { $set: { status: 'requested', payment, paymentIntent: session.payment_intent, requestedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } },
+    { returnDocument: 'after' },
+  );
+  const fresh = claimed?.value !== undefined ? claimed.value : claimed;
+  if (!fresh) {
+    const existing = await coll.findOne({ _id });
+    return existing ? json(200, hotelReceipt(existing)) : json(404, { error: 'Booking not found' });
+  }
+
+  const receiptUrl = `${SITE_URL}/booking/success?session_id=${session.id}&type=hotel`;
+  const details = [
+    ['Hotel', fresh.hotel.name], ['Dates', `${fresh.checkin} → ${fresh.checkout} (${fresh.nights} night${fresh.nights !== 1 ? 's' : ''})`],
+    ['Guests', fresh.adults], ['Guest name', `${fresh.guest.givenName} ${fresh.guest.familyName}`],
+    ['Total paid', usd(fresh.totalPrice)], ['Request reference', id],
+  ];
+  await sendEmail({
+    to: bookingsAlertEmail(),
+    subject: `New hotel request: ${fresh.hotel.name}, ${fresh.checkin} (${usd(fresh.totalPrice)})`,
+    html: hotelEmailHtml('New hotel booking request', [
+      ...details, ['Email', fresh.guest.email], ['Phone', fresh.guest.phone], ['Hotel phone', fresh.hotel.phone || '—'],
+      ['Room preference', fresh.roomPreference || '—'], ['Special requests', fresh.specialRequests || '—'],
+      ['Hotel quoted (pay up to)', usd(fresh.hotelTotal)],
+    ], { url: `${SITE_URL}/admin/hotels`, label: 'Open admin page' }),
+    text: `New hotel request ${id}: ${fresh.hotel.name} ${fresh.checkin}→${fresh.checkout}. Manage at ${SITE_URL}/admin/hotels`,
+  });
+  await sendEmail({
+    to: fresh.guest.email,
+    subject: `We received your booking request — ${fresh.hotel.name}`,
+    html: hotelEmailHtml('We’re booking your room', [
+      ...details, ['What happens next', 'We are reserving your room directly with the hotel and will email your hotel confirmation number, usually within 24 hours. If the hotel can’t confirm, you’ll get a full refund.'],
+    ], { url: receiptUrl, label: 'View your booking' }),
+    text: `We received your booking request for ${fresh.hotel.name}. Track it at ${receiptUrl}`,
+  });
+  return json(200, hotelReceipt(fresh));
+}
+
+// Admin page actions: list, confirm (hotel confirmation number), decline (full refund)
+async function handleHotelAdmin(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
+  try {
+    await requireAdmin(body.idToken);
+  } catch (err) {
+    return json(401, { error: `Sign in with an admin account (${err.message})` });
+  }
+  const coll = (await getDb()).collection('hotel_bookings');
+
+  if (body.action === 'list') {
+    const rows = await coll.find({ status: { $in: ['requested', 'confirmed', 'declined'] } }).sort({ requestedAt: -1 }).limit(200).toArray();
+    return json(200, { bookings: rows.map(b => ({ ...hotelReceipt(b), hotelNightly: b.hotelNightly, adminNote: b.adminNote ?? null })) });
+  }
+
+  if (!ObjectId.isValid(body.id)) return json(400, { error: 'Invalid booking id' });
+  const _id = new ObjectId(body.id);
+  const now = new Date().toISOString();
+
+  if (body.action === 'confirm') {
+    const conf = String(body.hotelConfirmation ?? '').trim().slice(0, 60);
+    if (!conf) return json(400, { error: 'Enter the hotel confirmation number' });
+    const r = await coll.findOneAndUpdate(
+      { _id, status: 'requested' },
+      { $set: { status: 'confirmed', hotelConfirmation: conf, adminNote: String(body.note ?? '').slice(0, 500), confirmedAt: now, updatedAt: now } },
+      { returnDocument: 'after' },
+    );
+    const b = r?.value !== undefined ? r.value : r;
+    if (!b) return json(409, { error: 'This request is no longer awaiting confirmation' });
+    await sendEmail({
+      to: b.guest.email,
+      subject: `Confirmed: ${b.hotel.name}, ${b.checkin} — confirmation ${conf}`,
+      html: hotelEmailHtml('Your hotel is confirmed', [
+        ['Hotel', b.hotel.name], ['Address', b.hotel.address || '—'], ['Hotel confirmation number', conf],
+        ['Dates', `${b.checkin} → ${b.checkout}`], ['Guests', b.adults], ['Guest name', `${b.guest.givenName} ${b.guest.familyName}`],
+        ['Total paid', usd(b.totalPrice)],
+      ], { url: `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=hotel`, label: 'View your receipt' }),
+      text: `Your stay at ${b.hotel.name} is confirmed. Hotel confirmation: ${conf}.`,
+    });
+    return json(200, { booking: hotelReceipt(b) });
+  }
+
+  if (body.action === 'decline') {
+    const reason = String(body.reason ?? '').trim().slice(0, 300) || 'The hotel could not confirm this room.';
+    const r = await coll.findOneAndUpdate(
+      { _id, status: 'requested' },
+      { $set: { status: 'declining', updatedAt: now } },
+      { returnDocument: 'after' },
+    );
+    const b = r?.value !== undefined ? r.value : r;
+    if (!b) return json(409, { error: 'This request is no longer awaiting confirmation' });
+    let refunded = false;
+    try {
+      await new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' }).refunds.create({ payment_intent: b.paymentIntent });
+      refunded = true;
+    } catch (err) {
+      console.error('Hotel refund failed:', err.message);
+    }
+    const done = { status: refunded ? 'declined' : 'requested', ...(refunded && { refunded: true, declineReason: reason, declinedAt: now }), updatedAt: new Date().toISOString() };
+    await coll.updateOne({ _id }, { $set: done });
+    if (!refunded) return json(500, { error: 'The refund failed, so the request was left open. Try again or refund it in Stripe.' });
+    await sendEmail({
+      to: b.guest.email,
+      subject: `Refunded: we couldn't book ${b.hotel.name}`,
+      html: hotelEmailHtml('We couldn’t book this room', [
+        ['Hotel', b.hotel.name], ['Dates', `${b.checkin} → ${b.checkout}`], ['Reason', reason],
+        ['Refund', `${usd(b.totalPrice)} refunded to your card (allow 5–10 business days)`],
+      ], { url: `${SITE_URL}/`, label: 'Search other hotels' }),
+      text: `We couldn't book ${b.hotel.name}: ${reason}. ${usd(b.totalPrice)} has been refunded.`,
+    });
+    return json(200, { booking: hotelReceipt({ ...b, ...done }) });
+  }
+
+  return json(400, { error: 'Unknown action' });
+}
 
 const CITY_TO_IATA = {
   // North America
@@ -1957,6 +2284,9 @@ async function routeRequest(event) {
     if (path.endsWith('/api/stripe-checkout')        && method === 'POST')         return handleStripeCheckout(event);
     if (path.endsWith('/api/flight/checkout')        && method === 'POST')         return handleFlightCheckout(event);
     if (path.endsWith('/api/flight/confirm')         && method === 'POST')         return handleFlightConfirm(event);
+    if (path.endsWith('/api/hotel/checkout')         && method === 'POST')         return handleHotelCheckout(event);
+    if (path.endsWith('/api/hotel/confirm')          && method === 'POST')         return handleHotelConfirm(event);
+    if (path.endsWith('/api/hotel/admin')            && method === 'POST')         return handleHotelAdmin(event);
     if (path.includes('/api/uber/estimates')         && method === 'GET')          return handleUberEstimates(event);
     if (path.includes('/api/uber/checkout')          && method === 'POST')         return handleUberCheckout(event);
     if (path.includes('/api/uber/token')             && method === 'POST')         return handleUberToken(event);

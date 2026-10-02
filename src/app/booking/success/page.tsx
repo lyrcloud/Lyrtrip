@@ -49,6 +49,28 @@ interface FlightConfirmation {
   flightSummary?: { legs?: FlightLeg[]; from?: string; to?: string; depart?: string };
 }
 
+interface HotelReceipt {
+  status: 'requested' | 'confirmed' | 'declined';
+  requestRef: string;
+  hotel: { name: string; address?: string; phone?: string; link?: string };
+  checkin: string;
+  checkout: string;
+  nights: number;
+  adults: number;
+  roomPreference?: string;
+  specialRequests?: string;
+  guest: { givenName: string; familyName: string; email: string; phone: string };
+  hotelTotal: number;
+  serviceFee: number;
+  totalPrice: number;
+  currency: string;
+  payment?: { brand?: string | null; last4?: string | null; paidAt?: string; receiptUrl?: string | null; reference?: string } | null;
+  requestedAt?: string;
+  hotelConfirmation?: string | null;
+  declineReason?: string | null;
+  refunded?: boolean;
+}
+
 function fmtDate(d: string): string {
   if (!d) return '';
   const dt = new Date(`${d}T12:00:00`);
@@ -76,6 +98,7 @@ export default function BookingSuccessPage() {
   const [flightConfirm, setFlightConfirm]   = useState<FlightConfirmation | null>(null);
   const [flightLoading, setFlightLoading]   = useState(false);
   const [flightError, setFlightError]       = useState<string | null>(null);
+  const [hotelReceipt, setHotelReceipt]     = useState<HotelReceipt | null>(null);
 
   useEffect(() => {
     const params    = new URLSearchParams(window.location.search);
@@ -135,6 +158,27 @@ export default function BookingSuccessPage() {
       return;
     }
 
+    // Hotel booking request (paid; Lyrtrip then books with the property)
+    if (type === 'hotel' && sessionId) {
+      setFlightLoading(true);
+      const load = async (attempt: number): Promise<void> => {
+        const res  = await fetch(`${baseUrl}/api/hotel/confirm`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ sessionId }),
+        }).catch(() => null);
+        const data = res ? await res.json().catch(() => null) : null;
+        if (data?.success) { setHotelReceipt(data as HotelReceipt); return; }
+        if ((!res || res.status >= 502) && attempt < 5) {
+          await new Promise(r => setTimeout(r, 3000));
+          return load(attempt + 1);
+        }
+        setFlightError(data?.error ?? 'Could not load your booking. Please contact support@lyrtrip.com.');
+      };
+      load(0).finally(() => setFlightLoading(false));
+      return;
+    }
+
     // Legacy Stripe hotel — mark local pending as paid
     const pending = getBookings().find(b => b.status === 'pending_payment');
     if (pending) updateBookingStatus(pending.id, 'paid');
@@ -169,7 +213,7 @@ export default function BookingSuccessPage() {
       <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
         <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
           <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl animate-pulse">✈️</div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">Issuing Your Ticket…</h1>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">{typeof window !== 'undefined' && window.location.search.includes('type=hotel') ? 'Loading Your Booking…' : 'Issuing Your Ticket…'}</h1>
           <p className="text-gray-500">We&apos;re confirming your booking with the airline. This usually takes a few seconds, but some airlines take up to a couple of minutes — please keep this page open.</p>
           <div className="mt-6 flex justify-center gap-1">
             {[0,1,2].map(i => (
@@ -360,6 +404,119 @@ export default function BookingSuccessPage() {
             <p>• Bring a valid passport or government photo ID matching the passenger name above.</p>
             <p>• Arrive at least 2 hours before domestic and 3 hours before international departures.</p>
             <p>• Baggage allowance and change/refund rules depend on your fare — check with the airline.</p>
+            <p className="pt-2 text-gray-400">Issued by Lyrtrip · www.lyrtrip.com · support@lyrtrip.com</p>
+          </section>
+        </article>
+      </div>
+    );
+  }
+
+  // ── Hotel request / confirmation (printable) ────────────────────────────
+  if (hotelReceipt) {
+    const h = hotelReceipt;
+    const p = h.payment;
+    const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const badge = {
+      requested: { text: 'Booking in progress', cls: 'bg-amber-100 text-amber-800', note: 'We are reserving your room directly with the hotel. You will get your hotel confirmation number by email, usually within 24 hours. If the hotel can’t confirm, we refund you in full.' },
+      confirmed: { text: 'Confirmed', cls: 'bg-green-100 text-green-800', note: 'Your room is booked. Show the hotel confirmation number and a photo ID at check-in.' },
+      declined:  { text: 'Not booked — refunded', cls: 'bg-red-100 text-red-800', note: `${h.declineReason ?? 'The hotel could not confirm this room.'} ${h.refunded ? `Your payment of ${h.currency} ${money(h.totalPrice)} has been refunded to your card (allow 5–10 business days).` : ''}` },
+    }[h.status];
+    const field = (label: string, value: React.ReactNode) => (
+      <div>
+        <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">{label}</p>
+        <p className="text-sm font-semibold text-gray-900 break-words">{value}</p>
+      </div>
+    );
+    return (
+      <div className="min-h-screen bg-gray-100 py-10 px-4 print:min-h-0 print:bg-white print:p-0">
+        <div className="max-w-3xl mx-auto mb-4 flex gap-3 justify-end print:hidden">
+          <button onClick={() => window.print()} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition">🖨 Print / Save as PDF</button>
+          <Link href="/" className="px-5 py-2.5 border border-gray-300 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to search</Link>
+        </div>
+        <article className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden print:shadow-none print:rounded-none">
+          <header className="flex items-center justify-between gap-4 px-8 py-6 border-b-4 border-indigo-600">
+            <img src="/logo.png" alt="Lyrtrip" className="h-12 w-auto" />
+            <div className="text-right">
+              <p className="text-xl font-black text-gray-900 tracking-wide">{h.status === 'confirmed' ? 'HOTEL CONFIRMATION' : 'HOTEL BOOKING'}</p>
+              <p className="text-xs text-gray-500">Receipt · Requested {fmtDate((h.requestedAt ?? new Date().toISOString()).slice(0, 10))}</p>
+            </div>
+          </header>
+
+          <section className="px-8 py-5 bg-indigo-50 print:bg-white print:border-b print:border-gray-200">
+            <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${badge.cls}`}>{badge.text}</span>
+            <p className="text-sm text-gray-700 mt-2">{badge.note}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4">
+              {h.hotelConfirmation && (
+                <div>
+                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">Hotel confirmation</p>
+                  <p className="text-2xl font-black text-indigo-700 font-mono tracking-wider">{h.hotelConfirmation}</p>
+                </div>
+              )}
+              <div>
+                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">Lyrtrip reference</p>
+                <p className="text-sm font-mono text-gray-700 break-all mt-1">{h.requestRef}</p>
+              </div>
+            </div>
+          </section>
+
+          <section className="px-8 py-5 border-b border-gray-200">
+            <h2 className="text-xs font-bold text-gray-900 uppercase tracking-widest mb-3">Stay</h2>
+            <p className="text-lg font-bold text-gray-900">{h.hotel.name}</p>
+            {h.hotel.address && <p className="text-sm text-gray-600">{h.hotel.address}</p>}
+            {h.hotel.phone && <p className="text-sm text-gray-600">{h.hotel.phone}</p>}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4">
+              {field('Check-in', fmtDate(h.checkin))}
+              {field('Check-out', fmtDate(h.checkout))}
+              {field('Nights', h.nights)}
+              {field('Guests', `${h.adults} adult${h.adults !== 1 ? 's' : ''}`)}
+            </div>
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              {field('Guest', `${h.guest.givenName} ${h.guest.familyName}`)}
+              {field('Contact', `${h.guest.email} · ${h.guest.phone}`)}
+              {h.roomPreference && field('Room preference', h.roomPreference)}
+              {h.specialRequests && field('Special requests', h.specialRequests)}
+            </div>
+          </section>
+
+          <section className="px-8 py-5 border-b border-gray-200">
+            <h2 className="text-xs font-bold text-gray-900 uppercase tracking-widest mb-3">Payment receipt</h2>
+            <table className="w-full text-sm">
+              <tbody>
+                <tr><td className="py-1 text-gray-600">Room, {h.nights} night{h.nights !== 1 ? 's' : ''}, incl. taxes &amp; fees</td><td className="py-1 text-right font-mono">{money(h.hotelTotal)}</td></tr>
+                <tr><td className="py-1 text-gray-600">Lyrtrip service fee</td><td className="py-1 text-right font-mono">{money(h.serviceFee)}</td></tr>
+                <tr className="border-t border-gray-300">
+                  <td className="pt-2 font-bold text-gray-900">Total paid</td>
+                  <td className="pt-2 text-right text-xl font-black text-gray-900">{h.currency} {money(h.totalPrice)}</td>
+                </tr>
+                {h.refunded && <tr><td className="pt-1 font-semibold text-red-700">Refunded</td><td className="pt-1 text-right font-mono text-red-700">−{money(h.totalPrice)}</td></tr>}
+              </tbody>
+            </table>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4 text-xs">
+              <div>
+                <p className="text-[10px] text-gray-500 uppercase tracking-widest">Paid with</p>
+                <p className="font-semibold text-gray-900 capitalize">{p?.brand && p.last4 ? `${p.brand} •••• ${p.last4}` : 'Card'}</p>
+              </div>
+              {p?.paidAt && (
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-widest">Date paid</p>
+                  <p className="font-semibold text-gray-900">{fmtDateTime(p.paidAt)}</p>
+                </div>
+              )}
+              {p?.reference && (
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-widest">Payment reference</p>
+                  <p className="font-mono text-gray-900 break-all">{p.reference}</p>
+                </div>
+              )}
+            </div>
+            {p?.receiptUrl && (
+              <a href={p.receiptUrl} target="_blank" rel="noopener noreferrer" className="inline-block mt-3 text-xs text-indigo-600 hover:underline print:hidden">View card receipt from Stripe ↗</a>
+            )}
+          </section>
+
+          <section className="px-8 py-5 text-xs text-gray-600 space-y-1">
+            <p>• Keep this page: you can reopen it any time from the link in your email to see the latest status.</p>
+            <p>• Check-in times, deposits and cancellation rules are set by the hotel.</p>
             <p className="pt-2 text-gray-400">Issued by Lyrtrip · www.lyrtrip.com · support@lyrtrip.com</p>
           </section>
         </article>
