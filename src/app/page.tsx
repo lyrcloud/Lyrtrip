@@ -839,6 +839,7 @@ export default function Home() {
     { id: 'cruise',  label: '🚢 Cruise' },
     { id: 'dash',    label: '🍔 Dash' },
     { id: 'tourism', label: '🎒 Tourism' },
+    { id: 'study',   label: '🎓 Study' },
     { id: 'career',  label: '💼 Jobs' },
     { id: 'shipping', label: '📦 Shipping' },
   ];
@@ -1811,6 +1812,15 @@ export default function Home() {
                   {searchBtn('tourism')}
                 </div>
                 <ResultsGrid />
+              </div>
+            )}
+
+            {/* Study */}
+            {activeTab === 'study' && (
+              <div className="py-10 text-center">
+                <p className="text-4xl mb-3">🎓</p>
+                <h3 className="text-lg font-bold text-gray-900">Study is coming soon</h3>
+                <p className="text-sm text-gray-600 mt-1">Find courses, schools and study-abroad programs right here on Lyrtrip.</p>
               </div>
             )}
 
