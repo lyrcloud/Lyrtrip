@@ -909,27 +909,15 @@ export default function Home() {
                 {result.demo ? (
                   <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
                 ) : result.propertyToken && result.pricePerNight ? (
-                <div className="ml-auto flex items-center gap-3">
-                  {result.link && (
-                    <a href={result.link} target="_blank" rel="noopener noreferrer" className="text-xs text-gray-500 hover:text-indigo-600 underline">Hotel site ↗</a>
-                  )}
-                  <button
-                    onClick={() => openHotelRequest(result)}
-                    className="px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
-                  >
-                    Book
-                  </button>
-                </div>
-                ) : (
-                // Listing-only result (no reservation system behind it): send the guest to the provider
-                <a
-                  href={result.link || `https://www.google.com/travel/hotels?q=${encodeURIComponent(`${result.name} ${result.description ?? ''}`)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ml-auto px-4 py-1.5 border border-indigo-600 text-indigo-700 text-sm font-semibold rounded-lg hover:bg-indigo-50 transition"
+                <button
+                  onClick={() => openHotelRequest(result)}
+                  className="ml-auto px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
                 >
-                  View deal ↗
-                </a>
+                  Book
+                </button>
+                ) : (
+                // No price to book against; hotel websites are only shown to admins
+                <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Not bookable online</span>
                 )}
               </div>
             </div>

@@ -543,7 +543,6 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests }) {
     unit:         '/night',
     currency:     'USD',
     imageUrl:     p.images?.[0]?.thumbnail,
-    link:         p.link,
     checkIn:      p.check_in_time,
     checkOut:     p.check_out_time,
   }));
@@ -1386,7 +1385,8 @@ function hotelReceipt(b) {
     success:           true,
     status:            b.status,                 // requested | confirmed | declined
     requestRef:        String(b._id),
-    hotel:             b.hotel,
+    // the hotel's own website is for admins only (see the admin list)
+    hotel:             { name: b.hotel.name, address: b.hotel.address, phone: b.hotel.phone },
     checkin:           b.checkin,
     checkout:          b.checkout,
     nights:            b.nights,
@@ -1559,7 +1559,7 @@ async function handleHotelAdmin(event) {
 
   if (body.action === 'list') {
     const rows = await coll.find({ status: { $in: ['requested', 'confirmed', 'declined'] } }).sort({ requestedAt: -1 }).limit(200).toArray();
-    return json(200, { bookings: rows.map(b => ({ ...hotelReceipt(b), hotelNightly: b.hotelNightly, adminNote: b.adminNote ?? null })) });
+    return json(200, { bookings: rows.map(b => ({ ...hotelReceipt(b), hotel: b.hotel, hotelNightly: b.hotelNightly, adminNote: b.adminNote ?? null })) });
   }
 
   if (!ObjectId.isValid(body.id)) return json(400, { error: 'Invalid booking id' });
