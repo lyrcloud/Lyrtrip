@@ -43,6 +43,34 @@ body {
   to { opacity: 1; transform: none; }
 }
 
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes logoPop {
+  0% { transform: scale(1); }
+  35% { transform: scale(0.9) rotate(-4deg); }
+  70% { transform: scale(1.12) rotate(3deg); }
+  100% { transform: scale(1); }
+}
+
+/* Click ripple added by addRipple() on buttons */
+.ripple {
+  position: absolute;
+  border-radius: 9999px;
+  background: rgb(255 255 255 / 0.45);
+  transform: scale(0);
+  animation: ripple 600ms ease-out;
+  pointer-events: none;
+}
+
+@keyframes ripple {
+  to { transform: scale(2.5); opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .animate-ping, .animate-spin, [class*="animate-[mapIn"] { animation: none !important; }
+  .animate-ping, .animate-spin, .ripple,
+  [class*="animate-[mapIn"], [class*="animate-[panelIn"], [class*="animate-[logoPop"] { animation: none !important; }
+  * { transition-duration: 0ms !important; }
 }

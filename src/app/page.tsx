@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import AirportInput from '@/components/AirportInput';
@@ -510,6 +510,45 @@ export default function Home() {
     setUberProfile(null);
   };
 
+  // Tab bar: sliding underline, keep active tab in view, arrow-key navigation
+  const tabBarRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0 });
+
+  useEffect(() => {
+    const measure = () => {
+      const el = tabRefs.current[activeTab];
+      if (el) setTabIndicator({ left: el.offsetLeft + 12, width: el.offsetWidth - 24 });
+    };
+    measure();
+    tabRefs.current[activeTab]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [activeTab]);
+
+  const onTabKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const i = tabs.findIndex(t => t.id === activeTab);
+    const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length].id;
+    switchTab(next);
+    tabRefs.current[next]?.focus();
+  };
+
+  // Ripple from the click point on buttons
+  const addRipple = (e: React.MouseEvent<HTMLElement>) => {
+    const btn = e.currentTarget;
+    const rect = btn.getBoundingClientRect();
+    const size = Math.max(rect.width, rect.height);
+    const dot = document.createElement('span');
+    dot.className = 'ripple';
+    dot.style.width = dot.style.height = `${size}px`;
+    dot.style.left = `${e.clientX - rect.left - size / 2}px`;
+    dot.style.top = `${e.clientY - rect.top - size / 2}px`;
+    btn.appendChild(dot);
+    dot.addEventListener('animationend', () => dot.remove());
+  };
+
   const switchTab = (tabId: string) => {
     setActiveTab(tabId);
     setResults([]);
@@ -848,29 +887,36 @@ export default function Home() {
   };
 
   const tabs = [
-    { id: 'flights', label: '✈️ Flights' },
-    { id: 'shipping', label: '📦 Shipping' },
-    { id: 'hotels',  label: '🏨 Hotels' },
-    { id: 'car',     label: '🚗 Car' },
-    { id: 'bus',     label: '🚌 Bus' },
-    { id: 'train',   label: '🚂 Train' },
-    { id: 'cruise',  label: '🚢 Cruise' },
-    { id: 'dash',    label: '🍔 Dash' },
-    { id: 'tourism', label: '🎒 Tourism' },
-    { id: 'study',   label: '🎓 Study' },
-    { id: 'career',  label: '💼 Jobs' },
+    { id: 'flights', icon: '✈️', label: 'Flights' },
+    { id: 'shipping', icon: '📦', label: 'Shipping' },
+    { id: 'hotels', icon: '🏨', label: 'Hotels' },
+    { id: 'car', icon: '🚗', label: 'Car' },
+    { id: 'bus', icon: '🚌', label: 'Bus' },
+    { id: 'train', icon: '🚂', label: 'Train' },
+    { id: 'cruise', icon: '🚢', label: 'Cruise' },
+    { id: 'dash', icon: '🍔', label: 'Dash' },
+    { id: 'tourism', icon: '🎒', label: 'Tourism' },
+    { id: 'study', icon: '🎓', label: 'Study' },
+    { id: 'career', icon: '💼', label: 'Jobs' },
   ];
 
-  const inputClass = "w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-600 focus:border-transparent";
+  const inputClass = "w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border border-gray-200 rounded-xl shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-brand-300 hover:bg-white focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100";
   const uberClientId = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
   const searchBtn = (service: string, disabled = false) => (
     <div className="flex items-end">
       <button
-        onClick={() => handleSearch(service)}
+        onClick={e => { addRipple(e); handleSearch(service); }}
         disabled={loading || disabled}
-        className="w-full px-6 py-2 bg-brand-600 text-white font-bold rounded-lg hover:bg-brand-700 disabled:bg-gray-400 transition-colors"
+        className="relative w-full overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 text-base bg-brand-600 text-white font-bold rounded-xl shadow-md shadow-brand-600/25 transition-all duration-200 hover:bg-brand-700 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] disabled:bg-gray-400 disabled:shadow-none disabled:translate-y-0 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
       >
-        {loading ? 'Searching...' : 'Search'}
+        {loading ? (
+          <span aria-hidden className="h-5 w-5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+        ) : (
+          <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" className="h-5 w-5">
+            <circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" />
+          </svg>
+        )}
+        {loading ? 'Searching…' : 'Search'}
       </button>
     </div>
   );
@@ -1429,44 +1475,67 @@ export default function Home() {
         )}
 
         {/* Search Tabs */}
-        <div className="bg-white rounded-lg shadow-lg">
+        <div className="bg-white rounded-2xl shadow-xl ring-1 ring-gray-100">
           {/* Tab Nav */}
-          <div className="flex border-b overflow-x-auto">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => switchTab(tab.id)}
-                className={`shrink-0 px-6 py-4 text-center font-bold whitespace-nowrap transition-colors ${
-                  activeTab === tab.id
-                    ? 'text-brand-600 border-b-2 border-brand-600 bg-brand-50'
-                    : 'text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div
+            ref={tabBarRef}
+            role="tablist"
+            aria-label="Services"
+            onKeyDown={onTabKeyDown}
+            className="relative flex gap-1 border-b border-gray-100 overflow-x-auto px-2 pt-2 pr-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,black_calc(100%-3rem),transparent)]"
+          >
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  ref={el => { tabRefs.current[tab.id] = el; }}
+                  role="tab"
+                  aria-selected={isActive}
+                  tabIndex={isActive ? 0 : -1}
+                  onClick={() => switchTab(tab.id)}
+                  className={`group shrink-0 flex flex-col sm:flex-row items-center gap-1 sm:gap-2 rounded-t-xl px-4 sm:px-5 py-3 sm:py-4 text-sm sm:text-base font-bold whitespace-nowrap transition-colors duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-inset focus-visible:ring-brand-200 ${
+                    isActive ? 'text-brand-600 bg-brand-50/70' : 'text-gray-600 hover:text-brand-600 hover:bg-gray-50'
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className={`text-2xl sm:text-[1.6rem] leading-none transition-transform duration-300 ease-out group-hover:-translate-y-1 group-hover:scale-110 ${isActive ? 'scale-110' : ''}`}
+                  >
+                    {tab.icon}
+                  </span>
+                  {tab.label}
+                </button>
+              );
+            })}
+            {/* Sliding underline under the active tab */}
+            <span
+              aria-hidden
+              className="pointer-events-none absolute bottom-0 h-1 rounded-full bg-brand-600 transition-all duration-300 ease-out"
+              style={{ left: tabIndicator.left, width: tabIndicator.width }}
+            />
           </div>
 
           {/* Forms */}
-          <div className="p-8">
+          <div key={activeTab} role="tabpanel" className="p-5 sm:p-8 animate-[panelIn_250ms_ease-out]">
 
             {/* Hotels */}
             {activeTab === 'hotels' && (
               <div>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Destination</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Destination</label>
                     <LocationPicker
                       onLocationSelect={(loc) => handleLocationSelect('destinationLocation', loc)}
                       placeholder="Select hotel location"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Check-in</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Check-in</label>
                     <input type="date" name="checkin" value={formData.checkin} onChange={handleInputChange} className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Check-out</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Check-out</label>
                     <input type="date" name="checkout" value={formData.checkout} onChange={handleInputChange} className={inputClass} />
                   </div>
                   {searchBtn('hotels')}
@@ -1480,23 +1549,23 @@ export default function Home() {
               <div>
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-4">
                   <div className="col-span-2 md:col-span-1">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">From</label>
                     <AirportInput name="from" value={formData.from} onChange={v => setFormData(prev => ({ ...prev, from: v }))} placeholder="City, airport or code" className={inputClass} />
                   </div>
                   <div className="col-span-2 md:col-span-1">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">To</label>
                     <AirportInput name="to" value={formData.to} onChange={v => setFormData(prev => ({ ...prev, to: v }))} placeholder="City, airport or code" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Depart</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Depart</label>
                     <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Return <span className="text-gray-400 font-normal">(opt.)</span></label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Return <span className="text-gray-400 font-normal">(opt.)</span></label>
                     <input type="date" name="return" value={formData.return} onChange={handleInputChange} className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Adults</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Adults</label>
                     <input type="number" name="flightPassengers" value={formData.flightPassengers} onChange={e => setFormData(prev => ({ ...prev, flightPassengers: Math.max(1, Math.min(9, +e.target.value)) }))} min={1} max={9} className={inputClass} />
                   </div>
                   {searchBtn('flights')}
@@ -1617,15 +1686,15 @@ export default function Home() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">From</label>
                     <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="Departure city" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">To</label>
                     <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="Destination city" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Depart</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Depart</label>
                     <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
                   </div>
                   {searchBtn('bus')}
@@ -1639,7 +1708,7 @@ export default function Home() {
               <div>
                 <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
                       Train # <span className="text-gray-400 font-normal">(optional)</span>
                     </label>
                     <input
@@ -1652,7 +1721,7 @@ export default function Home() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">From</label>
                     <input
                       type="text"
                       name="from"
@@ -1663,7 +1732,7 @@ export default function Home() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">To</label>
                     <input
                       type="text"
                       name="to"
@@ -1674,7 +1743,7 @@ export default function Home() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Date</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Date</label>
                     <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
                   </div>
                   {searchBtn('train')}
@@ -1688,15 +1757,15 @@ export default function Home() {
               <div>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Departure Port</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Departure Port</label>
                     <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="Port city" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Departure Date</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Departure Date</label>
                     <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Duration (days)</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Duration (days)</label>
                     <input type="number" name="cruiseDays" value={formData.cruiseDays} onChange={handleInputChange} placeholder="Number of days" min="1" className={inputClass} />
                   </div>
                   {searchBtn('cruise')}
@@ -1833,15 +1902,15 @@ export default function Home() {
               <div>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Destination</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Destination</label>
                     <input type="text" name="destination" value={formData.destination} onChange={handleInputChange} placeholder="City or attraction" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Activity Type</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Activity Type</label>
                     <input type="text" name="activityType" value={formData.activityType} onChange={handleInputChange} placeholder="E.g. Museum, Adventure" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Date</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Date</label>
                     <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
                   </div>
                   {searchBtn('tourism')}
@@ -1864,15 +1933,15 @@ export default function Home() {
               <div>
                 <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Job Title / Keywords</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Job Title / Keywords</label>
                     <input type="text" name="jobTitle" value={formData.jobTitle} onChange={handleInputChange} placeholder="e.g. Software Engineer, Barista" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Location <span className="text-gray-400 font-normal">(worldwide)</span></label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Location <span className="text-gray-400 font-normal">(worldwide)</span></label>
                     <input type="text" name="location" value={formData.location} onChange={handleInputChange} placeholder="City, country or Remote" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Job Type</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Job Type</label>
                     <select name="jobType" value={formData.jobType} onChange={handleInputChange} className={inputClass}>
                       <option value="">Any type</option>
                       <option value="Full-time">Full-time</option>
@@ -1882,7 +1951,7 @@ export default function Home() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Date Posted</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Date Posted</label>
                     <select name="datePosted" value={formData.datePosted} onChange={handleInputChange} className={inputClass}>
                       <option value="">Any time</option>
                       <option value="today">Today</option>
