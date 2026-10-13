@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import LocationMap from '@/components/LocationMap';
@@ -364,23 +364,37 @@ export default function Home() {
   const [busJourneys, setBusJourneys] = useState<FlixbusJourney[]>([]);
 
 
-  useEffect(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setUserLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
-          setLocationLoading(false);
-        },
-        () => {
-          setLocationError('Unable to access your location');
-          setLocationLoading(false);
-        }
-      );
-    } else {
+  const locateUser = useCallback(() => {
+    if (!navigator.geolocation) {
       setLocationError('Geolocation not supported');
       setLocationLoading(false);
+      return;
     }
+    setLocationLoading(true);
+    setLocationError(null);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
+        setLocationLoading(false);
+      },
+      () => {
+        setLocationError('Unable to access your location');
+        setLocationLoading(false);
+      }
+    );
   }, []);
+
+  useEffect(() => { locateUser(); }, [locateUser]);
+
+  // Location button: retry on error, otherwise toggle the map
+  const handleLocationClick = () => {
+    if (locationError) {
+      locateUser();
+      setShowLocationMap(true);
+      return;
+    }
+    setShowLocationMap(v => !v);
+  };
 
   // Reverse-geocode GPS to get a city label for the Uber header
   useEffect(() => {
@@ -1357,19 +1371,49 @@ export default function Home() {
 
         {/* Hero */}
         <div className="text-center mb-16">
-          <h1 className="text-5xl font-extrabold text-brand-700 mb-4">Lyrtrip</h1>
-          <p className="text-lg text-gray-600 mb-8">Your all-in-one travel & lifestyle platform</p>
           <button
-            onClick={() => setShowLocationMap(!showLocationMap)}
-            className="px-8 py-4 bg-brand-600 text-white text-lg font-bold rounded-lg hover:bg-brand-700 transition-colors"
+            type="button"
+            onClick={handleLocationClick}
+            aria-expanded={showLocationMap}
+            aria-controls="location-map"
+            aria-busy={locationLoading}
+            title={locationError ? 'Try locating you again' : showLocationMap ? 'Hide map' : 'Show my location on the map'}
+            className="group relative inline-flex items-center gap-3 rounded-full bg-brand-600 py-3 pl-3 pr-6 text-base sm:text-lg font-bold text-white shadow-lg shadow-brand-600/30 transition-all duration-200 hover:bg-brand-700 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 active:scale-95 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
           >
-            {showLocationMap ? '✕ Hide Map' : '📍 My Location'}
+            {/* Pulse ring once the location is known, inviting a click */}
+            {!showLocationMap && !locationLoading && !locationError && (
+              <span aria-hidden className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-brand-400 animate-ping opacity-60" />
+            )}
+            <span className="relative flex h-10 w-10 items-center justify-center rounded-full bg-white/15">
+              {showLocationMap ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" className="h-6 w-6 transition-transform duration-300 group-hover:rotate-90">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              ) : (
+                <svg
+                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"
+                  className={`h-6 w-6 transition-transform duration-500 ${locationLoading ? 'animate-spin [animation-duration:2s]' : 'group-hover:rotate-[25deg] group-hover:scale-110'}`}
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M3 12h18" />
+                  <path d="M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z" />
+                </svg>
+              )}
+            </span>
+            <span className="relative text-left leading-tight">
+              <span className="block">
+                {showLocationMap ? 'Hide Map' : locationLoading ? 'Locating…' : locationError ? 'Retry Location' : 'My Location'}
+              </span>
+              {!showLocationMap && !locationLoading && !locationError && uberCity && (
+                <span className="block text-xs font-medium text-white/80">{uberCity}</span>
+              )}
+            </span>
           </button>
         </div>
 
         {/* Location Map */}
         {showLocationMap && (
-          <div className="mb-12 bg-white rounded-lg shadow-lg p-6">
+          <div id="location-map" className="mb-12 bg-white rounded-lg shadow-lg p-6 animate-[mapIn_300ms_ease-out]">
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Your Current Location</h2>
             {locationLoading ? (
               <p className="text-gray-600">Loading your location...</p>
