@@ -150,7 +150,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         <button
           type="submit"
           disabled={loading}
-          className="w-full px-4 py-2.5 bg-brand-600 text-white font-medium rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
+          className="w-full px-4 py-2.5 bg-btn text-white font-medium rounded-md hover:bg-btn-hover disabled:opacity-50 transition-colors"
         >
           {loading ? 'Confirming…' : 'Confirm account'}
         </button>
@@ -295,7 +295,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         <button
           type="submit"
           disabled={loading}
-          className="w-full px-4 py-2.5 bg-brand-600 text-white font-medium rounded-md hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="w-full px-4 py-2.5 bg-btn text-white font-medium rounded-md hover:bg-btn-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {loading ? 'Loading…' : activeMode === 'signup' ? 'Create account' : 'Sign in'}
         </button>

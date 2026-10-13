@@ -681,6 +681,49 @@ export default function Home() {
     setUberProfile(null);
   };
 
+  // Flight form: trip type, From/To swap, travellers stepper
+  const [tripType, setTripType] = useState<'round' | 'oneway'>('round');
+  const fromBoxRef = useRef<HTMLLabelElement>(null);
+  const toBoxRef = useRef<HTMLLabelElement>(null);
+  const swapRef = useRef<HTMLButtonElement>(null);
+  const paxRef = useRef<HTMLSpanElement>(null);
+  const returnInputRef = useRef<HTMLInputElement>(null);
+  const motionOk = () => typeof window !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const swapRoute = () => {
+    setFormData(prev => ({ ...prev, from: prev.to, to: prev.from }));
+    if (!motionOk()) return;
+    const turn = swapRef.current?.dataset.turn === '1' ? '0' : '1';
+    if (swapRef.current) swapRef.current.dataset.turn = turn;
+    swapRef.current?.animate(
+      [{ transform: 'translate(-50%,-50%) rotate(0)' }, { transform: 'translate(-50%,-50%) rotate(180deg) scale(1.15)' }, { transform: 'translate(-50%,-50%) rotate(180deg)' }],
+      { duration: 400, easing: 'ease-out' },
+    );
+    // Stacked on phones (swap vertically), side by side from sm up (swap horizontally)
+    const side = window.matchMedia('(min-width: 640px)').matches;
+    const d = 24;
+    fromBoxRef.current?.animate([{ transform: side ? `translateX(${d}px)` : `translateY(${d}px)`, opacity: 0.3 }, { transform: 'none', opacity: 1 }], { duration: 350, easing: 'ease-out' });
+    toBoxRef.current?.animate([{ transform: side ? `translateX(-${d}px)` : `translateY(-${d}px)`, opacity: 0.3 }, { transform: 'none', opacity: 1 }], { duration: 350, easing: 'ease-out' });
+  };
+
+  const changePax = (delta: number) => {
+    setFormData(prev => ({ ...prev, flightPassengers: Math.max(1, Math.min(9, prev.flightPassengers + delta)) }));
+    if (motionOk()) paxRef.current?.animate(
+      [{ transform: `translateY(${delta > 0 ? 10 : -10}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }],
+      { duration: 220, easing: 'ease-out' },
+    );
+  };
+
+  const chooseTripType = (type: 'round' | 'oneway') => {
+    setTripType(type);
+    if (type === 'oneway') setFormData(prev => ({ ...prev, return: '' }));
+    else setTimeout(() => returnInputRef.current?.showPicker?.(), 50);
+  };
+
+  // Local YYYY-MM-DD for date minimums, and a short weekday label for picked dates
+  const todayIso = (() => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); })();
+  const dayLabel = (iso: string) => iso ? new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+
   // Option tiles: per-icon animation, arrow-key navigation
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const iconRefs = useRef<Record<string, HTMLSpanElement | null>>({});
@@ -1090,18 +1133,24 @@ export default function Home() {
   ];
 
   const inputClass = "w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border border-gray-200 rounded-xl shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-brand-300 hover:bg-white focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100";
+  // Field box: icon + small label + borderless input, highlighted while any child has focus
+  const fieldBox = "group/field relative flex min-h-[3.75rem] items-center gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-2 transition-all duration-200 hover:border-brand-300 hover:bg-white focus-within:border-brand-400 focus-within:bg-white focus-within:ring-4 focus-within:ring-brand-100 focus-within:shadow-md";
+  const fieldIcon = "h-5 w-5 shrink-0 text-gray-400 transition-colors duration-200 group-focus-within/field:text-brand-500 group-hover/field:text-brand-400";
+  const fieldLabel = "block truncate whitespace-nowrap text-[11px] font-bold uppercase tracking-wider text-gray-500";
+  const fieldInput = "w-full min-w-0 truncate bg-transparent p-0 text-base font-semibold text-gray-900 outline-none placeholder:font-normal placeholder:text-gray-400";
+  const stepBtn = "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-lg font-bold leading-none text-brand-600 ring-1 ring-gray-200 transition-all hover:bg-brand-50 hover:ring-brand-300 active:scale-90 disabled:cursor-not-allowed disabled:text-gray-300 disabled:ring-gray-100 disabled:hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300";
   const uberClientId = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
-  const searchBtn = (service: string, disabled = false) => (
-    <div className="flex items-end">
+  const searchBtn = (service: string, disabled = false, tall = false) => (
+    <div className={tall ? 'flex' : 'flex items-end'}>
       <button
         onClick={e => { addRipple(e); handleSearch(service); }}
         disabled={loading || disabled}
-        className="relative w-full overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 text-base bg-brand-600 text-white font-bold rounded-xl shadow-md shadow-brand-600/25 transition-all duration-200 hover:bg-brand-700 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] disabled:bg-gray-400 disabled:shadow-none disabled:translate-y-0 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
+        className={`relative w-full overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 ${tall ? 'min-h-[3.75rem] rounded-2xl' : ''} text-base bg-btn text-white font-bold rounded-xl shadow-md shadow-btn/25 transition-all duration-200 hover:bg-btn-hover hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] disabled:bg-gray-400 disabled:shadow-none disabled:translate-y-0 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200`}
       >
         {loading ? (
-          <span aria-hidden className="h-5 w-5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+          <span aria-hidden className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-white/40 border-t-white" />
         ) : (
-          <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" className="h-5 w-5">
+          <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" className="h-5 w-5 shrink-0">
             <circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" />
           </svg>
         )}
@@ -1163,7 +1212,7 @@ export default function Home() {
                 ) : result.propertyToken && result.pricePerNight ? (
                 <button
                   onClick={() => openHotelRequest(result)}
-                  className="ml-auto px-4 py-1.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition"
+                  className="ml-auto px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
                 >
                   Book
                 </button>
@@ -1249,7 +1298,7 @@ export default function Home() {
                 setFlightPassengers(count);
                 setFlightBookingError(null);
               }}
-              className="mt-1 px-4 py-1.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition"
+              className="mt-1 px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
             >
               Select
             </button>
@@ -1344,7 +1393,7 @@ export default function Home() {
                     href={result.applyLink}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="px-4 py-1.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition"
+                    className="px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
                   >
                     Apply Now →
                   </a>
@@ -1616,7 +1665,7 @@ export default function Home() {
             aria-controls="location-map"
             aria-busy={locationLoading}
             title={locationError ? 'Try locating you again' : showLocationMap ? 'Hide map' : 'Show my location on the map'}
-            className="group relative inline-flex items-center gap-3 rounded-full bg-brand-600 py-3 pl-3 pr-6 text-base sm:text-lg font-bold text-white shadow-lg shadow-brand-600/30 transition-all duration-200 hover:bg-brand-700 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 active:scale-95 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
+            className="group relative inline-flex items-center gap-3 rounded-full bg-btn py-3 pl-3 pr-6 text-base sm:text-lg font-bold text-white shadow-lg shadow-btn/30 transition-all duration-200 hover:bg-btn-hover hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 active:scale-95 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
           >
             {/* Pulse ring once the location is known, inviting a click */}
             {!showLocationMap && !locationLoading && !locationError && (
@@ -1686,7 +1735,7 @@ export default function Home() {
                   style={{ animationDelay: `${i * 40}ms` }}
                   className={`group relative overflow-hidden flex flex-col items-center justify-center gap-2 rounded-2xl px-2 py-4 sm:py-5 text-center transition-all duration-300 ease-out animate-[tileIn_400ms_ease-out_backwards] focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200 ${
                     isActive
-                      ? 'bg-brand-600 text-white shadow-lg shadow-brand-600/30 -translate-y-0.5'
+                      ? 'bg-btn text-white shadow-lg shadow-btn/30 -translate-y-0.5'
                       : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 hover:shadow-md hover:-translate-y-1'
                   }`}
                 >
@@ -1741,28 +1790,116 @@ export default function Home() {
             {/* Flights */}
             {activeTab === 'flights' && (
               <div>
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-4">
-                  <div className="col-span-2 md:col-span-1">
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">From</label>
-                    <AirportInput name="from" value={formData.from} onChange={v => setFormData(prev => ({ ...prev, from: v }))} placeholder="City, airport or code" className={inputClass} />
+                {/* Trip type */}
+                <div role="radiogroup" aria-label="Trip type" className="relative mb-4 inline-grid grid-cols-2 rounded-full bg-gray-100 p-1 text-sm font-semibold">
+                  <span
+                    aria-hidden
+                    className={`absolute inset-y-1 left-1 w-[calc(50%-0.25rem)] rounded-full bg-white shadow transition-transform duration-300 ease-out ${tripType === 'oneway' ? 'translate-x-full' : ''}`}
+                  />
+                  {(['round', 'oneway'] as const).map(t => (
+                    <button
+                      key={t}
+                      type="button"
+                      role="radio"
+                      aria-checked={tripType === t}
+                      onClick={() => chooseTripType(t)}
+                      className={`relative rounded-full px-4 sm:px-5 py-1.5 transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 ${tripType === t ? 'text-brand-600' : 'text-gray-500 hover:text-gray-700'}`}
+                    >
+                      {t === 'round' ? 'Round trip' : 'One way'}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                  {/* From / To with swap */}
+                  <div className="relative col-span-2 md:col-span-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <label ref={fromBoxRef} htmlFor="flight-from" className={`${fieldBox} pr-14 sm:pr-8`}>
+                      <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={fieldIcon}>
+                        <path d="M2 22h20" /><path d="M6.4 17.4 3 14l1.5-1 3.5 1.5L17 9.6c1-.6 2.4-.4 3 .5.5.8.2 1.9-.6 2.4L8.5 18.6a2 2 0 0 1-2.1-1.2z" /><path d="m11 8.5-3-4.5 1.5-.8 5.5 4" />
+                      </svg>
+                      <span className="min-w-0 flex-1">
+                        <span className={fieldLabel}>From</span>
+                        <AirportInput id="flight-from" name="from" value={formData.from} onChange={v => setFormData(prev => ({ ...prev, from: v }))} placeholder="City, airport or code" className={fieldInput} listClassName="mt-3 -ml-12" />
+                      </span>
+                    </label>
+                    <label ref={toBoxRef} htmlFor="flight-to" className={`${fieldBox} pr-14 sm:pr-4 sm:pl-8`}>
+                      <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={fieldIcon}>
+                        <path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z" /><circle cx="12" cy="9.5" r="2.5" />
+                      </svg>
+                      <span className="min-w-0 flex-1">
+                        <span className={fieldLabel}>To</span>
+                        <AirportInput id="flight-to" name="to" value={formData.to} onChange={v => setFormData(prev => ({ ...prev, to: v }))} placeholder="City, airport or code" className={fieldInput} listClassName="mt-3 -ml-12" />
+                      </span>
+                    </label>
+                    <button
+                      ref={swapRef}
+                      type="button"
+                      onClick={swapRoute}
+                      aria-label="Swap origin and destination"
+                      title="Swap"
+                      style={{ transform: 'translate(-50%,-50%)' }}
+                      className="absolute z-10 top-1/2 left-[calc(100%-2.25rem)] sm:left-1/2 flex h-10 w-10 items-center justify-center rounded-full bg-white text-brand-600 shadow-md ring-1 ring-gray-200 transition-colors hover:bg-brand-50 hover:ring-brand-300 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
+                    >
+                      <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5 rotate-90 sm:rotate-0">
+                        <path d="M7 4 3 8l4 4" /><path d="M3 8h14" /><path d="m17 20 4-4-4-4" /><path d="M21 16H7" />
+                      </svg>
+                    </button>
                   </div>
-                  <div className="col-span-2 md:col-span-1">
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">To</label>
-                    <AirportInput name="to" value={formData.to} onChange={v => setFormData(prev => ({ ...prev, to: v }))} placeholder="City, airport or code" className={inputClass} />
+
+                  {/* Dates */}
+                  <label htmlFor="flight-depart" className={`${fieldBox} col-span-2 min-[400px]:col-span-1 md:col-span-1`}>
+                    <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={`${fieldIcon} hidden lg:block`}>
+                      <rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 10h18" />
+                    </svg>
+                    <span className="min-w-0 flex-1">
+                      <span className={fieldLabel}>Depart {formData.depart && <span className="normal-case tracking-normal text-brand-500">· {dayLabel(formData.depart)}</span>}</span>
+                      <input
+                        id="flight-depart" type="date" name="depart" min={todayIso} value={formData.depart}
+                        onChange={e => { const v = e.target.value; setFormData(prev => ({ ...prev, depart: v, return: prev.return && prev.return < v ? '' : prev.return })); }}
+                        className={`${fieldInput.replace('text-base', 'text-sm sm:text-base')} [color-scheme:light]`}
+                      />
+                    </span>
+                  </label>
+                  {tripType === 'round' ? (
+                    <label htmlFor="flight-return" className={`${fieldBox} col-span-2 min-[400px]:col-span-1 md:col-span-1`}>
+                      <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={`${fieldIcon} hidden lg:block`}>
+                        <rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 10h18" /><path d="m9 15 2 2 4-4" />
+                      </svg>
+                      <span className="min-w-0 flex-1">
+                        <span className={fieldLabel}>Return {formData.return ? <span className="normal-case tracking-normal text-brand-500">· {dayLabel(formData.return)}</span> : <span className="normal-case tracking-normal font-normal text-gray-400">(opt.)</span>}</span>
+                        <input
+                          ref={returnInputRef} id="flight-return" type="date" name="return" min={formData.depart || todayIso} value={formData.return}
+                          onChange={handleInputChange}
+                          className={`${fieldInput.replace('text-base', 'text-sm sm:text-base')} [color-scheme:light]`}
+                        />
+                      </span>
+                    </label>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => chooseTripType('round')}
+                      className="col-span-2 min-[400px]:col-span-1 md:col-span-1 flex min-h-[3.75rem] items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-gray-200 px-3 py-2.5 text-sm font-semibold text-gray-500 transition-colors hover:border-brand-300 hover:bg-brand-50 hover:text-brand-600 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-100"
+                    >
+                      <span aria-hidden className="text-lg leading-none">+</span> Add return
+                    </button>
+                  )}
+
+                  {/* Travellers */}
+                  <div className={`${fieldBox} cursor-default`}>
+                    <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={`${fieldIcon} hidden lg:block`}>
+                      <circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6" /><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14c2 .7 3.5 2.8 3.5 6" />
+                    </svg>
+                    <span className="min-w-0 flex-1">
+                      <span id="flight-pax-label" className={fieldLabel}>Adults</span>
+                      <span role="group" aria-labelledby="flight-pax-label" className="flex items-center justify-between gap-2">
+                        <button type="button" onClick={() => changePax(-1)} disabled={formData.flightPassengers <= 1} aria-label="Fewer adults" className={stepBtn}>−</button>
+                        <span ref={paxRef} aria-live="polite" className="inline-block min-w-[1.5rem] text-center text-base font-bold text-gray-900">{formData.flightPassengers}</span>
+                        <button type="button" onClick={() => changePax(1)} disabled={formData.flightPassengers >= 9} aria-label="More adults" className={stepBtn}>+</button>
+                      </span>
+                    </span>
                   </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Depart</label>
-                    <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Return <span className="text-gray-400 font-normal">(opt.)</span></label>
-                    <input type="date" name="return" value={formData.return} onChange={handleInputChange} className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Adults</label>
-                    <input type="number" name="flightPassengers" value={formData.flightPassengers} onChange={e => setFormData(prev => ({ ...prev, flightPassengers: Math.max(1, Math.min(9, +e.target.value)) }))} min={1} max={9} className={inputClass} />
-                  </div>
-                  {searchBtn('flights')}
+
+                  {searchBtn('flights', false, true)}
                 </div>
                 <FlightList />
               </div>
@@ -2315,7 +2452,7 @@ export default function Home() {
                   <button
                     onClick={submitHotelRequest}
                     disabled={hotelSubmitting}
-                    className="flex-1 py-2.5 bg-brand-600 text-white rounded-xl font-semibold hover:bg-brand-700 disabled:bg-gray-300 transition"
+                    className="flex-1 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover disabled:bg-gray-300 transition"
                   >
                     {hotelSubmitting ? 'Checking price…' : total != null ? `Pay $${total.toFixed(2)} →` : 'Continue'}
                   </button>
@@ -2468,7 +2605,7 @@ export default function Home() {
                     <button
                       onClick={confirmFlightBooking}
                       disabled={flightBookingLoading}
-                      className="flex-1 py-2.5 bg-brand-600 text-white rounded-xl font-semibold hover:bg-brand-700 disabled:bg-gray-300 transition flex items-center justify-center gap-2"
+                      className="flex-1 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover disabled:bg-gray-300 transition flex items-center justify-center gap-2"
                     >
                       {flightBookingLoading ? (
                         <><span className="animate-spin">⟳</span> Processing…</>
@@ -2523,7 +2660,7 @@ export default function Home() {
                 <div className="flex gap-3">
                   <button onClick={() => setFlightDraft(null)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">Cancel</button>
                   <button onClick={confirmFlightBooking} disabled={!flightPassengerName.trim()}
-                    className="flex-1 py-2 bg-brand-600 text-white rounded-lg font-semibold hover:bg-brand-700 disabled:bg-gray-300 transition">
+                    className="flex-1 py-2 bg-btn text-white rounded-lg font-semibold hover:bg-btn-hover disabled:bg-gray-300 transition">
                     {user ? 'Confirm Booking →' : 'Sign in to Book'}
                   </button>
                 </div>

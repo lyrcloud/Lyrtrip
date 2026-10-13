@@ -15,7 +15,7 @@ export default function BookingCancelPage() {
         <p className="text-gray-600 mb-8">No charge was made. You can go back and try again.</p>
         <Link
           href="/"
-          className="w-full inline-block py-3 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition"
+          className="w-full inline-block py-3 bg-btn text-white font-semibold rounded-xl hover:bg-btn-hover transition"
         >
           Back to Search
         </Link>

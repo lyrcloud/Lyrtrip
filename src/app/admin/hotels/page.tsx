@@ -95,7 +95,7 @@ export default function HotelAdminPage() {
           <div className="flex gap-2">
             {(['requested', 'all'] as const).map(f => (
               <button key={f} onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filter === f ? 'bg-brand-600 text-white' : 'bg-white border border-gray-300 text-gray-700'}`}>
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filter === f ? 'bg-btn text-white' : 'bg-white border border-gray-300 text-gray-700'}`}>
                 {f === 'requested' ? 'To book' : 'All'}
               </button>
             ))}

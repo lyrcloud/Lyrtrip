@@ -234,7 +234,7 @@ export default function BookingSuccessPage() {
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Booking Issue</h1>
           <p className="text-gray-600 mb-6">{flightError}</p>
           <div className="flex flex-col gap-3">
-            <a href="mailto:support@lyrtrip.com" className="w-full py-3 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition">Contact Support</a>
+            <a href="mailto:support@lyrtrip.com" className="w-full py-3 bg-btn text-white font-semibold rounded-xl hover:bg-btn-hover transition">Contact Support</a>
             <Link href="/" className="w-full py-3 border border-gray-300 text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to Search</Link>
           </div>
         </div>
@@ -259,7 +259,7 @@ export default function BookingSuccessPage() {
     return (
       <div className="flex-1 bg-gray-100 py-10 px-4 print:min-h-0 print:bg-white print:p-0">
         <div className="max-w-3xl mx-auto mb-4 flex gap-3 justify-end print:hidden">
-          <button onClick={() => window.print()} className="px-5 py-2.5 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition">🖨 Print / Save as PDF</button>
+          <button onClick={() => window.print()} className="px-5 py-2.5 bg-btn text-white font-semibold rounded-xl hover:bg-btn-hover transition">🖨 Print / Save as PDF</button>
           <Link href="/" className="px-5 py-2.5 border border-gray-300 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to search</Link>
         </div>
 
@@ -430,7 +430,7 @@ export default function BookingSuccessPage() {
     return (
       <div className="flex-1 bg-gray-100 py-10 px-4 print:min-h-0 print:bg-white print:p-0">
         <div className="max-w-3xl mx-auto mb-4 flex gap-3 justify-end print:hidden">
-          <button onClick={() => window.print()} className="px-5 py-2.5 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition">🖨 Print / Save as PDF</button>
+          <button onClick={() => window.print()} className="px-5 py-2.5 bg-btn text-white font-semibold rounded-xl hover:bg-btn-hover transition">🖨 Print / Save as PDF</button>
           <Link href="/" className="px-5 py-2.5 border border-gray-300 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to search</Link>
         </div>
         <article className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden print:shadow-none print:rounded-none">
@@ -536,7 +536,7 @@ export default function BookingSuccessPage() {
         <h1 className="text-2xl font-bold text-gray-900 mb-2">Booking Confirmed!</h1>
         <p className="text-gray-600 mb-8">Your payment was successful. Your booking details are saved in your dashboard.</p>
         <div className="flex flex-col gap-3">
-          <Link href="/dashboard" className="w-full py-3 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition">View My Bookings</Link>
+          <Link href="/dashboard" className="w-full py-3 bg-btn text-white font-semibold rounded-xl hover:bg-btn-hover transition">View My Bookings</Link>
           <Link href="/" className="w-full py-3 border border-gray-300 text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to Search</Link>
         </div>
       </div>

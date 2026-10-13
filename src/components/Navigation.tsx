@@ -53,7 +53,7 @@ export default function Navigation() {
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={user.picture} alt="" className="w-7 h-7 rounded-full object-cover" />
                   ) : (
-                    <span className="w-7 h-7 rounded-full bg-brand-600 text-white text-xs font-semibold flex items-center justify-center">
+                    <span className="w-7 h-7 rounded-full bg-btn text-white text-xs font-semibold flex items-center justify-center">
                       {initialsFor(user.name, user.email)}
                     </span>
                   )}
@@ -83,7 +83,7 @@ export default function Navigation() {
             ) : (
               <Link
                 href="/login"
-                className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg bg-brand-600 py-2 pl-3 pr-4 font-medium text-white shadow-md shadow-brand-600/25 transition-all duration-200 animate-[signInIn_400ms_ease-out] hover:bg-brand-700 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:scale-95 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
+                className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg bg-btn py-2 pl-3 pr-4 font-medium text-white shadow-md shadow-btn/25 transition-all duration-200 animate-[signInIn_400ms_ease-out] hover:bg-btn-hover hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:scale-95 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
               >
                 {/* Light sweep that repeats every few seconds */}
                 <span aria-hidden className="pointer-events-none absolute inset-y-0 -left-1/2 w-1/3 skew-x-[-20deg] bg-white/30 animate-[signInShine_4s_ease-in-out_infinite]" />

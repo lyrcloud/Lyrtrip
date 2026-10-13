@@ -59,7 +59,7 @@ export default function TourCard({ tour, onDelete }: TourCardProps) {
       <div className="flex gap-2">
         <Link
           href={`/tours/${tour.id}`}
-          className="flex-1 px-4 py-2 bg-brand-600 text-white rounded-md text-sm font-medium hover:bg-brand-700 text-center"
+          className="flex-1 px-4 py-2 bg-btn text-white rounded-md text-sm font-medium hover:bg-btn-hover text-center"
         >
           View Details
         </Link>

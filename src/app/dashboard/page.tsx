@@ -184,7 +184,7 @@ export default function DashboardPage() {
         <div className="flex flex-wrap gap-3 mb-8">
           <Link
             href="/tours/new"
-            className="inline-flex items-center rounded-md bg-brand-600 px-4 py-2 text-white font-medium hover:bg-brand-700 transition-colors"
+            className="inline-flex items-center rounded-md bg-btn px-4 py-2 text-white font-medium hover:bg-btn-hover transition-colors"
           >
             + Plan a new tour
           </Link>
@@ -255,7 +255,7 @@ export default function DashboardPage() {
             <div className="rounded-lg border-2 border-dashed border-gray-300 bg-white px-6 py-12 text-center">
               <h3 className="text-lg font-medium text-gray-900">No bookings yet</h3>
               <p className="mt-2 text-gray-600">Search for hotels and click &quot;Book Now&quot; to make a booking</p>
-              <Link href="/" className="mt-4 inline-flex rounded-md bg-brand-600 px-4 py-2 text-white font-medium hover:bg-brand-700">
+              <Link href="/" className="mt-4 inline-flex rounded-md bg-btn px-4 py-2 text-white font-medium hover:bg-btn-hover">
                 Find Hotels
               </Link>
             </div>
@@ -288,7 +288,7 @@ export default function DashboardPage() {
                       <button
                         onClick={() => handlePayNow(booking)}
                         disabled={payingId === booking.id}
-                        className="mt-4 w-full py-2 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                        className="mt-4 w-full py-2 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {payingId === booking.id ? 'Redirecting…' : 'Pay Now →'}
                       </button>
@@ -344,7 +344,7 @@ export default function DashboardPage() {
               <p className="mt-2 text-gray-600">Get started by creating your first tour</p>
               <Link
                 href="/tours/new"
-                className="mt-4 inline-flex rounded-md bg-brand-600 px-4 py-2 text-white font-medium hover:bg-brand-700"
+                className="mt-4 inline-flex rounded-md bg-btn px-4 py-2 text-white font-medium hover:bg-btn-hover"
               >
                 Create tour
               </Link>

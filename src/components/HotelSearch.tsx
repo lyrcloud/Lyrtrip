@@ -139,7 +139,7 @@ export default function HotelSearch({ lat = 48.8566, lng = 2.3522 }: HotelSearch
         <button
           onClick={search}
           disabled={loading}
-          className="w-full px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:bg-gray-400 transition"
+          className="w-full px-4 py-2 bg-btn text-white rounded-lg hover:bg-btn-hover disabled:bg-gray-400 transition"
         >
           {loading ? 'Searching…' : `Search ${typeLabel} — sorted by cheapest`}
         </button>
@@ -193,7 +193,7 @@ export default function HotelSearch({ lat = 48.8566, lng = 2.3522 }: HotelSearch
                   href={place.website}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-block mt-3 px-4 py-2 bg-brand-600 text-white text-sm rounded hover:bg-brand-700 transition"
+                  className="inline-block mt-3 px-4 py-2 bg-btn text-white text-sm rounded hover:bg-btn-hover transition"
                 >
                   Visit Website
                 </a>

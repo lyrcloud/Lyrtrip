@@ -23,6 +23,10 @@
   --color-brand-800: #b32a00;
   --color-brand-900: #8a2100;
   --color-brand-950: #4a1100;
+
+  /* Buttons: a lighter orange than the logo */
+  --color-btn: #ff6a3d;
+  --color-btn-hover: #ff5722;
 }
 
 @media (prefers-color-scheme: dark) {

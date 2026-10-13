@@ -16,6 +16,9 @@ interface AirportInputProps {
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
+  id?: string;
+  /** Extra classes for the suggestion list, e.g. to line it up with a surrounding field box */
+  listClassName?: string;
 }
 
 const placesUrl = `${(process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '')}/api/flight/places`;
@@ -23,7 +26,7 @@ const placesUrl = `${(process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/
 /**
  * Text input with airport/city suggestions; picking one fills "Name (CODE)"
  */
-export default function AirportInput({ name, value, onChange, placeholder, className }: AirportInputProps) {
+export default function AirportInput({ name, value, onChange, placeholder, className, id, listClassName = 'mt-1' }: AirportInputProps) {
   const [places, setPlaces] = useState<Place[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -79,6 +82,7 @@ export default function AirportInput({ name, value, onChange, placeholder, class
     <div className="relative">
       <input
         type="text"
+        id={id}
         name={name}
         value={value}
         onChange={e => { onChange(e.target.value); setOpen(true); }}
@@ -98,7 +102,7 @@ export default function AirportInput({ name, value, onChange, placeholder, class
         <span aria-hidden className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin rounded-full border-2 border-gray-300 border-t-brand-600" />
       )}
       {showList && (
-        <ul id={listId} role="listbox" className="absolute z-30 mt-1 max-h-72 w-full min-w-[16rem] overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+        <ul id={listId} role="listbox" className={`absolute z-30 ${listClassName} max-h-72 w-full min-w-[16rem] overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg`}>
           {places.map((p, i) => (
             <li
               key={`${p.type}-${p.code}`}

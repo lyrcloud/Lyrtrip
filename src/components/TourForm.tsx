@@ -195,7 +195,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
       <button
         type="submit"
         disabled={isLoading}
-        className="w-full rounded-md bg-brand-600 px-4 py-2 text-white font-medium hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="w-full rounded-md bg-btn px-4 py-2 text-white font-medium hover:bg-btn-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {isLoading ? 'Saving...' : 'Save Tour'}
       </button>
