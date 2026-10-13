@@ -76,7 +76,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
             name="title"
             value={formData.title}
             onChange={handleChange}
-            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             placeholder="e.g., Summer Tour 2026"
           />
         </div>
@@ -91,7 +91,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
             name="artist"
             value={formData.artist}
             onChange={handleChange}
-            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             placeholder="e.g., The Beatles"
           />
         </div>
@@ -107,7 +107,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
           value={formData.description}
           onChange={handleChange}
           rows={4}
-          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           placeholder="Describe your tour..."
         />
       </div>
@@ -123,7 +123,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
             name="start_date"
             value={formData.start_date}
             onChange={handleChange}
-            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           />
         </div>
 
@@ -137,7 +137,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
             name="end_date"
             value={formData.end_date}
             onChange={handleChange}
-            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           />
         </div>
       </div>
@@ -154,7 +154,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
             value={formData.total_stops}
             onChange={handleChange}
             min="0"
-            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           />
         </div>
 
@@ -170,7 +170,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
             onChange={handleChange}
             min="0"
             step="100"
-            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           />
         </div>
 
@@ -183,7 +183,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
             name="status"
             value={formData.status}
             onChange={handleChange}
-            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
           >
             <option value="planning">Planning</option>
             <option value="in-progress">In Progress</option>
@@ -195,7 +195,7 @@ export default function TourForm({ initialData, onSubmit, isLoading = false }: T
       <button
         type="submit"
         disabled={isLoading}
-        className="w-full rounded-md bg-indigo-600 px-4 py-2 text-white font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="w-full rounded-md bg-brand-600 px-4 py-2 text-white font-medium hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {isLoading ? 'Saving...' : 'Save Tour'}
       </button>

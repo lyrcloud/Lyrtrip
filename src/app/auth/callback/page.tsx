@@ -41,11 +41,11 @@ export default function AuthCallbackPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+      <div className="flex-1 flex items-center justify-center bg-gray-50 px-4">
         <div className="max-w-sm text-center space-y-4">
           <h1 className="text-xl font-bold text-gray-900">Sign-in failed</h1>
           <p className="text-sm text-gray-600">{error}</p>
-          <Link href="/login" className="inline-block text-indigo-600 hover:text-indigo-700 font-medium">
+          <Link href="/login" className="inline-block text-brand-600 hover:text-brand-700 font-medium">
             Back to sign in
           </Link>
         </div>
@@ -54,9 +54,9 @@ export default function AuthCallbackPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="flex-1 flex items-center justify-center bg-gray-50">
       <div className="text-center space-y-3">
-        <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+        <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600" />
         <p className="text-sm text-gray-600">Finishing sign-in…</p>
       </div>
     </div>

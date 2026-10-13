@@ -187,7 +187,7 @@ export default function BookingSuccessPage() {
   // ── Uber ──────────────────────────────────────────────────────────────────
   if (uberInfo) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="flex-1 bg-gray-50 flex items-center justify-center px-4">
         <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
           <div className="w-16 h-16 bg-black rounded-full flex items-center justify-center mx-auto mb-4 text-white text-3xl font-bold">U</div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Ride Booked!</h1>
@@ -210,14 +210,14 @@ export default function BookingSuccessPage() {
   // ── Flight — loading ───────────────────────────────────────────────────────
   if (flightLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="flex-1 bg-gray-50 flex items-center justify-center px-4">
         <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
-          <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl animate-pulse">✈️</div>
+          <div className="w-16 h-16 bg-brand-100 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl animate-pulse">✈️</div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">{typeof window !== 'undefined' && window.location.search.includes('type=hotel') ? 'Loading Your Booking…' : 'Issuing Your Ticket…'}</h1>
           <p className="text-gray-500">We&apos;re confirming your booking with the airline. This usually takes a few seconds, but some airlines take up to a couple of minutes — please keep this page open.</p>
           <div className="mt-6 flex justify-center gap-1">
             {[0,1,2].map(i => (
-              <div key={i} className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
+              <div key={i} className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
             ))}
           </div>
         </div>
@@ -228,13 +228,13 @@ export default function BookingSuccessPage() {
   // ── Flight — error ─────────────────────────────────────────────────────────
   if (flightError) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="flex-1 bg-gray-50 flex items-center justify-center px-4">
         <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
           <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl">⚠️</div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Booking Issue</h1>
           <p className="text-gray-600 mb-6">{flightError}</p>
           <div className="flex flex-col gap-3">
-            <a href="mailto:support@lyrtrip.com" className="w-full py-3 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition">Contact Support</a>
+            <a href="mailto:support@lyrtrip.com" className="w-full py-3 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition">Contact Support</a>
             <Link href="/" className="w-full py-3 border border-gray-300 text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to Search</Link>
           </div>
         </div>
@@ -257,9 +257,9 @@ export default function BookingSuccessPage() {
     const money   = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const issued  = flightConfirm.issuedAt ? fmtDate(flightConfirm.issuedAt.slice(0, 10)) : fmtDate(new Date().toISOString().slice(0, 10));
     return (
-      <div className="min-h-screen bg-gray-100 py-10 px-4 print:min-h-0 print:bg-white print:p-0">
+      <div className="flex-1 bg-gray-100 py-10 px-4 print:min-h-0 print:bg-white print:p-0">
         <div className="max-w-3xl mx-auto mb-4 flex gap-3 justify-end print:hidden">
-          <button onClick={() => window.print()} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition">🖨 Print / Save as PDF</button>
+          <button onClick={() => window.print()} className="px-5 py-2.5 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition">🖨 Print / Save as PDF</button>
           <Link href="/" className="px-5 py-2.5 border border-gray-300 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to search</Link>
         </div>
 
@@ -270,7 +270,7 @@ export default function BookingSuccessPage() {
             </div>
           )}
           {/* Header */}
-          <header className="flex items-center justify-between px-8 py-6 border-b-4 border-indigo-600">
+          <header className="flex items-center justify-between px-8 py-6 border-b-4 border-brand-600">
             <img src="/logo.png" alt="Lyrtrip" className="h-12 w-auto" />
             <div className="text-right">
               <p className="text-xl font-black text-gray-900 tracking-wide">ELECTRONIC TICKET</p>
@@ -279,10 +279,10 @@ export default function BookingSuccessPage() {
           </header>
 
           {/* References */}
-          <section className="grid grid-cols-2 sm:grid-cols-3 gap-4 px-8 py-5 bg-indigo-50 print:bg-white print:border-b print:border-gray-200">
+          <section className="grid grid-cols-2 sm:grid-cols-3 gap-4 px-8 py-5 bg-brand-50 print:bg-white print:border-b print:border-gray-200">
             <div>
               <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">Booking reference (PNR)</p>
-              <p className="text-2xl font-black text-indigo-700 tracking-[0.2em] font-mono">{flightConfirm.pnr}</p>
+              <p className="text-2xl font-black text-brand-700 tracking-[0.2em] font-mono">{flightConfirm.pnr}</p>
             </div>
             {flightConfirm.airlineLocator && (
               <div>
@@ -324,7 +324,7 @@ export default function BookingSuccessPage() {
               {segments.map((seg, i) => (
                 <div key={i} className="break-inside-avoid">
                 {seg.direction && seg.direction !== segments[i - 1]?.direction && (
-                  <p className="text-[10px] font-bold text-indigo-700 uppercase tracking-widest mb-1.5 mt-1">{seg.direction}</p>
+                  <p className="text-[10px] font-bold text-brand-700 uppercase tracking-widest mb-1.5 mt-1">{seg.direction}</p>
                 )}
                 <div className="border border-gray-200 rounded-xl p-4">
                   <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
@@ -334,7 +334,7 @@ export default function BookingSuccessPage() {
                   <div className="flex items-center gap-4">
                     <div className="flex-1">
                       <p className="text-2xl font-black text-gray-900">{seg.from}</p>
-                      <p className="text-sm font-semibold text-indigo-700">{seg.departureTime}</p>
+                      <p className="text-sm font-semibold text-brand-700">{seg.departureTime}</p>
                       <p className="text-xs text-gray-500">{fmtDate(seg.departureDate)}</p>
                     </div>
                     <div className="text-center text-gray-400 text-xs">
@@ -343,7 +343,7 @@ export default function BookingSuccessPage() {
                     </div>
                     <div className="flex-1 text-right">
                       <p className="text-2xl font-black text-gray-900">{seg.to}</p>
-                      <p className="text-sm font-semibold text-indigo-700">{seg.arrivalTime}</p>
+                      <p className="text-sm font-semibold text-brand-700">{seg.arrivalTime}</p>
                       <p className="text-xs text-gray-500">{fmtDate(seg.arrivalDate)}</p>
                     </div>
                   </div>
@@ -394,7 +394,7 @@ export default function BookingSuccessPage() {
               )}
             </div>
             {p?.receiptUrl && (
-              <a href={p.receiptUrl} target="_blank" rel="noopener noreferrer" className="inline-block mt-3 text-xs text-indigo-600 hover:underline print:hidden">View card receipt from Stripe ↗</a>
+              <a href={p.receiptUrl} target="_blank" rel="noopener noreferrer" className="inline-block mt-3 text-xs text-brand-600 hover:underline print:hidden">View card receipt from Stripe ↗</a>
             )}
           </section>
 
@@ -428,13 +428,13 @@ export default function BookingSuccessPage() {
       </div>
     );
     return (
-      <div className="min-h-screen bg-gray-100 py-10 px-4 print:min-h-0 print:bg-white print:p-0">
+      <div className="flex-1 bg-gray-100 py-10 px-4 print:min-h-0 print:bg-white print:p-0">
         <div className="max-w-3xl mx-auto mb-4 flex gap-3 justify-end print:hidden">
-          <button onClick={() => window.print()} className="px-5 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition">🖨 Print / Save as PDF</button>
+          <button onClick={() => window.print()} className="px-5 py-2.5 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition">🖨 Print / Save as PDF</button>
           <Link href="/" className="px-5 py-2.5 border border-gray-300 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to search</Link>
         </div>
         <article className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden print:shadow-none print:rounded-none">
-          <header className="flex items-center justify-between gap-4 px-8 py-6 border-b-4 border-indigo-600">
+          <header className="flex items-center justify-between gap-4 px-8 py-6 border-b-4 border-brand-600">
             <img src="/logo.png" alt="Lyrtrip" className="h-12 w-auto" />
             <div className="text-right">
               <p className="text-xl font-black text-gray-900 tracking-wide">{h.status === 'confirmed' ? 'HOTEL CONFIRMATION' : 'HOTEL BOOKING'}</p>
@@ -442,14 +442,14 @@ export default function BookingSuccessPage() {
             </div>
           </header>
 
-          <section className="px-8 py-5 bg-indigo-50 print:bg-white print:border-b print:border-gray-200">
+          <section className="px-8 py-5 bg-brand-50 print:bg-white print:border-b print:border-gray-200">
             <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${badge.cls}`}>{badge.text}</span>
             <p className="text-sm text-gray-700 mt-2">{badge.note}</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4">
               {h.hotelConfirmation && (
                 <div>
                   <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest">Hotel confirmation</p>
-                  <p className="text-2xl font-black text-indigo-700 font-mono tracking-wider">{h.hotelConfirmation}</p>
+                  <p className="text-2xl font-black text-brand-700 font-mono tracking-wider">{h.hotelConfirmation}</p>
                 </div>
               )}
               <div>
@@ -510,7 +510,7 @@ export default function BookingSuccessPage() {
               )}
             </div>
             {p?.receiptUrl && (
-              <a href={p.receiptUrl} target="_blank" rel="noopener noreferrer" className="inline-block mt-3 text-xs text-indigo-600 hover:underline print:hidden">View card receipt from Stripe ↗</a>
+              <a href={p.receiptUrl} target="_blank" rel="noopener noreferrer" className="inline-block mt-3 text-xs text-brand-600 hover:underline print:hidden">View card receipt from Stripe ↗</a>
             )}
           </section>
 
@@ -526,7 +526,7 @@ export default function BookingSuccessPage() {
 
   // ── Hotel (default) ────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+    <div className="flex-1 bg-gray-50 flex items-center justify-center px-4">
       <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
         <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
           <svg className="w-8 h-8 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -536,7 +536,7 @@ export default function BookingSuccessPage() {
         <h1 className="text-2xl font-bold text-gray-900 mb-2">Booking Confirmed!</h1>
         <p className="text-gray-600 mb-8">Your payment was successful. Your booking details are saved in your dashboard.</p>
         <div className="flex flex-col gap-3">
-          <Link href="/dashboard" className="w-full py-3 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 transition">View My Bookings</Link>
+          <Link href="/dashboard" className="w-full py-3 bg-brand-600 text-white font-semibold rounded-xl hover:bg-brand-700 transition">View My Bookings</Link>
           <Link href="/" className="w-full py-3 border border-gray-300 text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to Search</Link>
         </div>
       </div>

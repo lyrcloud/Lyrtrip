@@ -137,7 +137,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
             inputMode="numeric"
             value={code}
             onChange={e => setCode(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
             placeholder="123456"
             required
             disabled={loading}
@@ -150,7 +150,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         <button
           type="submit"
           disabled={loading}
-          className="w-full px-4 py-2.5 bg-indigo-600 text-white font-medium rounded-md hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+          className="w-full px-4 py-2.5 bg-brand-600 text-white font-medium rounded-md hover:bg-brand-700 disabled:opacity-50 transition-colors"
         >
           {loading ? 'Confirming…' : 'Confirm account'}
         </button>
@@ -158,7 +158,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         <button
           type="button"
           onClick={handleResend}
-          className="w-full text-sm text-indigo-600 hover:text-indigo-700 font-medium"
+          className="w-full text-sm text-brand-600 hover:text-brand-700 font-medium"
         >
           Resend code
         </button>
@@ -176,7 +176,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         <button
           type="button"
           onClick={() => setStep('form')}
-          className="text-sm text-indigo-600 hover:text-indigo-700 font-medium"
+          className="text-sm text-brand-600 hover:text-brand-700 font-medium"
         >
           Back to sign in
         </button>
@@ -238,7 +238,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
               type="text"
               value={name}
               onChange={e => setName(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
               placeholder="Jane Doe"
               disabled={loading}
             />
@@ -254,7 +254,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
             type="email"
             value={email}
             onChange={e => setEmail(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
             placeholder="you@example.com"
             required
             disabled={loading}
@@ -270,7 +270,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
               <button
                 type="button"
                 onClick={handleForgotPassword}
-                className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                className="text-xs font-medium text-brand-600 hover:text-brand-700"
               >
                 Forgot password?
               </button>
@@ -281,7 +281,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
             type="password"
             value={password}
             onChange={e => setPassword(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
             placeholder="••••••••"
             required
             minLength={8}
@@ -295,7 +295,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         <button
           type="submit"
           disabled={loading}
-          className="w-full px-4 py-2.5 bg-indigo-600 text-white font-medium rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="w-full px-4 py-2.5 bg-brand-600 text-white font-medium rounded-md hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {loading ? 'Loading…' : activeMode === 'signup' ? 'Create account' : 'Sign in'}
         </button>
@@ -306,7 +306,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         <button
           type="button"
           onClick={() => switchMode(activeMode === 'signup' ? 'signin' : 'signup')}
-          className="font-medium text-indigo-600 hover:text-indigo-700"
+          className="font-medium text-brand-600 hover:text-brand-700"
         >
           {activeMode === 'signup' ? 'Sign in' : 'Sign up'}
         </button>

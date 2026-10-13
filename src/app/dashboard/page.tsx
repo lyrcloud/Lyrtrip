@@ -115,8 +115,8 @@ export default function DashboardPage() {
 
   if (loading || !user) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+      <div className="flex-1 flex items-center justify-center bg-gray-50">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600" />
       </div>
     );
   }
@@ -134,9 +134,9 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="flex-1 bg-gray-50">
       {/* Profile header */}
-      <div className="bg-linear-to-br from-indigo-600 to-blue-600">
+      <div className="bg-linear-to-br from-brand-600 to-brand-500">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-10">
           <div className="flex items-center gap-4">
             {user.picture ? (
@@ -155,7 +155,7 @@ export default function DashboardPage() {
               <h1 className="text-2xl font-bold text-white">
                 Welcome back{user.name ? `, ${user.name}` : ''}!
               </h1>
-              <p className="text-indigo-100 text-sm mt-1">
+              <p className="text-brand-100 text-sm mt-1">
                 {user.email || providerLabel[user.provider || 'cognito']}
               </p>
               <span className="inline-block mt-2 text-xs font-medium bg-white/15 text-white rounded-full px-3 py-1">
@@ -184,7 +184,7 @@ export default function DashboardPage() {
         <div className="flex flex-wrap gap-3 mb-8">
           <Link
             href="/tours/new"
-            className="inline-flex items-center rounded-md bg-indigo-600 px-4 py-2 text-white font-medium hover:bg-indigo-700 transition-colors"
+            className="inline-flex items-center rounded-md bg-brand-600 px-4 py-2 text-white font-medium hover:bg-brand-700 transition-colors"
           >
             + Plan a new tour
           </Link>
@@ -233,7 +233,7 @@ export default function DashboardPage() {
                   </div>
                   <p className="font-bold text-gray-900 mt-2">{ride.name}</p>
                   <p className="text-sm text-gray-500 mt-0.5 flex-1">{ride.desc}</p>
-                  <p className="text-indigo-600 font-semibold text-sm mt-2">From ${ride.from}</p>
+                  <p className="text-brand-600 font-semibold text-sm mt-2">From ${ride.from}</p>
                   <a
                     href={uberHref}
                     target="_blank"
@@ -255,7 +255,7 @@ export default function DashboardPage() {
             <div className="rounded-lg border-2 border-dashed border-gray-300 bg-white px-6 py-12 text-center">
               <h3 className="text-lg font-medium text-gray-900">No bookings yet</h3>
               <p className="mt-2 text-gray-600">Search for hotels and click &quot;Book Now&quot; to make a booking</p>
-              <Link href="/" className="mt-4 inline-flex rounded-md bg-indigo-600 px-4 py-2 text-white font-medium hover:bg-indigo-700">
+              <Link href="/" className="mt-4 inline-flex rounded-md bg-brand-600 px-4 py-2 text-white font-medium hover:bg-brand-700">
                 Find Hotels
               </Link>
             </div>
@@ -281,14 +281,14 @@ export default function DashboardPage() {
                     <p>👤 {booking.guestName} · {booking.guests} guest{booking.guests > 1 ? 's' : ''}</p>
                     <p>📅 {booking.checkin || '—'} → {booking.checkout || '—'}</p>
                     <p>🌙 {booking.nights} night{booking.nights > 1 ? 's' : ''} · ${booking.pricePerNight}/night</p>
-                    <p className="text-indigo-600 font-bold text-base">Total: ${booking.totalPrice.toLocaleString()}</p>
+                    <p className="text-brand-600 font-bold text-base">Total: ${booking.totalPrice.toLocaleString()}</p>
                   </div>
                   {booking.status === 'pending_payment' && (
                     <>
                       <button
                         onClick={() => handlePayNow(booking)}
                         disabled={payingId === booking.id}
-                        className="mt-4 w-full py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition disabled:opacity-60 disabled:cursor-not-allowed"
+                        className="mt-4 w-full py-2 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {payingId === booking.id ? 'Redirecting…' : 'Pay Now →'}
                       </button>
@@ -316,7 +316,7 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-gray-900">Recent tours</h2>
             {tours.length > 0 && (
-              <Link href="/tours" className="text-sm font-medium text-indigo-600 hover:text-indigo-700">
+              <Link href="/tours" className="text-sm font-medium text-brand-600 hover:text-brand-700">
                 View all
               </Link>
             )}
@@ -344,7 +344,7 @@ export default function DashboardPage() {
               <p className="mt-2 text-gray-600">Get started by creating your first tour</p>
               <Link
                 href="/tours/new"
-                className="mt-4 inline-flex rounded-md bg-indigo-600 px-4 py-2 text-white font-medium hover:bg-indigo-700"
+                className="mt-4 inline-flex rounded-md bg-brand-600 px-4 py-2 text-white font-medium hover:bg-brand-700"
               >
                 Create tour
               </Link>

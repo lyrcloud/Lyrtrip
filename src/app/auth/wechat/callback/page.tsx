@@ -35,11 +35,11 @@ export default function WeChatCallbackPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+      <div className="flex-1 flex items-center justify-center bg-gray-50 px-4">
         <div className="max-w-sm text-center space-y-4">
           <h1 className="text-xl font-bold text-gray-900">WeChat sign-in failed</h1>
           <p className="text-sm text-gray-600">{error}</p>
-          <Link href="/login" className="inline-block text-indigo-600 hover:text-indigo-700 font-medium">
+          <Link href="/login" className="inline-block text-brand-600 hover:text-brand-700 font-medium">
             Back to sign in
           </Link>
         </div>
@@ -48,7 +48,7 @@ export default function WeChatCallbackPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="flex-1 flex items-center justify-center bg-gray-50">
       <div className="text-center space-y-3">
         <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-green-200 border-t-green-600" />
         <p className="text-sm text-gray-600">Finishing WeChat sign-in…</p>

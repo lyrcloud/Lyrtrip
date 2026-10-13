@@ -5,7 +5,7 @@ export const metadata = {
 
 export default function DataDeletionPage() {
   return (
-    <div className="min-h-screen bg-white">
+    <div className="flex-1 bg-white">
       <div className="max-w-3xl mx-auto px-4 py-12">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">Data Deletion Instructions</h1>
         <p className="text-sm text-gray-500 mb-10">Last updated: June 16, 2026</p>
@@ -26,7 +26,7 @@ export default function DataDeletionPage() {
                 Send an email to{" "}
                 <a
                   href="mailto:privacy@lyrtrip.com?subject=Data%20Deletion%20Request"
-                  className="text-indigo-600 hover:underline"
+                  className="text-brand-600 hover:underline"
                 >
                   privacy@lyrtrip.com
                 </a>{" "}
@@ -69,7 +69,7 @@ export default function DataDeletionPage() {
           <section>
             <p>
               See also our{" "}
-              <a href="/privacy" className="text-indigo-600 hover:underline">
+              <a href="/privacy" className="text-brand-600 hover:underline">
                 Privacy Policy
               </a>
               .

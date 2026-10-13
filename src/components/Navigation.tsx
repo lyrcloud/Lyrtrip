@@ -62,7 +62,7 @@ export default function Navigation() {
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={user.picture} alt="" className="w-7 h-7 rounded-full object-cover" />
                   ) : (
-                    <span className="w-7 h-7 rounded-full bg-indigo-600 text-white text-xs font-semibold flex items-center justify-center">
+                    <span className="w-7 h-7 rounded-full bg-brand-600 text-white text-xs font-semibold flex items-center justify-center">
                       {initialsFor(user.name, user.email)}
                     </span>
                   )}
@@ -92,7 +92,7 @@ export default function Navigation() {
             ) : (
               <Link
                 href="/login"
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
+                className="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition-colors font-medium"
               >
                 Sign In
               </Link>

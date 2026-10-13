@@ -5,7 +5,7 @@ export const metadata = {
 
 export default function PrivacyPolicyPage() {
   return (
-    <div className="min-h-screen bg-white">
+    <div className="flex-1 bg-white">
       <div className="max-w-3xl mx-auto px-4 py-12">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">Privacy Policy</h1>
         <p className="text-sm text-gray-500 mb-10">Last updated: September 30, 2026</p>
@@ -154,7 +154,7 @@ export default function PrivacyPolicyPage() {
               as needed to provide the Service. Booking and payment records may be kept
               longer where required for legal, tax, accounting, or dispute purposes.
               You may request deletion at any time &mdash; see our{" "}
-              <a href="/data-deletion" className="text-indigo-600 hover:underline">
+              <a href="/data-deletion" className="text-brand-600 hover:underline">
                 Data Deletion Instructions
               </a>
               .
@@ -212,7 +212,7 @@ export default function PrivacyPolicyPage() {
             <h2 className="text-xl font-bold text-gray-900 mb-3">11. Contact Us</h2>
             <p>
               Questions about this policy or your data can be sent to{" "}
-              <a href="mailto:privacy@lyrtrip.com" className="text-indigo-600 hover:underline">
+              <a href="mailto:privacy@lyrtrip.com" className="text-brand-600 hover:underline">
                 privacy@lyrtrip.com
               </a>
               .

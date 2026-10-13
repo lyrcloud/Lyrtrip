@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import HotelSearch from "@/components/HotelSearch";
+import Footer from "@/components/Footer";
 import Navigation from "@/components/Navigation";
 import { AuthProvider } from "@/context/AuthContext";
 
@@ -27,10 +28,11 @@ export default function RootLayout({
         ) : null}
         <script src="https://accounts.google.com/gsi/client" async defer />
       </head>
-      <body>
+      <body className="min-h-screen flex flex-col">
         <AuthProvider>
           <Navigation />
-          {children}
+          <div className="flex-1 flex flex-col">{children}</div>
+          <Footer />
         </AuthProvider>
       </body>
     </html>

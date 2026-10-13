@@ -86,13 +86,13 @@ export default function LocationPicker({
         value={input}
         onChange={(e) => handleInputChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-600 focus:border-transparent"
+        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-600 focus:border-transparent"
         autoComplete="off"
       />
 
       {loading && (
         <div className="absolute right-3 top-2.5">
-          <div className="animate-spin h-5 w-5 text-indigo-600" />
+          <div className="animate-spin h-5 w-5 text-brand-600" />
         </div>
       )}
 
@@ -108,7 +108,7 @@ export default function LocationPicker({
                 <button
                   type="button"
                   onClick={() => handleSelectLocation(suggestion)}
-                  className="w-full text-left px-4 py-3 hover:bg-indigo-50 transition-colors focus:outline-none focus:bg-indigo-50 text-black"
+                  className="w-full text-left px-4 py-3 hover:bg-brand-50 transition-colors focus:outline-none focus:bg-brand-50 text-black"
                 >
                   <div className="font-semibold text-gray-900">{suggestion.main_text}</div>
                   {suggestion.secondary_text && (

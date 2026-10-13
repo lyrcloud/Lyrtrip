@@ -120,7 +120,7 @@ export default function HotelSearch({ lat = 48.8566, lng = 2.3522 }: HotelSearch
         <select
           value={placeType}
           onChange={e => setPlaceType(e.target.value)}
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500"
         >
           {PLACE_TYPES.map(t => (
             <option key={t.value} value={t.value}>{t.label}</option>
@@ -133,13 +133,13 @@ export default function HotelSearch({ lat = 48.8566, lng = 2.3522 }: HotelSearch
           onChange={e => setQuery(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && search()}
           placeholder={`Search ${typeLabel.toLowerCase()} by location…`}
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
 
         <button
           onClick={search}
           disabled={loading}
-          className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 transition"
+          className="w-full px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:bg-gray-400 transition"
         >
           {loading ? 'Searching…' : `Search ${typeLabel} — sorted by cheapest`}
         </button>
@@ -193,7 +193,7 @@ export default function HotelSearch({ lat = 48.8566, lng = 2.3522 }: HotelSearch
                   href={place.website}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition"
+                  className="inline-block mt-3 px-4 py-2 bg-brand-600 text-white text-sm rounded hover:bg-brand-700 transition"
                 >
                   Visit Website
                 </a>

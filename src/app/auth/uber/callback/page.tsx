@@ -40,7 +40,7 @@ export default function UberCallbackPage() {
   }, []);
 
   if (error) return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="flex-1 flex items-center justify-center bg-gray-50">
       <div className="text-center max-w-sm px-4">
         <div className="text-4xl mb-4">⚠️</div>
         <p className="text-gray-900 font-semibold mb-2">Uber connection failed</p>
@@ -53,7 +53,7 @@ export default function UberCallbackPage() {
   );
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="flex-1 flex items-center justify-center bg-gray-50">
       <div className="text-center">
         <div className="animate-spin w-8 h-8 border-2 border-black border-t-transparent rounded-full mx-auto mb-4" />
         <p className="text-gray-600 text-sm">Connecting your Uber account…</p>

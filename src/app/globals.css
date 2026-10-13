@@ -10,6 +10,19 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Brand palette derived from the logo (#ff3d00 at 600) */
+  --color-brand-50: #fff4ef;
+  --color-brand-100: #ffe6db;
+  --color-brand-200: #ffc9b3;
+  --color-brand-300: #ffa180;
+  --color-brand-400: #ff6e40;
+  --color-brand-500: #ff5420;
+  --color-brand-600: #ff3d00;
+  --color-brand-700: #e03500;
+  --color-brand-800: #b32a00;
+  --color-brand-900: #8a2100;
+  --color-brand-950: #4a1100;
 }
 
 @media (prefers-color-scheme: dark) {

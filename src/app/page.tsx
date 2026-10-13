@@ -844,14 +844,14 @@ export default function Home() {
     { id: 'career',  label: '💼 Jobs' },
   ];
 
-  const inputClass = "w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-600 focus:border-transparent";
+  const inputClass = "w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-600 focus:border-transparent";
   const uberClientId = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
   const searchBtn = (service: string, disabled = false) => (
     <div className="flex items-end">
       <button
         onClick={() => handleSearch(service)}
         disabled={loading || disabled}
-        className="w-full px-6 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 transition-colors"
+        className="w-full px-6 py-2 bg-brand-600 text-white font-bold rounded-lg hover:bg-brand-700 disabled:bg-gray-400 transition-colors"
       >
         {loading ? 'Searching...' : 'Search'}
       </button>
@@ -877,7 +877,7 @@ export default function Home() {
                   <h3 className="font-bold text-gray-900 text-base leading-tight">{result.name}</h3>
                   {result.pricePerNight != null && result.pricePerNight > 0 && (
                     <div className="shrink-0 text-right">
-                      <p className="text-xl font-bold text-indigo-700">${result.pricePerNight}</p>
+                      <p className="text-xl font-bold text-brand-700">${result.pricePerNight}</p>
                       <p className="text-xs text-gray-500">per night</p>
                     </div>
                   )}
@@ -911,7 +911,7 @@ export default function Home() {
                 ) : result.propertyToken && result.pricePerNight ? (
                 <button
                   onClick={() => openHotelRequest(result)}
-                  className="ml-auto px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+                  className="ml-auto px-4 py-1.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition"
                 >
                   Book
                 </button>
@@ -972,7 +972,7 @@ export default function Home() {
             )}
           </div>
           <div className="text-right shrink-0 ml-4 flex flex-col items-end gap-1">
-            <p className="text-xl font-bold text-indigo-700">${r.price?.toLocaleString()}</p>
+            <p className="text-xl font-bold text-brand-700">${r.price?.toLocaleString()}</p>
             <p className="text-xs text-gray-500">per person</p>
             {r.demo ? (
               <span className="mt-1 px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
@@ -982,7 +982,7 @@ export default function Home() {
                 href={`https://www.google.com/travel/flights?q=${encodeURIComponent(`Flights from ${formData.from} to ${formData.to} on ${formData.depart}${formData.return ? ` returning ${formData.return}` : ''}`)}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="mt-1 px-4 py-1.5 border border-indigo-600 text-indigo-700 text-sm font-semibold rounded-lg hover:bg-indigo-50 transition"
+                className="mt-1 px-4 py-1.5 border border-brand-600 text-brand-700 text-sm font-semibold rounded-lg hover:bg-brand-50 transition"
               >
                 View deal ↗
               </a>
@@ -997,7 +997,7 @@ export default function Home() {
                 setFlightPassengers(count);
                 setFlightBookingError(null);
               }}
-              className="mt-1 px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+              className="mt-1 px-4 py-1.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition"
             >
               Select
             </button>
@@ -1037,7 +1037,7 @@ export default function Home() {
               {result.imageUrl ? (
                 <img src={result.imageUrl} alt={result.company} className="w-14 h-14 object-contain rounded-lg" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
               ) : (
-                <div className="w-14 h-14 bg-indigo-100 flex items-center justify-center text-3xl rounded-lg">💼</div>
+                <div className="w-14 h-14 bg-brand-100 flex items-center justify-center text-3xl rounded-lg">💼</div>
               )}
             </div>
             <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
@@ -1045,7 +1045,7 @@ export default function Home() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <h3 className="font-bold text-gray-900 text-base leading-tight truncate">{result.name}</h3>
-                    <p className="text-sm text-indigo-600 font-medium mt-0.5">{result.company}</p>
+                    <p className="text-sm text-brand-600 font-medium mt-0.5">{result.company}</p>
                     {result.jobLocation && <p className="text-xs text-gray-500">📍 {result.jobLocation}</p>}
                   </div>
                   <div className="shrink-0 text-right flex flex-col items-end gap-1">
@@ -1053,7 +1053,7 @@ export default function Home() {
                       <span className="text-sm font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded-full">{result.salary}</span>
                     )}
                     {result.jobType && (
-                      <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{result.jobType}</span>
+                      <span className="text-xs bg-brand-50 text-brand-700 px-2 py-0.5 rounded-full font-medium">{result.jobType}</span>
                     )}
                   </div>
                 </div>
@@ -1092,7 +1092,7 @@ export default function Home() {
                     href={result.applyLink}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="px-4 py-1.5 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition"
+                    className="px-4 py-1.5 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition"
                   >
                     Apply Now →
                   </a>
@@ -1124,7 +1124,7 @@ export default function Home() {
             <p className="text-sm text-gray-600 mt-2">{result.description}</p>
             {result.rating && <p className="text-yellow-500 mt-2">⭐ {result.rating}</p>}
             {result.price !== undefined && (
-              <p className="text-lg font-bold text-indigo-600 mt-2">
+              <p className="text-lg font-bold text-brand-600 mt-2">
                 {result.currency && result.currency !== 'USD' ? result.currency + ' ' : '$'}
                 {result.price.toLocaleString()}{result.unit ?? ''}
               </p>
@@ -1211,7 +1211,7 @@ export default function Home() {
                           <span className={`w-2.5 h-2.5 rounded-full ${
                             passed    ? 'bg-gray-300' :
                             atStop    ? 'bg-green-500 ring-2 ring-green-200' :
-                            isCurrent ? 'bg-indigo-500 ring-2 ring-indigo-200' :
+                            isCurrent ? 'bg-brand-500 ring-2 ring-brand-200' :
                             'bg-white border-2 border-gray-300'
                           }`} />
                           {!isLast && <span className="w-px h-7 bg-gray-200 mt-0.5" />}
@@ -1231,7 +1231,7 @@ export default function Home() {
                               <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-semibold">● At station</span>
                             )}
                             {isCurrent && !atStop && !passed && (
-                              <span className="text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-semibold">Next stop</span>
+                              <span className="text-xs bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded font-semibold">Next stop</span>
                             )}
                           </div>
                           <div className="flex flex-wrap gap-x-3 mt-0.5 text-xs">
@@ -1251,7 +1251,7 @@ export default function Home() {
                             )}
                           </div>
                           {st.platform && (
-                            <p className="text-xs text-indigo-500 mt-0.5">Platform {st.platform}</p>
+                            <p className="text-xs text-brand-500 mt-0.5">Platform {st.platform}</p>
                           )}
                         </div>
                         <span className="text-xs text-gray-300 shrink-0 mt-1">{st.tz}</span>
@@ -1332,7 +1332,7 @@ export default function Home() {
             <div className="text-right shrink-0 ml-4 flex flex-col items-end gap-1">
               {j.price != null && (
                 <>
-                  <p className="text-xl font-bold text-indigo-700">{j.currency} {j.price.toFixed(2)}</p>
+                  <p className="text-xl font-bold text-brand-700">{j.currency} {j.price.toFixed(2)}</p>
                   <p className="text-xs text-gray-500">per person</p>
                 </>
               )}
@@ -1352,16 +1352,16 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-linear-to-br from-indigo-50 to-blue-50">
+    <div className="flex-1 bg-linear-to-br from-brand-50 to-white">
       <main className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
 
         {/* Hero */}
         <div className="text-center mb-16">
-          <h1 className="text-5xl font-extrabold text-indigo-700 mb-4">Lyrtrip</h1>
+          <h1 className="text-5xl font-extrabold text-brand-700 mb-4">Lyrtrip</h1>
           <p className="text-lg text-gray-600 mb-8">Your all-in-one travel & lifestyle platform</p>
           <button
             onClick={() => setShowLocationMap(!showLocationMap)}
-            className="px-8 py-4 bg-indigo-600 text-white text-lg font-bold rounded-lg hover:bg-indigo-700 transition-colors"
+            className="px-8 py-4 bg-brand-600 text-white text-lg font-bold rounded-lg hover:bg-brand-700 transition-colors"
           >
             {showLocationMap ? '✕ Hide Map' : '📍 My Location'}
           </button>
@@ -1391,7 +1391,7 @@ export default function Home() {
                 onClick={() => switchTab(tab.id)}
                 className={`shrink-0 px-6 py-4 text-center font-bold whitespace-nowrap transition-colors ${
                   activeTab === tab.id
-                    ? 'text-indigo-600 border-b-2 border-indigo-600 bg-indigo-50'
+                    ? 'text-brand-600 border-b-2 border-brand-600 bg-brand-50'
                     : 'text-gray-600 hover:bg-gray-50'
                 }`}
               >
@@ -1875,7 +1875,7 @@ export default function Home() {
           const nights = d.checkin && d.checkout && d.checkout > d.checkin ? calcNights(d.checkin, d.checkout) : 0;
           const total  = nights ? hotelShownTotal(d) : null;
           const fee    = total != null ? Math.round((total - total / HOTEL_MARKUP) * 100) / 100 : null;
-          const input  = 'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500';
+          const input  = 'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500';
           const label  = 'block text-xs font-medium text-gray-600 mb-1';
           const setF   = (k: keyof typeof hotelForm, v: string | number) => { setHotelForm(f => ({ ...f, [k]: v })); setHotelError(null); };
           const setDate = (k: 'checkin' | 'checkout', v: string) => { setHotelDraft(h => h && { ...h, [k]: v }); setHotelError(null); };
@@ -1908,12 +1908,12 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="bg-indigo-50 rounded-xl p-4 mb-4 text-sm">
+                <div className="bg-brand-50 rounded-xl p-4 mb-4 text-sm">
                   {total != null ? (
                     <>
                       <div className="flex justify-between text-gray-600"><span>Room, {nights} night{nights !== 1 ? 's' : ''}, incl. taxes &amp; fees</span><span>${(total - (fee ?? 0)).toFixed(2)}</span></div>
                       <div className="flex justify-between text-gray-600 mt-1"><span>Lyrtrip service fee (12%)</span><span>${(fee ?? 0).toFixed(2)}</span></div>
-                      <div className="flex justify-between font-bold text-gray-900 text-base mt-2 pt-2 border-t border-indigo-100"><span>Total</span><span>${total.toFixed(2)}</span></div>
+                      <div className="flex justify-between font-bold text-gray-900 text-base mt-2 pt-2 border-t border-brand-100"><span>Total</span><span>${total.toFixed(2)}</span></div>
                       {!hotelServerQuote && <p className="text-xs text-gray-500 mt-2">Estimated from today&apos;s rate; the exact price is checked before you pay.</p>}
                     </>
                   ) : (
@@ -1973,7 +1973,7 @@ export default function Home() {
                   <button
                     onClick={submitHotelRequest}
                     disabled={hotelSubmitting}
-                    className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition"
+                    className="flex-1 py-2.5 bg-brand-600 text-white rounded-xl font-semibold hover:bg-brand-700 disabled:bg-gray-300 transition"
                   >
                     {hotelSubmitting ? 'Checking price…' : total != null ? `Pay $${total.toFixed(2)} →` : 'Continue'}
                   </button>
@@ -2006,7 +2006,7 @@ export default function Home() {
                   </div>
 
                   {/* Flight summary */}
-                  <div className="bg-indigo-50 rounded-xl p-4 mb-5">
+                  <div className="bg-brand-50 rounded-xl p-4 mb-5">
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="font-bold text-gray-900 text-base">
@@ -2020,9 +2020,9 @@ export default function Home() {
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-2xl font-bold text-indigo-700">${total.toLocaleString()}</p>
+                        <p className="text-2xl font-bold text-brand-700">${total.toLocaleString()}</p>
                         <p className="text-xs text-gray-500">total · {flightPassengers} pax</p>
-                        <p className="text-xs text-indigo-500 mt-0.5">incl. taxes &amp; fees</p>
+                        <p className="text-xs text-brand-500 mt-0.5">incl. taxes &amp; fees</p>
                       </div>
                     </div>
                   </div>
@@ -2032,13 +2032,13 @@ export default function Home() {
                     {flightPassengerDetails.map((pax, idx) => (
                       <div key={idx} className="border border-gray-200 rounded-xl p-4 space-y-3">
                         {flightPassengerDetails.length > 1 && (
-                          <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wide">Passenger {idx + 1}</p>
+                          <p className="text-xs font-semibold text-brand-600 uppercase tracking-wide">Passenger {idx + 1}</p>
                         )}
                         <div className="grid grid-cols-3 gap-2">
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">Title</label>
                             <select value={pax.title} onChange={e => updatePax(idx, 'title', e.target.value)}
-                              className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                              className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
                               <option value="mr">Mr</option>
                               <option value="ms">Ms</option>
                               <option value="mrs">Mrs</option>
@@ -2049,25 +2049,25 @@ export default function Home() {
                           <div className="col-span-2">
                             <label className="block text-xs font-medium text-gray-600 mb-1">First Name <span className="text-red-500">*</span></label>
                             <input type="text" value={pax.givenName} onChange={e => updatePax(idx, 'givenName', e.target.value)}
-                              placeholder="Given name" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                              placeholder="Given name" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                           </div>
                         </div>
                         <div>
                           <label className="block text-xs font-medium text-gray-600 mb-1">Last Name <span className="text-red-500">*</span></label>
                           <input type="text" value={pax.familyName} onChange={e => updatePax(idx, 'familyName', e.target.value)}
-                            placeholder="Family name" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            placeholder="Family name" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">Date of Birth <span className="text-red-500">*</span></label>
                             <input type="date" value={pax.dob} onChange={e => updatePax(idx, 'dob', e.target.value)}
                               max={`${new Date().getFullYear() - ADULT_AGE}-${new Date().toISOString().slice(5, 10)}`}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">Gender</label>
                             <select value={pax.gender} onChange={e => updatePax(idx, 'gender', e.target.value)}
-                              className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                              className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-500">
                               <option value="m">Male</option>
                               <option value="f">Female</option>
                             </select>
@@ -2076,17 +2076,17 @@ export default function Home() {
                         <div>
                           <label className="block text-xs font-medium text-gray-600 mb-1">Nationality <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(2-letter code, e.g. US, GB, CN)</span></label>
                           <input type="text" value={pax.nationality} onChange={e => updatePax(idx, 'nationality', e.target.value.toUpperCase().slice(0, 2))}
-                            placeholder="US" maxLength={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            placeholder="US" maxLength={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                         </div>
                         <div>
                           <label className="block text-xs font-medium text-gray-600 mb-1">Email <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(ticket will be sent here)</span></label>
                           <input type="email" value={pax.email} onChange={e => updatePax(idx, 'email', e.target.value)}
-                            placeholder="passenger@email.com" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            placeholder="passenger@email.com" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                         </div>
                         <div>
                           <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">(add country code if not from your nationality)</span></label>
                           <input type="tel" value={pax.phone} onChange={e => updatePax(idx, 'phone', e.target.value)}
-                            placeholder="+1 415 555 2671" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                            placeholder="+1 415 555 2671" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                         </div>
                         <div className="pt-1">
                           <p className="text-xs font-medium text-gray-600 mb-1">
@@ -2094,11 +2094,11 @@ export default function Home() {
                           </p>
                           <div className="grid grid-cols-3 gap-2">
                             <input type="text" value={pax.passportNumber ?? ''} onChange={e => updatePax(idx, 'passportNumber', e.target.value.toUpperCase())}
-                              placeholder="Number" aria-label="Passport number" className="col-span-3 sm:col-span-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                              placeholder="Number" aria-label="Passport number" className="col-span-3 sm:col-span-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                             <input type="text" value={pax.passportCountry ?? ''} onChange={e => updatePax(idx, 'passportCountry', e.target.value.toUpperCase().slice(0, 2))}
-                              placeholder="Issued by (US)" maxLength={2} aria-label="Passport issuing country" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                              placeholder="Issued by (US)" maxLength={2} aria-label="Passport issuing country" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                             <input type="date" value={pax.passportExpiry ?? ''} onChange={e => updatePax(idx, 'passportExpiry', e.target.value)}
-                              aria-label="Passport expiry date" title="Expiry date" className="col-span-2 sm:col-span-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                              aria-label="Passport expiry date" title="Expiry date" className="col-span-2 sm:col-span-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500" />
                           </div>
                         </div>
                       </div>
@@ -2126,7 +2126,7 @@ export default function Home() {
                     <button
                       onClick={confirmFlightBooking}
                       disabled={flightBookingLoading}
-                      className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition flex items-center justify-center gap-2"
+                      className="flex-1 py-2.5 bg-brand-600 text-white rounded-xl font-semibold hover:bg-brand-700 disabled:bg-gray-300 transition flex items-center justify-center gap-2"
                     >
                       {flightBookingLoading ? (
                         <><span className="animate-spin">⟳</span> Processing…</>
@@ -2137,7 +2137,7 @@ export default function Home() {
                   </div>
                   {!user && (
                     <p className="text-center text-xs text-gray-500 mt-2">
-                      <button onClick={() => { sessionStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify({ type: 'flight', ...flightDraft })); router.push('/login'); }} className="text-indigo-600 underline">Sign in</button> to complete your booking
+                      <button onClick={() => { sessionStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify({ type: 'flight', ...flightDraft })); router.push('/login'); }} className="text-brand-600 underline">Sign in</button> to complete your booking
                     </p>
                   )}
                 </div>
@@ -2165,23 +2165,23 @@ export default function Home() {
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
                     <input type="text" value={flightPassengerName} onChange={e => setFlightPassengerName(e.target.value)}
-                      placeholder="Passenger name" className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                      placeholder="Passenger name" className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500" />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Passengers</label>
                     <input type="number" value={flightPassengers} onChange={e => setFlightPassengers(Math.max(1, +e.target.value))}
-                      min={1} className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                      min={1} className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500" />
                   </div>
                 </div>
-                <div className="bg-indigo-50 rounded-lg p-3 mb-5 text-sm">
-                  <div className="flex justify-between font-bold text-indigo-700">
+                <div className="bg-brand-50 rounded-lg p-3 mb-5 text-sm">
+                  <div className="flex justify-between font-bold text-brand-700">
                     <span>Total</span><span>${total.toLocaleString()}</span>
                   </div>
                 </div>
                 <div className="flex gap-3">
                   <button onClick={() => setFlightDraft(null)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">Cancel</button>
                   <button onClick={confirmFlightBooking} disabled={!flightPassengerName.trim()}
-                    className="flex-1 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 disabled:bg-gray-300 transition">
+                    className="flex-1 py-2 bg-brand-600 text-white rounded-lg font-semibold hover:bg-brand-700 disabled:bg-gray-300 transition">
                     {user ? 'Confirm Booking →' : 'Sign in to Book'}
                   </button>
                 </div>
@@ -2263,51 +2263,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Footer */}
-        <footer className="mt-16 border-t border-gray-200 pt-8">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
-            <div>
-              <h3 className="font-bold text-gray-900 mb-4">About</h3>
-              <ul className="space-y-2 text-sm text-gray-600">
-                <li><a href="#" className="hover:text-indigo-600">About Us</a></li>
-                <li><a href="#" className="hover:text-indigo-600">Blog</a></li>
-                <li><a href="#" className="hover:text-indigo-600">Careers</a></li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-bold text-gray-900 mb-4">Support</h3>
-              <ul className="space-y-2 text-sm text-gray-600">
-                <li><a href="#" className="hover:text-indigo-600">Help Center</a></li>
-                <li><a href="#" className="hover:text-indigo-600">Contact Us</a></li>
-                <li><a href="#" className="hover:text-indigo-600">FAQ</a></li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-bold text-gray-900 mb-4">Legal</h3>
-              <ul className="space-y-2 text-sm text-gray-600">
-                <li><a href="/privacy" className="hover:text-indigo-600">Privacy Policy</a></li>
-                <li><a href="/data-deletion" className="hover:text-indigo-600">Data Deletion</a></li>
-                <li><a href="#" className="hover:text-indigo-600">Terms of Service</a></li>
-                <li><a href="#" className="hover:text-indigo-600">Cookies</a></li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-bold text-gray-900 mb-4">Follow</h3>
-              <ul className="space-y-2 text-sm text-gray-600">
-                <li><a href="#" className="hover:text-indigo-600">Facebook</a></li>
-                <li><a href="#" className="hover:text-indigo-600">Twitter</a></li>
-                <li><a href="#" className="hover:text-indigo-600">Instagram</a></li>
-              </ul>
-            </div>
-          </div>
-          <div className="border-t border-gray-200 pt-8 flex justify-between items-center">
-            <p className="text-sm text-gray-600">&copy; 2026 Lyrtrip. All rights reserved.</p>
-            <div className="flex gap-4">
-              <a href="#" className="text-sm text-gray-600 hover:text-indigo-600">Sitemap</a>
-              <a href="#" className="text-sm text-gray-600 hover:text-indigo-600">Accessibility</a>
-            </div>
-          </div>
-        </footer>
       </main>
     </div>
   );

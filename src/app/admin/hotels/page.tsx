@@ -85,17 +85,17 @@ export default function HotelAdminPage() {
   };
 
   const shown = (rows ?? []).filter(r => filter === 'all' || r.status === 'requested');
-  const input = 'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500';
+  const input = 'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500';
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
+    <div className="flex-1 bg-gray-50 py-8 px-4">
       <div className="max-w-4xl mx-auto">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Hotel booking requests</h1>
           <div className="flex gap-2">
             {(['requested', 'all'] as const).map(f => (
               <button key={f} onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filter === f ? 'bg-indigo-600 text-white' : 'bg-white border border-gray-300 text-gray-700'}`}>
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium ${filter === f ? 'bg-brand-600 text-white' : 'bg-white border border-gray-300 text-gray-700'}`}>
                 {f === 'requested' ? 'To book' : 'All'}
               </button>
             ))}
@@ -120,8 +120,8 @@ export default function HotelAdminPage() {
                   <h2 className="text-lg font-bold text-gray-900 mt-1">{r.hotel.name}</h2>
                   <p className="text-sm text-gray-600">{r.hotel.address}</p>
                   <p className="text-sm text-gray-600">
-                    {r.hotel.phone && <a href={`tel:${r.hotel.phone}`} className="text-indigo-600 hover:underline mr-3">{r.hotel.phone}</a>}
-                    {r.hotel.link && <a href={r.hotel.link} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">Hotel website ↗</a>}
+                    {r.hotel.phone && <a href={`tel:${r.hotel.phone}`} className="text-brand-600 hover:underline mr-3">{r.hotel.phone}</a>}
+                    {r.hotel.link && <a href={r.hotel.link} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline">Hotel website ↗</a>}
                   </p>
                 </div>
                 <div className="text-right text-sm">
@@ -136,7 +136,7 @@ export default function HotelAdminPage() {
                 <div><p className="text-xs text-gray-500">Dates</p><p className="font-semibold">{r.checkin} → {r.checkout}</p><p className="text-xs text-gray-500">{r.nights} night{r.nights !== 1 ? 's' : ''}</p></div>
                 <div><p className="text-xs text-gray-500">Guests</p><p className="font-semibold">{r.adults} adult{r.adults !== 1 ? 's' : ''}</p></div>
                 <div className="col-span-2"><p className="text-xs text-gray-500">Guest</p><p className="font-semibold">{r.guest.givenName} {r.guest.familyName}</p>
-                  <p className="text-xs"><a href={`mailto:${r.guest.email}`} className="text-indigo-600">{r.guest.email}</a> · {r.guest.phone}</p></div>
+                  <p className="text-xs"><a href={`mailto:${r.guest.email}`} className="text-brand-600">{r.guest.email}</a> · {r.guest.phone}</p></div>
                 {r.roomPreference && <div className="col-span-2"><p className="text-xs text-gray-500">Room preference</p><p>{r.roomPreference}</p></div>}
                 {r.specialRequests && <div className="col-span-2"><p className="text-xs text-gray-500">Special requests</p><p>{r.specialRequests}</p></div>}
               </div>
