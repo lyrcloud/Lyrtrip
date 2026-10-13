@@ -378,6 +378,94 @@ const ICON_MOTION: Record<string, IconMotion> = {
   ] },
 };
 
+// Tourism categories, shown as animated option tiles inside the Tourism tab
+const TOUR_OPTIONS: { id: string; icon: string; label: string; motion: IconMotion }[] = [
+  { id: 'tour-id', icon: '🪪', label: 'ID Card', motion: { duration: 900, easing: 'ease-in-out', frames: [
+    { transform: 'perspective(200px) rotateY(0)' },
+    { transform: 'perspective(200px) rotateY(180deg) scale(1.15)', offset: 0.5 },
+    { transform: 'perspective(200px) rotateY(360deg)' },
+  ] } },
+  { id: 'tour-passport', icon: '🛂', label: 'Passport', motion: { duration: 700, easing: 'ease-out', frames: [
+    { transform: 'translateY(0) scale(1)' },
+    { transform: 'translateY(-18px) scale(1.1)', offset: 0.35 },
+    { transform: 'translateY(2px) scale(1.25,0.8)', offset: 0.55 },
+    { transform: 'translateY(0) scale(1)' },
+  ] } },
+  { id: 'tour-visa', icon: '📝', label: 'Visa', motion: { duration: 900, easing: 'ease-in-out', frames: [
+    { transform: 'translate(0,0) rotate(0)' },
+    { transform: 'translate(-4px,2px) rotate(-8deg)', offset: 0.2 },
+    { transform: 'translate(4px,-2px) rotate(6deg)', offset: 0.4 },
+    { transform: 'translate(-3px,2px) rotate(-6deg)', offset: 0.6 },
+    { transform: 'translate(3px,-1px) rotate(4deg)', offset: 0.8 },
+    { transform: 'translate(0,0) rotate(0)' },
+  ] } },
+  { id: 'tour-insurance', icon: '🛡️', label: 'Insurance', motion: { duration: 900, easing: 'ease-out', puff: '✨', frames: [
+    { transform: 'scale(1)', filter: 'drop-shadow(0 0 0 transparent)' },
+    { transform: 'scale(1.25)', filter: 'drop-shadow(0 0 10px rgb(59 130 246))', offset: 0.4 },
+    { transform: 'scale(1)', filter: 'drop-shadow(0 0 0 transparent)' },
+  ] } },
+  { id: 'tour-destination', icon: '🗺️', label: 'Destinations', motion: { duration: 900, easing: 'ease-out', frames: [
+    { transform: 'scaleX(1)' },
+    { transform: 'scaleX(0.2)', offset: 0.3 },
+    { transform: 'scaleX(1.15)', offset: 0.7 },
+    { transform: 'scaleX(1)' },
+  ] } },
+  { id: 'tour-pack', icon: '🧳', label: 'Tour Packages', motion: { duration: 900, easing: 'ease-in-out', frames: [
+    { transform: 'translateX(0) rotate(0)' },
+    { transform: 'translateX(-10px) rotate(-10deg)', offset: 0.25 },
+    { transform: 'translateX(10px) rotate(10deg)', offset: 0.6 },
+    { transform: 'translateX(0) rotate(0)' },
+  ] } },
+  { id: 'tour-family', icon: '👨‍👩‍👧', label: 'Family Holidays', motion: { duration: 900, easing: 'ease-out', puff: '❤️', frames: [
+    { transform: 'translateY(0)' },
+    { transform: 'translateY(-16px)', offset: 0.3 },
+    { transform: 'translateY(0) scale(1.1,0.9)', offset: 0.5 },
+    { transform: 'translateY(-8px)', offset: 0.7 },
+    { transform: 'translateY(0) scale(1)' },
+  ] } },
+  { id: 'tour-vacation', icon: '🏖️', label: 'Vacation', motion: { duration: 1100, easing: 'ease-in-out', puff: '☀️', frames: [
+    { transform: 'rotate(0)', transformOrigin: '50% 100%' },
+    { transform: 'rotate(-8deg)', transformOrigin: '50% 100%', offset: 0.3 },
+    { transform: 'rotate(6deg)', transformOrigin: '50% 100%', offset: 0.65 },
+    { transform: 'rotate(0)', transformOrigin: '50% 100%' },
+  ] } },
+  { id: 'tour-regional', icon: '🧭', label: 'Regional Tours', motion: { duration: 1100, easing: 'cubic-bezier(.3,1.4,.5,1)', frames: [
+    { transform: 'rotate(0)' },
+    { transform: 'rotate(380deg)', offset: 0.7 },
+    { transform: 'rotate(360deg)' },
+  ] } },
+  { id: 'tour-educational', icon: '📚', label: 'Educational Tours', motion: { duration: 900, easing: 'ease-out', frames: [
+    { transform: 'perspective(200px) rotateX(0) translateY(0)' },
+    { transform: 'perspective(200px) rotateX(-40deg) translateY(-10px)', offset: 0.4 },
+    { transform: 'perspective(200px) rotateX(0) translateY(0)' },
+  ] } },
+  { id: 'tour-religious', icon: '🙏', label: 'Religious Tours', motion: { duration: 1100, easing: 'ease-in-out', puff: '✨', frames: [
+    { transform: 'scale(1)', filter: 'brightness(1)' },
+    { transform: 'scale(1.15)', filter: 'brightness(1.25) drop-shadow(0 0 10px rgb(250 204 21))', offset: 0.5 },
+    { transform: 'scale(1)', filter: 'brightness(1)' },
+  ] } },
+  { id: 'tour-govt', icon: '🏛️', label: 'Government Tours', motion: { duration: 900, easing: 'ease-out', frames: [
+    { transform: 'translateY(24px) scaleY(0.3)', opacity: 0, transformOrigin: '50% 100%' },
+    { transform: 'translateY(0) scaleY(1.1)', opacity: 1, transformOrigin: '50% 100%', offset: 0.6 },
+    { transform: 'translateY(0) scaleY(1)', transformOrigin: '50% 100%' },
+  ] } },
+  { id: 'tour-adventure', icon: '🧗', label: 'Adventure', motion: { duration: 1000, easing: 'ease-in-out', frames: [
+    { transform: 'translate(0,0)' },
+    { transform: 'translate(-4px,-8px) rotate(-6deg)', offset: 0.25 },
+    { transform: 'translate(4px,-16px) rotate(6deg)', offset: 0.5 },
+    { transform: 'translate(0,-6px)', offset: 0.75 },
+    { transform: 'translate(0,0)' },
+  ] } },
+  { id: 'tour-honeymoon', icon: '💑', label: 'Honeymoon', motion: { duration: 1000, easing: 'ease-in-out', puff: '💕', frames: [
+    { transform: 'scale(1)' },
+    { transform: 'scale(1.2)', offset: 0.2 },
+    { transform: 'scale(1)', offset: 0.4 },
+    { transform: 'scale(1.2)', offset: 0.6 },
+    { transform: 'scale(1)' },
+  ] } },
+];
+for (const o of TOUR_OPTIONS) ICON_MOTION[o.id] = o.motion;
+
 export default function Home() {
   const { user } = useAuth();
   const router = useRouter();
@@ -620,7 +708,7 @@ export default function Home() {
         puff.animate([
           { transform: 'translate(-50%,-50%) scale(0.4)', opacity: 0 },
           { opacity: 0.9, offset: 0.2 },
-          { transform: `translate(calc(-50% + ${dx}px), calc(-50% - ${motion.puff === '💨' ? 28 : -18}px)) scale(1.1)`, opacity: 0 },
+          { transform: `translate(calc(-50% + ${dx}px), calc(-50% - ${motion.puff === '🌊' ? -18 : 28}px)) scale(1.1)`, opacity: 0 },
         ], { duration: 900, delay: i * 180, easing: 'ease-out', fill: 'backwards' }).onfinish = () => puff.remove();
       }
     }
@@ -2006,13 +2094,45 @@ export default function Home() {
             {/* Tourism */}
             {activeTab === 'tourism' && (
               <div>
+                <div role="radiogroup" aria-label="Tour category" className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-2 sm:gap-3 mb-6">
+                  {TOUR_OPTIONS.map((o, i) => {
+                    const selected = formData.activityType === o.label;
+                    return (
+                      <button
+                        key={o.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => { setFormData(prev => ({ ...prev, activityType: o.label })); playIcon(o.id, true); }}
+                        onMouseEnter={() => playIcon(o.id)}
+                        style={{ animationDelay: `${i * 35}ms` }}
+                        className={`group relative overflow-hidden flex flex-col items-center gap-2 rounded-xl px-2 py-3 sm:py-4 text-center transition-all duration-300 ease-out animate-[tileIn_400ms_ease-out_backwards] focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200 ${
+                          selected
+                            ? 'bg-brand-50 text-brand-700 ring-2 ring-brand-500 shadow-md'
+                            : 'bg-gray-50 text-gray-700 ring-1 ring-gray-200 hover:bg-white hover:ring-brand-300 hover:text-brand-700 hover:shadow-md hover:-translate-y-1'
+                        }`}
+                      >
+                        <span className={`relative flex h-12 w-12 items-center justify-center rounded-xl transition-colors duration-300 ${selected ? 'bg-white' : 'bg-white group-hover:bg-brand-50'}`}>
+                          <span
+                            aria-hidden
+                            ref={el => { iconRefs.current[o.id] = el; }}
+                            className="inline-block text-3xl leading-none will-change-transform"
+                          >
+                            {o.icon}
+                          </span>
+                        </span>
+                        <span className="text-xs sm:text-sm font-semibold leading-tight">{o.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Destination</label>
                     <input type="text" name="destination" value={formData.destination} onChange={handleInputChange} placeholder="City or attraction" className={inputClass} />
                   </div>
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Activity Type</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Tour Type</label>
                     <input type="text" name="activityType" value={formData.activityType} onChange={handleInputChange} placeholder="E.g. Museum, Adventure" className={inputClass} />
                   </div>
                   <div>
