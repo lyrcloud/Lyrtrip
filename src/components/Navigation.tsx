@@ -83,9 +83,24 @@ export default function Navigation() {
             ) : (
               <Link
                 href="/login"
-                className="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition-colors font-medium"
+                className="group relative inline-flex items-center gap-2 overflow-hidden rounded-lg bg-brand-600 py-2 pl-3 pr-4 font-medium text-white shadow-md shadow-brand-600/25 transition-all duration-200 animate-[signInIn_400ms_ease-out] hover:bg-brand-700 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 active:scale-95 focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
               >
-                Sign In
+                {/* Light sweep that repeats every few seconds */}
+                <span aria-hidden className="pointer-events-none absolute inset-y-0 -left-1/2 w-1/3 skew-x-[-20deg] bg-white/30 animate-[signInShine_4s_ease-in-out_infinite]" />
+                <svg
+                  aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+                  className="relative h-5 w-5 transition-transform duration-300 group-hover:animate-[signInWave_600ms_ease-in-out]"
+                >
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" />
+                </svg>
+                <span className="relative">Sign In</span>
+                <svg
+                  aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round"
+                  className="relative -ml-1 h-4 w-0 opacity-0 transition-all duration-300 group-hover:ml-0 group-hover:w-4 group-hover:opacity-100 group-hover:translate-x-0.5"
+                >
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
               </Link>
             )}
           </div>
