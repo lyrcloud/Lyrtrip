@@ -1742,6 +1742,61 @@ function resolveIata(input) {
   return (CITY_TO_IATA[lower] ?? trimmed).toUpperCase();
 }
 
+// Airport/city lookup by name via Duffel Places, cached per warm Lambda
+const placeCache = new Map();
+
+async function searchPlaces(query) {
+  const key = query.trim().toLowerCase();
+  if (key.length < 2) return [];
+  if (placeCache.has(key)) return placeCache.get(key);
+  const data = await duffelFetch(`/places/suggestions?query=${encodeURIComponent(key)}`, { timeoutMs: 5000 });
+  const places = (data.data ?? [])
+    .filter(p => p.iata_code)
+    .slice(0, 8)
+    .map(p => ({
+      code:    p.iata_code,
+      type:    p.type,                                  // 'city' (all its airports) or 'airport'
+      name:    p.name,
+      city:    p.city_name ?? (p.type === 'city' ? p.name : ''),
+      country: p.iata_country_code ?? '',
+    }));
+  if (placeCache.size > 500) placeCache.clear();
+  placeCache.set(key, places);
+  return places;
+}
+
+// "London (LON)", "lhr", "Heathrow", "Lagos" → IATA code, or null if nothing matches
+async function resolvePlace(input) {
+  const trimmed = (input ?? '').trim();
+  if (!trimmed) return null;
+  const tagged = trimmed.match(/\(([A-Za-z]{3})\)\s*$/);
+  if (tagged) return tagged[1].toUpperCase();
+  const known = CITY_TO_IATA[trimmed.toLowerCase()];
+  if (known) return known;
+  if (/^[A-Za-z]{3}$/.test(trimmed)) return trimmed.toUpperCase();
+  if (process.env.DUFFEL_API_KEY) {
+    try {
+      const [best] = await searchPlaces(trimmed);
+      if (best) return best.code;
+    } catch (err) {
+      console.error('Duffel place lookup failed:', err.message);
+    }
+  }
+  return null;
+}
+
+async function handleFlightPlaces(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
+  const query = String(body.query ?? '').slice(0, 100);
+  if (!process.env.DUFFEL_API_KEY) return json(200, { places: [] });
+  try {
+    return json(200, { places: await searchPlaces(query) });
+  } catch (err) {
+    console.error('Duffel place search failed:', err.message);
+    return json(200, { places: [] });
+  }
+}
+
 async function searchFlightsSerpApi({ from, to, depart, returnDate }) {
   const params = new URLSearchParams({
     engine:        'google_flights',
@@ -1936,8 +1991,13 @@ async function handleSearch(event) {
 
     // --- Flights: Duffel → SerpAPI → mock ---
     if (service === 'flights') {
-      const { from, to, depart, returnDate, passengers } = body;
-      if (from && to && depart) {
+      const { depart, returnDate, passengers } = body;
+      if (body.from && body.to && depart) {
+        const [from, to] = await Promise.all([resolvePlace(body.from), resolvePlace(body.to)]);
+        if (!from || !to) {
+          const missing = !from ? body.from : body.to;
+          return json(200, { success: true, service, results: [], total: 0, source: 'none', error: `No airport found for "${missing}"` });
+        }
         if (process.env.DUFFEL_API_KEY) {
           try {
             const results = await searchFlightsDuffel({ from, to, depart, returnDate, passengers: Number(passengers || 1) });
@@ -2282,6 +2342,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/search'))                                               return handleSearch(event);
     if (path.endsWith('/api/auth/wechat')            && method === 'POST')         return handleWeChatAuth(event);
     if (path.endsWith('/api/stripe-checkout')        && method === 'POST')         return handleStripeCheckout(event);
+    if (path.endsWith('/api/flight/places')          && method === 'POST')         return handleFlightPlaces(event);
     if (path.endsWith('/api/flight/checkout')        && method === 'POST')         return handleFlightCheckout(event);
     if (path.endsWith('/api/flight/confirm')         && method === 'POST')         return handleFlightConfirm(event);
     if (path.endsWith('/api/hotel/checkout')         && method === 'POST')         return handleHotelCheckout(event);

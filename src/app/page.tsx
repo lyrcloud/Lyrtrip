@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import React from 'react';
 import { useRouter } from 'next/navigation';
+import AirportInput from '@/components/AirportInput';
 import LocationMap from '@/components/LocationMap';
 import LocationPicker from '@/components/LocationPicker';
 import { calcNights } from '@/lib/bookings';
@@ -302,6 +303,7 @@ export default function Home() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [showLocationMap, setShowLocationMap] = useState(false);
+  const [flightSearchError, setFlightSearchError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     destination: '',
@@ -570,6 +572,7 @@ export default function Home() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Flight search failed');
+    setFlightSearchError(data.error ?? null);
     return (data.results ?? []) as SearchResult[];
   };
 
@@ -944,7 +947,7 @@ export default function Home() {
   const FlightList = () => {
     if (!hasSearched) return null;
     if (loading) return <p className="text-gray-500 mt-6">Searching flights...</p>;
-    if (results.length === 0) return <p className="text-gray-600 mt-6">No flights found. Try different airports or dates.</p>;
+    if (results.length === 0) return <p className="text-gray-600 mt-6">{flightSearchError ? `${flightSearchError}. Pick a city or airport from the suggestions.` : 'No flights found. Try different airports or dates.'}</p>;
     const best  = results.filter(r => r.isBest);
     const other = results.filter(r => !r.isBest);
     const FlightRow = ({ r }: { r: SearchResult }) => {
@@ -1478,11 +1481,11 @@ export default function Home() {
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-4">
                   <div className="col-span-2 md:col-span-1">
                     <label className="block text-sm font-medium text-gray-700 mb-2">From</label>
-                    <input type="text" name="from" value={formData.from} onChange={handleInputChange} placeholder="City or IATA code" className={inputClass} />
+                    <AirportInput name="from" value={formData.from} onChange={v => setFormData(prev => ({ ...prev, from: v }))} placeholder="City, airport or code" className={inputClass} />
                   </div>
                   <div className="col-span-2 md:col-span-1">
                     <label className="block text-sm font-medium text-gray-700 mb-2">To</label>
-                    <input type="text" name="to" value={formData.to} onChange={handleInputChange} placeholder="City or IATA code" className={inputClass} />
+                    <AirportInput name="to" value={formData.to} onChange={v => setFormData(prev => ({ ...prev, to: v }))} placeholder="City, airport or code" className={inputClass} />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Depart</label>
