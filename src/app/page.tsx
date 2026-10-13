@@ -295,6 +295,89 @@ function searchService(service: string): Promise<SearchResult[]> {
 
 const PENDING_BOOKING_KEY = 'lyrtrip_pending_booking';
 
+// Per-tab icon animations (Web Animations API), played on hover, click and arrow-key selection
+type IconMotion = { frames: Keyframe[]; duration: number; easing?: string; puff?: string };
+const ICON_MOTION: Record<string, IconMotion> = {
+  flights: { duration: 1100, easing: 'ease-in-out', frames: [
+    { transform: 'translate(0,0) rotate(0)', opacity: 1 },
+    { transform: 'translate(8px,4px) rotate(4deg)', offset: 0.12 },
+    { transform: 'translate(90px,-60px) rotate(-12deg) scale(0.7)', opacity: 0, offset: 0.45 },
+    { transform: 'translate(-90px,50px) rotate(-12deg) scale(0.7)', opacity: 0, offset: 0.46 },
+    { transform: 'translate(0,0) rotate(0)', opacity: 1 },
+  ] },
+  shipping: { duration: 800, easing: 'ease-out', frames: [
+    { transform: 'translateY(0)' },
+    { transform: 'translateY(-36px) rotate(-8deg)', offset: 0.3 },
+    { transform: 'translateY(0) scale(1.15,0.85)', offset: 0.55 },
+    { transform: 'translateY(-10px) scale(0.95,1.05)', offset: 0.75 },
+    { transform: 'translateY(0) scale(1)' },
+  ] },
+  hotels: { duration: 800, easing: 'ease-out', frames: [
+    { transform: 'scale(1)', filter: 'brightness(1)' },
+    { transform: 'scale(1.3) translateY(-6px)', filter: 'brightness(1.3) drop-shadow(0 0 10px rgb(250 204 21))', offset: 0.4 },
+    { transform: 'scale(0.95)', offset: 0.7 },
+    { transform: 'scale(1)', filter: 'brightness(1)' },
+  ] },
+  car: { duration: 900, easing: 'ease-in-out', frames: [
+    { transform: 'translateX(0)' },
+    { transform: 'translateX(-3px) rotate(-2deg)', offset: 0.1 },
+    { transform: 'translateX(3px) rotate(2deg)', offset: 0.2 },
+    { transform: 'translateX(-3px)', offset: 0.3 },
+    { transform: 'translateY(-14px) rotate(-6deg)', offset: 0.55 },
+    { transform: 'translateY(0) scale(1.08,0.92)', offset: 0.8 },
+    { transform: 'translateY(0) scale(1)' },
+  ] },
+  bus: { duration: 900, easing: 'ease-in-out', frames: [
+    { transform: 'translateY(0)' },
+    { transform: 'translateY(-8px) rotate(-3deg)', offset: 0.25 },
+    { transform: 'translateY(0) rotate(2deg)', offset: 0.5 },
+    { transform: 'translateY(-5px) rotate(-1deg)', offset: 0.75 },
+    { transform: 'translateY(0) rotate(0)' },
+  ] },
+  train: { duration: 1000, easing: 'linear', puff: '💨', frames: [
+    { transform: 'translate(0,0)' },
+    { transform: 'translate(2px,-3px)', offset: 0.15 },
+    { transform: 'translate(-2px,0)', offset: 0.3 },
+    { transform: 'translate(2px,-3px)', offset: 0.45 },
+    { transform: 'translate(-2px,0)', offset: 0.6 },
+    { transform: 'translate(2px,-3px)', offset: 0.75 },
+    { transform: 'translate(0,0)' },
+  ] },
+  cruise: { duration: 1200, easing: 'ease-in-out', puff: '🌊', frames: [
+    { transform: 'rotate(0) translateY(0)' },
+    { transform: 'rotate(-10deg) translateY(-4px)', offset: 0.25 },
+    { transform: 'rotate(8deg) translateY(2px)', offset: 0.55 },
+    { transform: 'rotate(-4deg) translateY(-2px)', offset: 0.8 },
+    { transform: 'rotate(0) translateY(0)' },
+  ] },
+  dash: { duration: 900, easing: 'ease-out', frames: [
+    { transform: 'perspective(200px) rotateY(0) translateY(0)' },
+    { transform: 'perspective(200px) rotateY(180deg) translateY(-18px)', offset: 0.45 },
+    { transform: 'perspective(200px) rotateY(360deg) translateY(0) scale(1.1,0.9)', offset: 0.8 },
+    { transform: 'perspective(200px) rotateY(360deg) scale(1)' },
+  ] },
+  tourism: { duration: 1000, easing: 'ease-in-out', frames: [
+    { transform: 'rotate(0)', transformOrigin: '50% 0%' },
+    { transform: 'rotate(16deg)', transformOrigin: '50% 0%', offset: 0.25 },
+    { transform: 'rotate(-12deg)', transformOrigin: '50% 0%', offset: 0.5 },
+    { transform: 'rotate(6deg)', transformOrigin: '50% 0%', offset: 0.75 },
+    { transform: 'rotate(0)', transformOrigin: '50% 0%' },
+  ] },
+  study: { duration: 1000, easing: 'ease-out', frames: [
+    { transform: 'translateY(0) rotate(0)' },
+    { transform: 'translateY(-44px) rotate(200deg)', offset: 0.45 },
+    { transform: 'translateY(0) rotate(360deg) scale(1.1,0.9)', offset: 0.8 },
+    { transform: 'translateY(0) rotate(360deg) scale(1)' },
+  ] },
+  career: { duration: 800, easing: 'ease-in-out', frames: [
+    { transform: 'rotate(0) scale(1)' },
+    { transform: 'rotate(-12deg) scale(1.15)', offset: 0.2 },
+    { transform: 'rotate(10deg) scale(1.15)', offset: 0.4 },
+    { transform: 'rotate(-6deg) scale(1.1)', offset: 0.6 },
+    { transform: 'rotate(0) scale(1)' },
+  ] },
+};
+
 export default function Home() {
   const { user } = useAuth();
   const router = useRouter();
@@ -510,21 +593,38 @@ export default function Home() {
     setUberProfile(null);
   };
 
-  // Tab bar: sliding underline, keep active tab in view, arrow-key navigation
-  const tabBarRef = useRef<HTMLDivElement>(null);
+  // Option tiles: per-icon animation, arrow-key navigation
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0 });
+  const iconRefs = useRef<Record<string, HTMLSpanElement | null>>({});
 
-  useEffect(() => {
-    const measure = () => {
-      const el = tabRefs.current[activeTab];
-      if (el) setTabIndicator({ left: el.offsetLeft + 12, width: el.offsetWidth - 24 });
-    };
-    measure();
-    tabRefs.current[activeTab]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
-  }, [activeTab]);
+  // restart = true replays even if the icon is mid-animation (clicks); hover lets it finish
+  const playIcon = useCallback((id: string, restart = false) => {
+    const el = iconRefs.current[id];
+    const motion = ICON_MOTION[id];
+    if (!el || !motion || typeof el.animate !== 'function') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (el.getAnimations().length) {
+      if (!restart) return;
+      el.getAnimations().forEach(a => a.cancel());
+    }
+    el.animate(motion.frames, { duration: motion.duration, easing: motion.easing ?? 'ease' });
+    if (motion.puff) {
+      // Little particles (smoke, waves) drifting off the icon
+      for (let i = 0; i < 3; i++) {
+        const puff = document.createElement('span');
+        puff.textContent = motion.puff;
+        puff.setAttribute('aria-hidden', 'true');
+        puff.className = 'pointer-events-none absolute left-1/2 top-1/2 text-lg';
+        el.parentElement?.appendChild(puff);
+        const dx = motion.puff === '💨' ? -30 - i * 10 : (i - 1) * 26;
+        puff.animate([
+          { transform: 'translate(-50%,-50%) scale(0.4)', opacity: 0 },
+          { opacity: 0.9, offset: 0.2 },
+          { transform: `translate(calc(-50% + ${dx}px), calc(-50% - ${motion.puff === '💨' ? 28 : -18}px)) scale(1.1)`, opacity: 0 },
+        ], { duration: 900, delay: i * 180, easing: 'ease-out', fill: 'backwards' }).onfinish = () => puff.remove();
+      }
+    }
+  }, []);
 
   const onTabKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
@@ -533,6 +633,7 @@ export default function Home() {
     const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length].id;
     switchTab(next);
     tabRefs.current[next]?.focus();
+    playIcon(next, true);
   };
 
   // Ripple from the click point on buttons
@@ -887,17 +988,17 @@ export default function Home() {
   };
 
   const tabs = [
-    { id: 'flights', icon: '✈️', label: 'Flights' },
-    { id: 'shipping', icon: '📦', label: 'Shipping' },
-    { id: 'hotels', icon: '🏨', label: 'Hotels' },
-    { id: 'car', icon: '🚗', label: 'Car' },
-    { id: 'bus', icon: '🚌', label: 'Bus' },
-    { id: 'train', icon: '🚂', label: 'Train' },
-    { id: 'cruise', icon: '🚢', label: 'Cruise' },
-    { id: 'dash', icon: '🍔', label: 'Dash' },
-    { id: 'tourism', icon: '🎒', label: 'Tourism' },
-    { id: 'study', icon: '🎓', label: 'Study' },
-    { id: 'career', icon: '💼', label: 'Jobs' },
+    { id: 'flights', icon: '✈️', label: 'Flights', sub: 'Fly anywhere' },
+    { id: 'shipping', icon: '📦', label: 'Shipping', sub: 'Send parcels' },
+    { id: 'hotels', icon: '🏨', label: 'Hotels', sub: 'Places to stay' },
+    { id: 'car', icon: '🚗', label: 'Car', sub: 'Book a ride' },
+    { id: 'bus', icon: '🚌', label: 'Bus', sub: 'Intercity routes' },
+    { id: 'train', icon: '🚂', label: 'Train', sub: 'Rail journeys' },
+    { id: 'cruise', icon: '🚢', label: 'Cruise', sub: 'Sail away' },
+    { id: 'dash', icon: '🍔', label: 'Dash', sub: 'Food & groceries' },
+    { id: 'tourism', icon: '🎒', label: 'Tourism', sub: 'Tours & trips' },
+    { id: 'study', icon: '🎓', label: 'Study', sub: 'Study abroad' },
+    { id: 'career', icon: '💼', label: 'Jobs', sub: 'Find work' },
   ];
 
   const inputClass = "w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border border-gray-200 rounded-xl shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-brand-300 hover:bg-white focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100";
@@ -1476,15 +1577,14 @@ export default function Home() {
 
         {/* Search Tabs */}
         <div className="bg-white rounded-2xl shadow-xl ring-1 ring-gray-100">
-          {/* Tab Nav */}
+          {/* Option tiles */}
           <div
-            ref={tabBarRef}
             role="tablist"
             aria-label="Services"
             onKeyDown={onTabKeyDown}
-            className="relative flex gap-1 border-b border-gray-100 overflow-x-auto px-2 pt-2 pr-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,black_calc(100%-3rem),transparent)]"
+            className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 2xl:grid-cols-11 gap-2 sm:gap-3 border-b border-gray-100 p-3 sm:p-5"
           >
-            {tabs.map((tab) => {
+            {tabs.map((tab, i) => {
               const isActive = activeTab === tab.id;
               return (
                 <button
@@ -1493,27 +1593,33 @@ export default function Home() {
                   role="tab"
                   aria-selected={isActive}
                   tabIndex={isActive ? 0 : -1}
-                  onClick={() => switchTab(tab.id)}
-                  className={`group shrink-0 flex flex-col sm:flex-row items-center gap-1 sm:gap-2 rounded-t-xl px-4 sm:px-5 py-3 sm:py-4 text-sm sm:text-base font-bold whitespace-nowrap transition-colors duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-inset focus-visible:ring-brand-200 ${
-                    isActive ? 'text-brand-600 bg-brand-50/70' : 'text-gray-600 hover:text-brand-600 hover:bg-gray-50'
+                  onClick={() => { switchTab(tab.id); playIcon(tab.id, true); }}
+                  onMouseEnter={() => playIcon(tab.id)}
+                  style={{ animationDelay: `${i * 40}ms` }}
+                  className={`group relative overflow-hidden flex flex-col items-center justify-center gap-2 rounded-2xl px-2 py-4 sm:py-5 text-center transition-all duration-300 ease-out animate-[tileIn_400ms_ease-out_backwards] focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200 ${
+                    isActive
+                      ? 'bg-brand-600 text-white shadow-lg shadow-brand-600/30 -translate-y-0.5'
+                      : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 hover:shadow-md hover:-translate-y-1'
                   }`}
                 >
                   <span
-                    aria-hidden
-                    className={`text-2xl sm:text-[1.6rem] leading-none transition-transform duration-300 ease-out group-hover:-translate-y-1 group-hover:scale-110 ${isActive ? 'scale-110' : ''}`}
+                    className={`relative flex h-14 w-14 sm:h-16 sm:w-16 items-center justify-center rounded-2xl transition-colors duration-300 ${
+                      isActive ? 'bg-white/15' : 'bg-brand-50 group-hover:bg-brand-100'
+                    }`}
                   >
-                    {tab.icon}
+                    <span
+                      aria-hidden
+                      ref={el => { iconRefs.current[tab.id] = el; }}
+                      className="inline-block text-4xl sm:text-[2.6rem] leading-none will-change-transform"
+                    >
+                      {tab.icon}
+                    </span>
                   </span>
-                  {tab.label}
+                  <span className="text-sm sm:text-base font-bold leading-tight">{tab.label}</span>
+                  <span className={`hidden sm:block text-xs leading-tight ${isActive ? 'text-white/80' : 'text-gray-500'}`}>{tab.sub}</span>
                 </button>
               );
             })}
-            {/* Sliding underline under the active tab */}
-            <span
-              aria-hidden
-              className="pointer-events-none absolute bottom-0 h-1 rounded-full bg-brand-600 transition-all duration-300 ease-out"
-              style={{ left: tabIndicator.left, width: tabIndicator.width }}
-            />
           </div>
 
           {/* Forms */}
