@@ -369,6 +369,12 @@ const ICON_MOTION: Record<string, IconMotion> = {
     { transform: 'translateY(0) rotate(360deg) scale(1.1,0.9)', offset: 0.8 },
     { transform: 'translateY(0) rotate(360deg) scale(1)' },
   ] },
+  events: { duration: 1000, easing: 'ease-out', puff: '🎉', frames: [
+    { transform: 'rotate(0) scale(1)' },
+    { transform: 'rotate(-18deg) scale(1.2) translateY(-6px)', offset: 0.3 },
+    { transform: 'rotate(10deg) scale(1.1)', offset: 0.6 },
+    { transform: 'rotate(0) scale(1)' },
+  ] },
   career: { duration: 800, easing: 'ease-in-out', frames: [
     { transform: 'rotate(0) scale(1)' },
     { transform: 'rotate(-12deg) scale(1.15)', offset: 0.2 },
@@ -1129,6 +1135,7 @@ export default function Home() {
     { id: 'tourism', icon: '🎒', label: 'Tourism', sub: 'Tours & trips' },
     { id: 'study', icon: '🎓', label: 'Study', sub: 'Study abroad' },
     { id: 'career', icon: '💼', label: 'Jobs', sub: 'Find work' },
+    { id: 'events', icon: '🎟️', label: 'Events', sub: 'Concerts & shows' },
     { id: 'shipping', icon: '📦', label: 'Shipping', sub: 'Send parcels' },
   ];
 
@@ -1719,7 +1726,7 @@ export default function Home() {
             role="tablist"
             aria-label="Services"
             onKeyDown={onTabKeyDown}
-            className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 2xl:grid-cols-11 gap-2 sm:gap-3 border-b border-gray-100 p-3 sm:p-5"
+            className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 2xl:grid-cols-12 gap-2 sm:gap-3 border-b border-gray-100 p-3 sm:p-5"
           >
             {tabs.map((tab, i) => {
               const isActive = activeTab === tab.id;
@@ -2288,6 +2295,15 @@ export default function Home() {
                 <p className="text-4xl mb-3">🎓</p>
                 <h3 className="text-lg font-bold text-gray-900">Study is coming soon</h3>
                 <p className="text-sm text-gray-600 mt-1">Find courses, schools and study-abroad programs right here on Lyrtrip.</p>
+              </div>
+            )}
+
+            {/* Events */}
+            {activeTab === 'events' && (
+              <div className="py-10 text-center">
+                <p className="text-4xl mb-3">🎟️</p>
+                <h3 className="text-lg font-bold text-gray-900">Events are coming soon</h3>
+                <p className="text-sm text-gray-600 mt-1">Find concerts, festivals, sports and shows wherever your trip takes you.</p>
               </div>
             )}
 
