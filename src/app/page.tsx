@@ -1416,7 +1416,7 @@ export default function Home() {
 
   return (
     <div className="flex-1 bg-linear-to-br from-brand-50 to-white">
-      <main className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
+      <main className="mx-auto max-w-screen-2xl min-h-[calc(100vh-8rem)] px-4 py-24 sm:px-6 sm:py-28 lg:px-10">
 
         {/* Hero */}
         <div className="text-center mb-16">
