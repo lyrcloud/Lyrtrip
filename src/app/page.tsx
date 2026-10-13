@@ -1166,10 +1166,39 @@ export default function Home() {
     </div>
   );
 
+  // Shown instead of placeholder results when no provider returned live data
+  const NoLiveResults = ({ service, icon, title, hint, retry = true }: { service: string; icon: string; title: string; hint: string; retry?: boolean }) => (
+    <div role="status" className="mt-6 flex flex-col items-center rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-6 py-10 text-center animate-[panelIn_250ms_ease-out]">
+      <span aria-hidden className="mb-3 text-4xl">{icon}</span>
+      <h3 className="text-lg font-bold text-gray-900">{title}</h3>
+      <p className="mt-1 max-w-md text-sm text-gray-600">{hint}</p>
+      {retry && <button
+        type="button"
+        onClick={() => handleSearch(service)}
+        className="mt-5 rounded-xl bg-btn px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-btn-hover focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200"
+      >
+        Search again
+      </button>}
+    </div>
+  );
+
   const HotelList = () => {
     if (!hasSearched) return null;
     if (loading) return <p className="text-gray-500 mt-6">Searching hotels...</p>;
-    if (results.length === 0) return <p className="text-gray-600 mt-6">No results found. Try different search criteria.</p>;
+    if (results.length === 0 || results.every(r => r.demo)) {
+      const place = formData.destination.trim() || formData.destinationLocation?.address || '';
+      return (
+        <NoLiveResults
+          service="hotels"
+          icon="🏨"
+          title={place ? `No hotels available in ${place} right now` : 'Choose a destination to see hotels'}
+          hint={place
+            ? 'We couldn\'t get live prices for this search. Try a nearby city, different dates, or search again in a moment.'
+            : 'Start typing a city, area or landmark, pick one of the suggestions, then search.'}
+          retry={!!place}
+        />
+      );
+    }
     return (
       <div className="mt-6 space-y-4">
         {results.map(result => (
@@ -1238,7 +1267,15 @@ export default function Home() {
   const FlightList = () => {
     if (!hasSearched) return null;
     if (loading) return <p className="text-gray-500 mt-6">Searching flights...</p>;
-    if (results.length === 0) return <p className="text-gray-600 mt-6">{flightSearchError ? `${flightSearchError}. Pick a city or airport from the suggestions.` : 'No flights found. Try different airports or dates.'}</p>;
+    if (results.length === 0 && flightSearchError) return <p className="text-gray-600 mt-6">{flightSearchError}. Pick a city or airport from the suggestions.</p>;
+    if (results.length === 0 || results.every(r => r.demo)) return (
+      <NoLiveResults
+        service="flights"
+        icon="✈️"
+        title={formData.from && formData.to ? `No flights available from ${formData.from} to ${formData.to} right now` : 'No flights found'}
+        hint="We couldn't get live fares for this route and date. Try nearby airports, different dates, or search again in a moment."
+      />
+    );
     const best  = results.filter(r => r.isBest);
     const other = results.filter(r => !r.isBest);
     const FlightRow = ({ r }: { r: SearchResult }) => {
