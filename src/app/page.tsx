@@ -989,16 +989,16 @@ export default function Home() {
 
   const tabs = [
     { id: 'flights', icon: '✈️', label: 'Flights', sub: 'Fly anywhere' },
-    { id: 'shipping', icon: '📦', label: 'Shipping', sub: 'Send parcels' },
     { id: 'hotels', icon: '🏨', label: 'Hotels', sub: 'Places to stay' },
     { id: 'car', icon: '🚗', label: 'Car', sub: 'Book a ride' },
+    { id: 'dash', icon: '🍔', label: 'Dash', sub: 'Food & groceries' },
     { id: 'bus', icon: '🚌', label: 'Bus', sub: 'Intercity routes' },
     { id: 'train', icon: '🚂', label: 'Train', sub: 'Rail journeys' },
     { id: 'cruise', icon: '🚢', label: 'Cruise', sub: 'Sail away' },
-    { id: 'dash', icon: '🍔', label: 'Dash', sub: 'Food & groceries' },
     { id: 'tourism', icon: '🎒', label: 'Tourism', sub: 'Tours & trips' },
     { id: 'study', icon: '🎓', label: 'Study', sub: 'Study abroad' },
     { id: 'career', icon: '💼', label: 'Jobs', sub: 'Find work' },
+    { id: 'shipping', icon: '📦', label: 'Shipping', sub: 'Send parcels' },
   ];
 
   const inputClass = "w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border border-gray-200 rounded-xl shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-brand-300 hover:bg-white focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100";
