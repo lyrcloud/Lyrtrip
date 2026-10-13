@@ -9,7 +9,7 @@ const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
 export const metadata: Metadata = {
   title: "Lyrtrip",
-  description: "Music trip planning application",
+  description: "Get in Lyrtrip",
 };
 
 export default function RootLayout({
