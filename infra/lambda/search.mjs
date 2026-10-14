@@ -2008,16 +2008,18 @@ function eventStart(startDate, now = new Date()) {
 
 async function searchEventsSerpApi({ location, category, query, when, today }) {
   const what = [query, category].map(v => (v || '').trim()).filter(Boolean).join(' ') || 'events';
-  const params = new URLSearchParams({
-    engine:  'google_events',
-    q:       `${what} in ${location}${EVENT_WHEN[when] ? ` ${EVENT_WHEN[when]}` : ''}`,
-    hl:      'en',
-    api_key: process.env.SERPAPI_KEY,
-  });
-  // Fresh (uncached) event searches can take 20s+; stay under API Gateway's 29s limit
-  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(27_000) });
-  if (!res.ok) throw new Error(`SerpAPI events error (${res.status}): ${await res.text()}`);
-  const data = await res.json();
+  const fetchEvents = async q => {
+    const params = new URLSearchParams({ engine: 'google_events', q, hl: 'en', api_key: process.env.SERPAPI_KEY });
+    // Fresh (uncached) event searches can take 20s+; stay under API Gateway's 29s limit
+    const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(27_000) });
+    if (!res.ok) throw new Error(`SerpAPI events error (${res.status}): ${await res.text()}`);
+    return (await res.json()).events_results ?? [];
+  };
+  const base = `${what} in ${location}`;
+  let events = await fetchEvents(EVENT_WHEN[when] ? `${base} ${EVENT_WHEN[when]}` : base);
+  // Some date phrases return nothing at all; retry once without them (results are date-filtered below)
+  if (events.length === 0 && EVENT_WHEN[when]) events = await fetchEvents(base);
+  const data = { events_results: events };
   // The visitor's local date (YYYY-MM-DD) decides what "today" means; fall back to server time
   const now = /^\d{4}-\d{2}-\d{2}$/.test(today || '') ? new Date(`${today}T12:00:00Z`) : new Date();
   const range = eventWindow(when, now);
