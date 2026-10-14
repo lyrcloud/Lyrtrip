@@ -1,5 +1,6 @@
 import {
   CognitoIdentityProviderClient,
+  ConfirmForgotPasswordCommand,
   ConfirmSignUpCommand,
   ForgotPasswordCommand,
   GetUserCommand,
@@ -267,6 +268,26 @@ export async function resetPassword(email: string) {
       new ForgotPasswordCommand({
         ClientId: getConfig().clientId,
         Username: email,
+      })
+    );
+
+    return { error: null };
+  } catch (error) {
+    return { error: error as Error };
+  }
+}
+
+/**
+ * Finish a password reset with the code emailed by resetPassword.
+ */
+export async function confirmResetPassword(email: string, code: string, newPassword: string) {
+  try {
+    await getClient().send(
+      new ConfirmForgotPasswordCommand({
+        ClientId: getConfig().clientId,
+        Username: email,
+        ConfirmationCode: code,
+        Password: newPassword,
       })
     );
 

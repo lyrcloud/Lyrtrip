@@ -48,6 +48,11 @@ Resources:
       UserPoolName: lyrtrip-users
       AutoVerifiedAttributes:
         - email
+      # Also used for forgot-password codes, so the wording stays generic.
+      VerificationMessageTemplate:
+        DefaultEmailOption: CONFIRM_WITH_CODE
+        EmailSubject: Your Lyrtrip verification code
+        EmailMessage: "Your Lyrtrip verification code is {####}.<br><br>If you didn't request this code, you can ignore this email."
       UsernameAttributes:
         - email
       AccountRecoverySetting:

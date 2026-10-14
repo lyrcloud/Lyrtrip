@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  confirmResetPassword,
   confirmSignUp,
   resendConfirmationCode,
   resetPassword,
@@ -18,7 +19,13 @@ interface AuthFormProps {
   mode?: 'signin' | 'signup';
 }
 
-type Step = 'form' | 'confirm' | 'reset-sent';
+type Step = 'form' | 'confirm' | 'reset';
+
+const RESEND_COOLDOWN_SECONDS = 60;
+
+function errorName(err: unknown) {
+  return (err as { name?: string } | null)?.name;
+}
 
 export function AuthForm({ mode = 'signin' }: AuthFormProps) {
   const router = useRouter();
@@ -28,10 +35,18 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [resendIn, setResendIn] = useState(0);
   const [loading, setLoading] = useState(false);
   const [socialLoading, setSocialLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = window.setTimeout(() => setResendIn(seconds => seconds - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [resendIn]);
 
   const switchMode = (next: 'signin' | 'signup') => {
     setActiveMode(next);
@@ -39,6 +54,22 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     setError(null);
     setInfo(null);
     setPassword('');
+  };
+
+  const openStep = (next: 'confirm' | 'reset', message: string) => {
+    setCode('');
+    setNewPassword('');
+    setStep(next);
+    setInfo(message);
+    setResendIn(RESEND_COOLDOWN_SECONDS);
+  };
+
+  const cancelStep = () => {
+    setStep('form');
+    setCode('');
+    setNewPassword('');
+    setError(null);
+    setInfo(null);
   };
 
   const handleSocial = async (provider: 'google' | 'facebook' | 'wechat') => {
@@ -54,6 +85,14 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     }
   };
 
+  // Accounts that signed up but never entered their code get a fresh one
+  // and land back on the confirm step instead of a dead-end error.
+  const resumeConfirmation = async () => {
+    const { error } = await resendConfirmationCode(email);
+    if (error) throw error;
+    openStep('confirm', `This email isn't verified yet. We sent a new 6-digit code to ${email}.`);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -63,17 +102,30 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     try {
       if (activeMode === 'signup') {
         const { data, error } = await signUp(email, password, name || undefined);
+        if (errorName(error) === 'UsernameExistsException') {
+          // Cognito reports unconfirmed accounts as existing too; resending
+          // only succeeds for those, so a confirmed account keeps the error.
+          try {
+            await resumeConfirmation();
+            return;
+          } catch {
+            throw new Error('An account with this email already exists. Please sign in.');
+          }
+        }
         if (error) throw error;
 
         if (data.confirmed) {
           setInfo('Account created. You can sign in now.');
           switchMode('signin');
         } else {
-          setStep('confirm');
-          setInfo(`We sent a confirmation code to ${email}.`);
+          openStep('confirm', `We sent a 6-digit code to ${email}.`);
         }
       } else {
         const { error } = await signIn(email, password);
+        if (errorName(error) === 'UserNotConfirmedException') {
+          await resumeConfirmation();
+          return;
+        }
         if (error) throw error;
         router.push('/dashboard');
       }
@@ -91,11 +143,19 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     setInfo(null);
 
     try {
-      const { error } = await confirmSignUp(email, code);
+      const { error } = await confirmSignUp(email, code.trim());
       if (error) throw error;
-      setInfo('Email confirmed! You can sign in now.');
-      setCode('');
+
+      // Like Lyrshop, a verified account goes straight in. If the password
+      // in the form is stale (e.g. resumed from an old sign-up), fall back
+      // to the sign-in form.
+      const { error: signInError } = await signIn(email, password);
+      if (!signInError) {
+        router.push('/dashboard');
+        return;
+      }
       switchMode('signin');
+      setInfo('Email verified! You can sign in now.');
     } catch (err) {
       setError((err as Error).message || 'Could not confirm your account.');
     } finally {
@@ -106,9 +166,14 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
   const handleResend = async () => {
     setError(null);
     setInfo(null);
-    const { error } = await resendConfirmationCode(email);
-    if (error) setError(error.message);
-    else setInfo(`We sent a new code to ${email}.`);
+    const { error } =
+      step === 'reset' ? await resetPassword(email) : await resendConfirmationCode(email);
+    if (error) {
+      setError(error.message);
+    } else {
+      setInfo(`We sent a new code to ${email}.`);
+      setResendIn(RESEND_COOLDOWN_SECONDS);
+    }
   };
 
   const handleForgotPassword = async () => {
@@ -117,16 +182,49 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
       return;
     }
     setError(null);
+    setInfo(null);
     const { error } = await resetPassword(email);
     if (error) setError(error.message);
-    else setStep('reset-sent');
+    else openStep('reset', `We sent a 6-digit reset code to ${email}.`);
   };
 
-  if (step === 'confirm') {
+  const handleReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setInfo(null);
+
+    try {
+      const { error } = await confirmResetPassword(email, code.trim(), newPassword);
+      if (error) throw error;
+
+      const { error: signInError } = await signIn(email, newPassword);
+      if (!signInError) {
+        router.push('/dashboard');
+        return;
+      }
+      switchMode('signin');
+      setInfo('Password updated. You can sign in now.');
+    } catch (err) {
+      setError((err as Error).message || 'Could not reset your password.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (step === 'confirm' || step === 'reset') {
+    const isReset = step === 'reset';
+    const inputClass =
+      'w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500';
+
     return (
-      <form onSubmit={handleConfirm} className="space-y-4">
-        <h2 className="text-2xl font-bold text-gray-900">Confirm your email</h2>
-        <p className="text-sm text-gray-600">Enter the verification code we sent to {email}.</p>
+      <form onSubmit={isReset ? handleReset : handleConfirm} className="space-y-4">
+        <h2 className="text-2xl font-bold text-gray-900">
+          {isReset ? 'Reset your password' : 'Verify your email'}
+        </h2>
+        <p className="text-sm text-gray-600">
+          Enter the 6-digit code we sent to {email}. Check your spam folder if it doesn&apos;t arrive.
+        </p>
 
         <div>
           <label htmlFor="code" className="block text-sm font-medium mb-2 text-gray-700">
@@ -135,14 +233,41 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           <input
             id="code"
             inputMode="numeric"
+            autoComplete="one-time-code"
+            pattern="[0-9]{6}"
+            maxLength={6}
             value={code}
-            onChange={e => setCode(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
+            onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+            className={inputClass}
             placeholder="123456"
             required
+            autoFocus
             disabled={loading}
           />
         </div>
+
+        {isReset && (
+          <div>
+            <label htmlFor="new-password" className="block text-sm font-medium mb-2 text-gray-700">
+              New password
+            </label>
+            <input
+              id="new-password"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={e => setNewPassword(e.target.value)}
+              className={inputClass}
+              placeholder="••••••••"
+              required
+              minLength={8}
+              disabled={loading}
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              At least 8 characters with upper and lower case letters, a number and a symbol.
+            </p>
+          </div>
+        )}
 
         {error && <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded text-sm">{error}</div>}
         {info && <div className="p-3 bg-green-50 border border-green-200 text-green-700 rounded text-sm">{info}</div>}
@@ -152,35 +277,27 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           disabled={loading}
           className="w-full px-4 py-2.5 bg-btn text-white font-medium rounded-md hover:bg-btn-hover disabled:opacity-50 transition-colors"
         >
-          {loading ? 'Confirming…' : 'Confirm account'}
+          {loading ? 'Checking…' : isReset ? 'Reset password' : 'Verify and continue'}
         </button>
 
-        <button
-          type="button"
-          onClick={handleResend}
-          className="w-full text-sm text-brand-600 hover:text-brand-700 font-medium"
-        >
-          Resend code
-        </button>
+        <div className="flex items-center justify-between text-sm">
+          <button
+            type="button"
+            onClick={cancelStep}
+            className="text-gray-600 hover:text-gray-800 font-medium"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleResend}
+            disabled={resendIn > 0 || loading}
+            className="text-brand-600 hover:text-brand-700 font-medium disabled:text-gray-400 disabled:cursor-not-allowed"
+          >
+            {resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend code'}
+          </button>
+        </div>
       </form>
-    );
-  }
-
-  if (step === 'reset-sent') {
-    return (
-      <div className="space-y-4 text-center">
-        <h2 className="text-2xl font-bold text-gray-900">Check your email</h2>
-        <p className="text-sm text-gray-600">
-          We sent password reset instructions to {email}.
-        </p>
-        <button
-          type="button"
-          onClick={() => setStep('form')}
-          className="text-sm text-brand-600 hover:text-brand-700 font-medium"
-        >
-          Back to sign in
-        </button>
-      </div>
     );
   }
 
