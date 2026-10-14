@@ -472,6 +472,31 @@ const TOUR_OPTIONS: { id: string; icon: string; label: string; motion: IconMotio
 ];
 for (const o of TOUR_OPTIONS) ICON_MOTION[o.id] = o.motion;
 
+// Study options, shown as animated option tiles inside the Study tab
+const STUDY_OPTIONS: { id: string; icon: string; label: string; blurb: string; motion: IconMotion }[] = [
+  { id: 'study-academy', icon: '🏫', label: 'Academy', blurb: 'Browse schools, colleges and academies around the world.', motion: { duration: 900, easing: 'ease-out', frames: [
+    { transform: 'translateY(0) scale(1)' },
+    { transform: 'translateY(-10px) scale(1.15)', offset: 0.3 },
+    { transform: 'translateY(0) rotate(-5deg)', offset: 0.55 },
+    { transform: 'rotate(4deg)', offset: 0.75 },
+    { transform: 'rotate(0) scale(1)' },
+  ] } },
+  { id: 'study-admission', icon: '📬', label: 'Admission', blurb: 'Apply to programs and track your admission status in one place.', motion: { duration: 900, easing: 'ease-out', puff: '✉️', frames: [
+    { transform: 'translateY(0) scale(1)' },
+    { transform: 'translateY(-8px) scale(1.1,0.9)', offset: 0.25 },
+    { transform: 'translateY(0) scale(0.95,1.08)', offset: 0.5 },
+    { transform: 'translateY(0) scale(1)' },
+  ] } },
+  { id: 'study-scholarship', icon: '🏅', label: 'Scholarship', blurb: 'Find scholarships and funding that match your goals.', motion: { duration: 1100, easing: 'ease-in-out', puff: '✨', frames: [
+    { transform: 'rotate(0)', transformOrigin: '50% 0%' },
+    { transform: 'rotate(20deg) scale(1.1)', transformOrigin: '50% 0%', offset: 0.25 },
+    { transform: 'rotate(-14deg) scale(1.1)', transformOrigin: '50% 0%', offset: 0.5 },
+    { transform: 'rotate(6deg)', transformOrigin: '50% 0%', offset: 0.75 },
+    { transform: 'rotate(0)', transformOrigin: '50% 0%' },
+  ] } },
+];
+for (const o of STUDY_OPTIONS) ICON_MOTION[o.id] = o.motion;
+
 export default function Home() {
   const { user } = useAuth();
   const router = useRouter();
@@ -762,6 +787,49 @@ export default function Home() {
       }
     }
   }, []);
+
+  // Sub-option tiles (Tourism categories, Study options): animated icon + label, one selectable
+  const [studyChoice, setStudyChoice] = useState('');
+  const optionTiles = (
+    options: { id: string; icon: string; label: string }[],
+    selectedLabel: string,
+    onPick: (label: string) => void,
+    ariaLabel: string,
+    gridClass: string,
+  ) => (
+    <div role="radiogroup" aria-label={ariaLabel} className={`grid gap-2 sm:gap-3 mb-6 ${gridClass}`}>
+      {options.map((o, i) => {
+        const selected = selectedLabel === o.label;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            onClick={() => { onPick(o.label); playIcon(o.id, true); }}
+            onMouseEnter={() => playIcon(o.id)}
+            style={{ animationDelay: `${i * 35}ms` }}
+            className={`group relative overflow-hidden flex flex-col items-center gap-2 rounded-xl px-2 py-3 sm:py-4 text-center transition-all duration-300 ease-out animate-[tileIn_400ms_ease-out_backwards] focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200 ${
+              selected
+                ? 'bg-brand-50 text-brand-700 ring-2 ring-brand-500 shadow-md'
+                : 'bg-gray-50 text-gray-700 ring-1 ring-gray-200 hover:bg-white hover:ring-brand-300 hover:text-brand-700 hover:shadow-md hover:-translate-y-1'
+            }`}
+          >
+            <span className={`relative flex h-12 w-12 items-center justify-center rounded-xl transition-colors duration-300 ${selected ? 'bg-white' : 'bg-white group-hover:bg-brand-50'}`}>
+              <span
+                aria-hidden
+                ref={el => { iconRefs.current[o.id] = el; }}
+                className="inline-block text-3xl leading-none will-change-transform"
+              >
+                {o.icon}
+              </span>
+            </span>
+            <span className="text-xs sm:text-sm font-semibold leading-tight">{o.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 
   const onTabKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
@@ -2275,38 +2343,7 @@ export default function Home() {
             {/* Tourism */}
             {activeTab === 'tourism' && (
               <div>
-                <div role="radiogroup" aria-label="Tour category" className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7 gap-2 sm:gap-3 mb-6">
-                  {TOUR_OPTIONS.map((o, i) => {
-                    const selected = formData.activityType === o.label;
-                    return (
-                      <button
-                        key={o.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        onClick={() => { setFormData(prev => ({ ...prev, activityType: o.label })); playIcon(o.id, true); }}
-                        onMouseEnter={() => playIcon(o.id)}
-                        style={{ animationDelay: `${i * 35}ms` }}
-                        className={`group relative overflow-hidden flex flex-col items-center gap-2 rounded-xl px-2 py-3 sm:py-4 text-center transition-all duration-300 ease-out animate-[tileIn_400ms_ease-out_backwards] focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200 ${
-                          selected
-                            ? 'bg-brand-50 text-brand-700 ring-2 ring-brand-500 shadow-md'
-                            : 'bg-gray-50 text-gray-700 ring-1 ring-gray-200 hover:bg-white hover:ring-brand-300 hover:text-brand-700 hover:shadow-md hover:-translate-y-1'
-                        }`}
-                      >
-                        <span className={`relative flex h-12 w-12 items-center justify-center rounded-xl transition-colors duration-300 ${selected ? 'bg-white' : 'bg-white group-hover:bg-brand-50'}`}>
-                          <span
-                            aria-hidden
-                            ref={el => { iconRefs.current[o.id] = el; }}
-                            className="inline-block text-3xl leading-none will-change-transform"
-                          >
-                            {o.icon}
-                          </span>
-                        </span>
-                        <span className="text-xs sm:text-sm font-semibold leading-tight">{o.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                {optionTiles(TOUR_OPTIONS, formData.activityType, label => setFormData(prev => ({ ...prev, activityType: label })), 'Tour category', 'grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7')}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Destination</label>
@@ -2327,13 +2364,21 @@ export default function Home() {
             )}
 
             {/* Study */}
-            {activeTab === 'study' && (
-              <div className="py-10 text-center">
-                <p className="text-4xl mb-3">🎓</p>
-                <h3 className="text-lg font-bold text-gray-900">Study is coming soon</h3>
-                <p className="text-sm text-gray-600 mt-1">Find courses, schools and study-abroad programs right here on Lyrtrip.</p>
-              </div>
-            )}
+            {activeTab === 'study' && (() => {
+              const choice = STUDY_OPTIONS.find(o => o.label === studyChoice);
+              return (
+                <div>
+                  <div className="mx-auto max-w-2xl">
+                    {optionTiles(STUDY_OPTIONS, studyChoice, setStudyChoice, 'Study option', 'grid-cols-3')}
+                  </div>
+                  <div key={choice?.id ?? 'study'} className="py-6 text-center animate-[panelIn_250ms_ease-out]">
+                    <p className="text-4xl mb-3" aria-hidden>{choice?.icon ?? '🎓'}</p>
+                    <h3 className="text-lg font-bold text-gray-900">{choice ? `${choice.label} is coming soon` : 'Study is coming soon'}</h3>
+                    <p className="text-sm text-gray-600 mt-1">{choice?.blurb ?? 'Find courses, schools and study-abroad programs right here on Lyrtrip.'}</p>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Events */}
             {activeTab === 'events' && (
