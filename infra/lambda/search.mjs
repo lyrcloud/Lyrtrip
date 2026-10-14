@@ -1935,8 +1935,8 @@ async function searchMapsPlaces(q, label) {
   }));
 }
 
-// Government, embassy and official e-visa sites
-const OFFICIAL_HOST = /(^|\.)gov(\.[a-z]{2})?$|\.gov\.|(^|\.)gouv\.|(^|\.)gob\.|(^|\.)govt\.|(^|\.)gc\.ca$|(^|\.)europa\.eu$|embassy|consulate|immigration|evisa|homeaffairs|state\.gov|vfsglobal|tlscontact/i;
+// Government domains only: names like "embassy" or "evisa" are also used by private agencies
+const OFFICIAL_HOST = /(^|\.)(gov|go|gob|gouv|govt|gv|gc|mfa|mofa)\.[a-z]{2,3}$|(^|\.)gov$|\.(gov|go|gob|gouv|govt)\.[a-z]{2}$|(^|\.)(canada\.ca|europa\.eu|diplo\.de|admin\.ch|state\.gov|usa\.gov)$/i;
 
 async function searchWebLinks(q, label, { preferOfficial = false } = {}) {
   const params = new URLSearchParams({ engine: 'google', q, hl: 'en', num: '10', api_key: process.env.SERPAPI_KEY });
