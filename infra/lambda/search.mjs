@@ -1975,21 +1975,55 @@ async function searchStudySerpApi({ category, level, query, location }) {
 }
 
 // Events: Google Events via SerpAPI (concerts, festivals, sports, shows...)
-const EVENT_WHEN = { today: 'date:today', tomorrow: 'date:tomorrow', weekend: 'date:weekend', week: 'date:week', next_week: 'date:next_week', month: 'date:month', next_month: 'date:next_month' };
+// Google ignores the htichips date filter for this engine, so the range goes into the query text
+// and results are also filtered here by their start date.
+const EVENT_WHEN = { today: 'today', tomorrow: 'tomorrow', weekend: 'this weekend', week: 'this week', next_week: 'next week', month: 'this month', next_month: 'next month' };
+
+function eventWindow(when, now = new Date()) {
+  const day = d => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const add = (d, n) => new Date(d.getTime() + n * 86_400_000);
+  const today = day(now);
+  const dow = today.getUTCDay(); // 0 = Sunday
+  switch (when) {
+    case 'today':      return [today, today];
+    case 'tomorrow':   return [add(today, 1), add(today, 1)];
+    case 'weekend':    return dow === 0 ? [today, today] : [add(today, Math.max(0, 6 - dow)), add(today, 7 - dow)];
+    case 'week':       return [today, add(today, dow === 0 ? 0 : 7 - dow)];
+    case 'next_week':  { const mon = add(today, dow === 0 ? 1 : 8 - dow); return [mon, add(mon, 6)]; }
+    case 'month':      return [today, new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0))];
+    case 'next_month': return [new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1)), new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 2, 0))];
+    default:           return null;
+  }
+}
+
+// "Oct 19" (no year) -> the next such date on or after yesterday
+function eventStart(startDate, now = new Date()) {
+  if (!startDate) return null;
+  const year = now.getUTCFullYear();
+  let d = new Date(`${startDate} ${year} UTC`);
+  if (Number.isNaN(d.getTime())) return null;
+  if (d.getTime() < now.getTime() - 2 * 86_400_000) d = new Date(`${startDate} ${year + 1} UTC`);
+  return d;
+}
 
 async function searchEventsSerpApi({ location, category, query, when }) {
   const what = [query, category].map(v => (v || '').trim()).filter(Boolean).join(' ') || 'events';
   const params = new URLSearchParams({
     engine:  'google_events',
-    q:       `${what} in ${location}`,
+    q:       `${what} in ${location}${EVENT_WHEN[when] ? ` ${EVENT_WHEN[when]}` : ''}`,
     hl:      'en',
     api_key: process.env.SERPAPI_KEY,
   });
-  if (EVENT_WHEN[when]) params.set('htichips', EVENT_WHEN[when]);
   const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
   if (!res.ok) throw new Error(`SerpAPI events error (${res.status}): ${await res.text()}`);
   const data = await res.json();
-  return (data.events_results ?? []).map((e, i) => {
+  const range = eventWindow(when);
+  const inRange = e => {
+    if (!range) return true;
+    const start = eventStart(e.date?.start_date);
+    return start ? start >= range[0] && start <= range[1] : false;
+  };
+  return (data.events_results ?? []).filter(inRange).map((e, i) => {
     const tickets = (e.ticket_info ?? []).filter(t => t.link);
     const ticket  = tickets.find(t => t.link_type === 'tickets') ?? null;
     return {
