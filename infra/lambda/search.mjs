@@ -2014,7 +2014,8 @@ async function searchEventsSerpApi({ location, category, query, when }) {
     hl:      'en',
     api_key: process.env.SERPAPI_KEY,
   });
-  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
+  // Fresh (uncached) event searches can take 20s+; stay under API Gateway's 29s limit
+  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(27_000) });
   if (!res.ok) throw new Error(`SerpAPI events error (${res.status}): ${await res.text()}`);
   const data = await res.json();
   const range = eventWindow(when);
