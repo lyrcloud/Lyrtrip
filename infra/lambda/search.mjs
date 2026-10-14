@@ -2006,7 +2006,7 @@ function eventStart(startDate, now = new Date()) {
   return d;
 }
 
-async function searchEventsSerpApi({ location, category, query, when }) {
+async function searchEventsSerpApi({ location, category, query, when, today }) {
   const what = [query, category].map(v => (v || '').trim()).filter(Boolean).join(' ') || 'events';
   const params = new URLSearchParams({
     engine:  'google_events',
@@ -2018,13 +2018,19 @@ async function searchEventsSerpApi({ location, category, query, when }) {
   const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(27_000) });
   if (!res.ok) throw new Error(`SerpAPI events error (${res.status}): ${await res.text()}`);
   const data = await res.json();
-  const range = eventWindow(when);
+  // The visitor's local date (YYYY-MM-DD) decides what "today" means; fall back to server time
+  const now = /^\d{4}-\d{2}-\d{2}$/.test(today || '') ? new Date(`${today}T12:00:00Z`) : new Date();
+  const range = eventWindow(when, now);
   const inRange = e => {
     if (!range) return true;
-    const start = eventStart(e.date?.start_date);
+    const start = eventStart(e.date?.start_date, now);
     return start ? start >= range[0] && start <= range[1] : false;
   };
-  return (data.events_results ?? []).filter(inRange).map((e, i) => {
+  const all = data.events_results ?? [];
+  const matching = all.filter(inRange);
+  // Nothing in the chosen dates: show what's coming up instead, and say so
+  const outOfRange = matching.length === 0 && all.length > 0;
+  return { outOfRange, results: (outOfRange ? all : matching).map((e, i) => {
     const tickets = (e.ticket_info ?? []).filter(t => t.link);
     const ticket  = tickets.find(t => t.link_type === 'tickets') ?? null;
     return {
@@ -2044,7 +2050,7 @@ async function searchEventsSerpApi({ location, category, query, when }) {
       mapsLink:    e.event_location_map?.link ?? null,
       price:       null,
     };
-  });
+  }) };
 }
 
 async function handleClassroomAssign(event) {
@@ -2177,12 +2183,13 @@ async function handleSearch(event) {
 
     // --- Events: SerpAPI Google Events (no placeholder data) ---
     if (service === 'events') {
-      const { location, category, query, when } = body;
+      const { location, category, query, when, today } = body;
       if (!location || !String(location).trim()) return json(400, { error: 'Location is required' });
       if (!process.env.SERPAPI_KEY) return json(200, { success: true, service, results: [], total: 0, error: 'Event search is not available right now' });
       try {
-        const results = await searchEventsSerpApi({ location: String(location).trim(), category, query, when });
-        return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
+        const { results, outOfRange } = await searchEventsSerpApi({ location: String(location).trim(), category, query, when, today });
+        const notice = outOfRange ? 'No events found for those dates. Showing upcoming events instead.' : null;
+        return json(200, { success: true, service, results, total: results.length, notice, source: 'serpapi' });
       } catch (serpErr) {
         console.error('SerpAPI events search error:', serpErr.message);
         return json(200, { success: true, service, results: [], total: 0, error: 'Event search is temporarily unavailable' });

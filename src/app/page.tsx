@@ -948,6 +948,7 @@ export default function Home() {
 
   const [eventForm, setEventForm] = useState({ category: '', query: '', location: '', when: '' });
   const [eventError, setEventError] = useState<string | null>(null);
+  const [eventNotice, setEventNotice] = useState<string | null>(null);
 
   const searchEventsViaApi = async (): Promise<SearchResult[]> => {
     const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
@@ -960,11 +961,13 @@ export default function Home() {
         category: eventForm.category || null,
         query:    eventForm.query.trim() || null,
         when:     eventForm.when || null,
+        today:    todayIso,
       }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Event search failed');
     setEventError(data.error ?? null);
+    setEventNotice(data.notice ?? null);
     return (data.results ?? []) as SearchResult[];
   };
 
@@ -1520,7 +1523,11 @@ export default function Home() {
       />
     );
     return (
-      <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <>
+      {eventNotice && (
+        <p role="status" className="mt-6 rounded-xl bg-amber-50 px-4 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">{eventNotice}</p>
+      )}
+      <div className={`${eventNotice ? 'mt-4' : 'mt-6'} grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4`}>
         {results.map(r => (
           <div key={r.id} className="flex flex-col bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg hover:-translate-y-0.5 transition-all animate-[panelIn_250ms_ease-out]">
             {/* Placeholder sits under the photo, so a missing, slow or broken image still shows something */}
@@ -1563,6 +1570,7 @@ export default function Home() {
           </div>
         ))}
       </div>
+      </>
     );
   };
 
