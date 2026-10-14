@@ -1912,6 +1912,58 @@ async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
   }));
 }
 
+// Shared SerpAPI helpers: places from Google Maps, links from Google web results
+async function searchMapsPlaces(q, label) {
+  const params = new URLSearchParams({ engine: 'google_maps', type: 'search', q, hl: 'en', api_key: process.env.SERPAPI_KEY });
+  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`SerpAPI ${label} (maps) error (${res.status}): ${await res.text()}`);
+  const data = await res.json();
+  return (data.local_results ?? []).map((p, i) => ({
+    id:          p.place_id ?? String(i),
+    kind:        'place',
+    name:        p.title,
+    placeType:   p.type ?? null,
+    address:     p.address ?? null,
+    rating:      p.rating ?? null,
+    reviewCount: p.reviews ?? null,
+    website:     p.website ?? null,
+    phone:       p.phone ?? null,
+    openState:   p.open_state ?? null,
+    imageUrl:    p.thumbnail ?? null,
+    mapsLink:    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${p.title} ${p.address ?? ''}`.trim())}${p.place_id ? `&query_place_id=${p.place_id}` : ''}`,
+    price:       null,
+  }));
+}
+
+// Government, embassy and official e-visa sites
+const OFFICIAL_HOST = /(^|\.)gov(\.[a-z]{2})?$|\.gov\.|(^|\.)gouv\.|(^|\.)gob\.|(^|\.)govt\.|(^|\.)gc\.ca$|(^|\.)europa\.eu$|embassy|consulate|immigration|evisa|homeaffairs|state\.gov|vfsglobal|tlscontact/i;
+
+async function searchWebLinks(q, label, { preferOfficial = false } = {}) {
+  const params = new URLSearchParams({ engine: 'google', q, hl: 'en', num: '10', api_key: process.env.SERPAPI_KEY });
+  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`SerpAPI ${label} (web) error (${res.status}): ${await res.text()}`);
+  const data = await res.json();
+  const links = (data.organic_results ?? []).map((r, i) => {
+    let host = null;
+    try { host = new URL(r.link).hostname.replace(/^www\./, ''); } catch { /* keep null */ }
+    return {
+      id:          String(r.position ?? i),
+      kind:        'link',
+      name:        r.title,
+      description: r.snippet ?? '',
+      link:        r.link,
+      source:      r.source ?? host,
+      favicon:     r.favicon ?? null,
+      postedAt:    r.date ?? null,
+      official:    !!host && OFFICIAL_HOST.test(host),
+      rating:      null,
+      price:       null,
+    };
+  });
+  // Stable sort: official sources first, otherwise Google's order
+  return preferOfficial ? [...links.filter(l => l.official), ...links.filter(l => !l.official)] : links;
+}
+
 // Study: schools/colleges/universities from Google Maps; admission and scholarship info from Google web results
 const STUDY_LEVELS = { school: 'schools', college: 'colleges', institute: 'institutes', university: 'universities' };
 
@@ -1920,58 +1972,78 @@ async function searchStudySerpApi({ category, level, query, location }) {
   const where = location ? ` in ${location}` : '';
   const year  = new Date().getFullYear();
   const keywords = (query || '').trim();
-
-  if (category === 'academy') {
-    const params = new URLSearchParams({
-      engine:  'google_maps',
-      type:    'search',
-      q:       `${keywords ? `${keywords} ` : ''}${kind}${where}`,
-      hl:      'en',
-      api_key: process.env.SERPAPI_KEY,
-    });
-    const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) throw new Error(`SerpAPI study (maps) error (${res.status}): ${await res.text()}`);
-    const data = await res.json();
-    return (data.local_results ?? []).map((p, i) => ({
-      id:          p.place_id ?? String(i),
-      kind:        'place',
-      name:        p.title,
-      placeType:   p.type ?? null,
-      address:     p.address ?? null,
-      rating:      p.rating ?? null,
-      reviewCount: p.reviews ?? null,
-      website:     p.website ?? null,
-      phone:       p.phone ?? null,
-      openState:   p.open_state ?? null,
-      imageUrl:    p.thumbnail ?? null,
-      mapsLink:    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${p.title} ${p.address ?? ''}`.trim())}${p.place_id ? `&query_place_id=${p.place_id}` : ''}`,
-      price:       null,
-    }));
-  }
-
+  if (category === 'academy') return searchMapsPlaces(`${keywords ? `${keywords} ` : ''}${kind}${where}`, 'study');
   const topic = category === 'admission' ? `admission ${year}` : `scholarships ${year}`;
-  const params = new URLSearchParams({
-    engine:  'google',
-    q:       `${keywords || kind} ${topic}${where}`,
-    hl:      'en',
-    num:     '10',
-    api_key: process.env.SERPAPI_KEY,
-  });
-  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
-  if (!res.ok) throw new Error(`SerpAPI study (web) error (${res.status}): ${await res.text()}`);
-  const data = await res.json();
-  return (data.organic_results ?? []).map((r, i) => ({
-    id:          String(r.position ?? i),
-    kind:        'link',
-    name:        r.title,
-    description: r.snippet ?? '',
-    link:        r.link,
-    source:      r.source ?? (() => { try { return new URL(r.link).hostname.replace(/^www\./, ''); } catch { return null; } })(),
-    favicon:     r.favicon ?? null,
-    postedAt:    r.date ?? null,
-    rating:      null,
-    price:       null,
-  }));
+  return searchWebLinks(`${keywords || kind} ${topic}${where}`, 'study');
+}
+
+// Visa requirement between any two countries, from the open Passport Index dataset (cached per Lambda container)
+const VISA_DATA_URL = 'https://raw.githubusercontent.com/ilyankou/passport-index-dataset/master/passport-index-tidy-iso2.csv';
+let visaTable = null;
+let visaLoadedAt = 0;
+
+async function loadVisaTable() {
+  if (visaTable && Date.now() - visaLoadedAt < 12 * 3600_000) return visaTable;
+  const res = await fetch(VISA_DATA_URL, { signal: AbortSignal.timeout(10_000) });
+  if (!res.ok) throw new Error(`Visa dataset error (${res.status})`);
+  const table = new Map();
+  for (const line of (await res.text()).split('\n').slice(1)) {
+    const [passport, destination, requirement] = line.trim().split(',');
+    if (passport && destination && requirement) table.set(`${passport}-${destination}`, requirement);
+  }
+  visaTable = table;
+  visaLoadedAt = Date.now();
+  return table;
+}
+
+function describeVisa(requirement) {
+  if (requirement == null) return null;
+  if (/^\d+$/.test(requirement)) return { status: 'visa-free', days: Number(requirement), label: `Visa-free for up to ${requirement} days` };
+  return ({
+    'visa free':       { status: 'visa-free',    days: null, label: 'Visa-free' },
+    'visa on arrival': { status: 'on-arrival',   days: null, label: 'Visa on arrival' },
+    'e-visa':          { status: 'e-visa',       days: null, label: 'eVisa: apply online before you travel' },
+    'eta':             { status: 'eta',          days: null, label: 'Electronic travel authorisation (ETA) needed before you travel' },
+    'visa required':   { status: 'required',     days: null, label: 'Visa required before you travel' },
+    'no admission':    { status: 'no-admission', days: null, label: 'Entry not currently permitted' },
+    '-1':              { status: 'domestic',     days: null, label: 'Same country: no visa needed' },
+  })[requirement] ?? { status: 'unknown', days: null, label: requirement };
+}
+
+const countryName = code => {
+  try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(code) ?? code; } catch { return code; }
+};
+
+// Tourism categories (tile id without the "tour-" prefix) -> search query for a destination
+const TOUR_QUERIES = {
+  pack:        d => `tour packages ${d}`,
+  family:      d => `family holiday packages ${d}`,
+  vacation:    d => `vacation packages ${d}`,
+  regional:    d => `regional tours around ${d}`,
+  educational: d => `educational tours ${d}`,
+  religious:   d => `religious pilgrimage tours ${d}`,
+  govt:        d => `official government tourism board tours ${d}`,
+  adventure:   d => `adventure tours ${d}`,
+  honeymoon:   d => `honeymoon packages ${d}`,
+};
+
+async function searchTourism({ category, from, to, destination, purpose }) {
+  const place = (destination || '').trim();
+  const fromName = from ? countryName(from) : '';
+  const toName   = to ? countryName(to) : '';
+
+  if (category === 'visa') {
+    const table = await loadVisaTable();
+    const visa = { from, to, fromName, toName, ...describeVisa(table.get(`${from}-${to}`)) };
+    if (from === to) return { visa, results: [] };
+    const results = await searchWebLinks(`${toName} ${purpose || 'tourist'} visa types requirements fees for ${fromName} citizens`, 'visa', { preferOfficial: true });
+    return { visa, results };
+  }
+  if (category === 'passport') return { results: await searchWebLinks(`${fromName} passport application renewal requirements fees official`, 'passport', { preferOfficial: true }) };
+  if (category === 'id')       return { results: await searchWebLinks(`${fromName} national ID card application requirements fees official`, 'id', { preferOfficial: true }) };
+  if (category === 'insurance') return { results: await searchWebLinks(`travel insurance for a trip to ${place}${fromName ? ` from ${fromName}` : ''}`, 'insurance') };
+  if (category === 'destination') return { results: await searchMapsPlaces(`top tourist attractions in ${place}`, 'destinations') };
+  return { results: await searchWebLinks(TOUR_QUERIES[category](place), 'tours') };
 }
 
 // Events: Google Events via SerpAPI (concerts, festivals, sports, shows...)
@@ -2195,6 +2267,24 @@ async function handleSearch(event) {
       } catch (serpErr) {
         console.error('SerpAPI events search error:', serpErr.message);
         return json(200, { success: true, service, results: [], total: 0, error: 'Event search is temporarily unavailable' });
+      }
+    }
+
+    // --- Tourism: visa requirements (Passport Index) + SerpAPI for everything else (no placeholder data) ---
+    if (service === 'tourism') {
+      const { category, from, to, destination, purpose } = body;
+      const iso = v => typeof v === 'string' && /^[A-Z]{2}$/.test(v);
+      if (!['visa', 'passport', 'id', 'insurance', 'destination', ...Object.keys(TOUR_QUERIES)].includes(category)) return json(400, { error: 'Unknown tourism category' });
+      if (category === 'visa' && !(iso(from) && iso(to))) return json(400, { error: 'Choose your passport country and destination country' });
+      if ((category === 'passport' || category === 'id') && !iso(from)) return json(400, { error: 'Choose your country' });
+      if (!['visa', 'passport', 'id'].includes(category) && !(destination || '').trim()) return json(400, { error: 'Enter a destination' });
+      if (!process.env.SERPAPI_KEY && category !== 'visa') return json(200, { success: true, service, results: [], total: 0, error: 'Search is not available right now' });
+      try {
+        const { visa = null, results } = await searchTourism({ category, from, to, destination, purpose });
+        return json(200, { success: true, service, visa, results, total: results.length, source: 'serpapi' });
+      } catch (err) {
+        console.error('Tourism search error:', err.message);
+        return json(200, { success: true, service, results: [], total: 0, error: 'Search is temporarily unavailable' });
       }
     }
 

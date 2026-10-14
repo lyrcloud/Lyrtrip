@@ -113,6 +113,8 @@ interface SearchResult {
   testBooking?: boolean;
   totalPrice?: number;
   basePrice?: number;
+  // tourism: link from a government / embassy / official e-visa site
+  official?: boolean;
   // events
   when?: string | null;
   startDate?: string | null;
@@ -487,6 +489,14 @@ const TOUR_OPTIONS: { id: string; icon: string; label: string; motion: IconMotio
   ] } },
 ];
 for (const o of TOUR_OPTIONS) ICON_MOTION[o.id] = o.motion;
+
+// Countries covered by the visa-requirement data (ISO 3166 alpha-2), sorted by English name
+const COUNTRY_CODES = 'AD AE AF AG AL AM AO AR AT AU AZ BA BB BD BE BF BG BH BI BJ BN BO BR BS BT BW BY BZ CA CD CF CG CH CI CL CM CN CO CR CU CV CY CZ DE DJ DK DM DO DZ EC EE EG ER ES ET FI FJ FM FR GA GB GD GE GH GM GN GQ GR GT GW GY HK HN HR HT HU ID IE IL IN IQ IR IS IT JM JO JP KE KG KH KI KM KN KP KR KW KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MG MH MK ML MM MN MO MR MT MU MV MW MX MY MZ NA NE NG NI NL NO NP NR NZ OM PA PE PG PH PK PL PS PT PW PY QA RO RS RU RW SA SB SC SD SE SG SI SK SL SM SN SO SR SS ST SV SY SZ TD TG TH TJ TL TM TN TO TR TT TV TW TZ UA UG US UY UZ VA VC VE VN VU WS XK YE ZA ZM ZW'.split(' ');
+const COUNTRIES = (() => {
+  let names: Intl.DisplayNames | null = null;
+  try { names = new Intl.DisplayNames(['en'], { type: 'region' }); } catch { /* very old browser: show codes */ }
+  return COUNTRY_CODES.map(code => ({ code, name: names?.of(code) ?? code })).sort((a, b) => a.name.localeCompare(b.name));
+})();
 
 // Study options, shown as animated option tiles inside the Study tab
 const STUDY_OPTIONS: { id: string; icon: string; label: string; blurb: string; motion: IconMotion }[] = [
@@ -946,6 +956,44 @@ export default function Home() {
   };
 
 
+  type VisaInfo = { from: string; to: string; fromName: string; toName: string; status: string; days: number | null; label: string };
+  const [tourForm, setTourForm] = useState({ from: '', to: '', purpose: 'tourist', destination: '' });
+  const [tourVisa, setTourVisa] = useState<VisaInfo | null>(null);
+  const [tourError, setTourError] = useState<string | null>(null);
+  const tourChoice = TOUR_OPTIONS.find(o => o.label === formData.activityType) ?? TOUR_OPTIONS.find(o => o.id === 'tour-destination')!;
+  const tourSlug = tourChoice.id.replace('tour-', '');
+  const pickTour = (label: string) => {
+    setFormData(prev => ({ ...prev, activityType: label }));
+    setResults([]);
+    setHasSearched(false);
+    setTourVisa(null);
+    setTourError(null);
+  };
+  const tourReady = tourSlug === 'visa' ? !!(tourForm.from && tourForm.to)
+    : tourSlug === 'passport' || tourSlug === 'id' ? !!tourForm.from
+    : !!tourForm.destination.trim();
+
+  const searchTourismViaApi = async (): Promise<SearchResult[]> => {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service:     'tourism',
+        category:    tourSlug,
+        from:        tourForm.from || null,
+        to:          tourForm.to || null,
+        purpose:     tourForm.purpose,
+        destination: tourForm.destination.trim() || null,
+      }),
+    });
+    const data = await res.json();
+    setTourVisa(data.visa ?? null);
+    setTourError(data.error ?? null);
+    if (!res.ok) return [];
+    return (data.results ?? []) as SearchResult[];
+  };
+
   const [eventForm, setEventForm] = useState({ category: '', query: '', location: '', when: '' });
   const [eventError, setEventError] = useState<string | null>(null);
   const [eventNotice, setEventNotice] = useState<string | null>(null);
@@ -1056,6 +1104,9 @@ export default function Home() {
         setResults(data);
       } else if (service === 'career') {
         const data = await searchJobsViaApi();
+        setResults(data);
+      } else if (service === 'tourism') {
+        const data = await searchTourismViaApi();
         setResults(data);
       } else if (service === 'events') {
         const data = await searchEventsViaApi();
@@ -1574,6 +1625,99 @@ export default function Home() {
     );
   };
 
+  // Result cards shared by Study and Tourism: a place (Maps) or an info link (web)
+  const placeCard = (r: SearchResult) => (
+        <div key={r.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition animate-[panelIn_250ms_ease-out]">
+          {/* Placeholder sits under the photo, so a missing, slow or broken image still shows something */}
+          <div className="relative w-24 sm:w-36 shrink-0 bg-brand-50 flex items-center justify-center text-4xl" aria-hidden>
+            🏫
+            {r.imageUrl && (
+              <img src={r.imageUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+            )}
+          </div>
+          <div className="flex-1 min-w-0 p-4">
+            <h3 className="font-bold text-gray-900 leading-tight">{r.name}</h3>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
+              {r.placeType && <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600">{r.placeType}</span>}
+              {r.rating != null && <span className="text-yellow-600 font-semibold">★ {r.rating}</span>}
+              {r.reviewCount != null && <span>({r.reviewCount.toLocaleString()} reviews)</span>}
+              {r.openState && <span>· {r.openState}</span>}
+            </div>
+            {r.address && <p className="mt-1 text-sm text-gray-600 line-clamp-2">{r.address}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {r.website && (
+                <a href={r.website} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition">Website</a>
+              )}
+              {r.mapsLink && (
+                <a href={r.mapsLink} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">Map</a>
+              )}
+              {r.phone && (
+                <a href={`tel:${r.phone}`} className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">{r.phone}</a>
+              )}
+            </div>
+          </div>
+        </div>
+  );
+  const linkCard = (r: SearchResult) => (
+        <a key={r.id} href={r.link} target="_blank" rel="noopener noreferrer" className="group block bg-white rounded-xl border border-gray-200 p-4 hover:shadow-md hover:border-brand-200 transition animate-[panelIn_250ms_ease-out]">
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            {r.favicon && <img src={r.favicon} alt="" className="h-4 w-4 rounded-sm" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
+            <span className="truncate">{r.source}</span>
+            {r.official && <span className="shrink-0 rounded-full bg-green-50 px-2 py-0.5 font-semibold text-green-700 ring-1 ring-green-200">Official</span>}
+            {r.postedAt && <span className="shrink-0">· {r.postedAt}</span>}
+          </div>
+          <h3 className="mt-1 font-bold text-gray-900 leading-snug group-hover:text-brand-700">{r.name}</h3>
+          {r.description && <p className="mt-1 text-sm text-gray-600 line-clamp-3">{r.description}</p>}
+          <span className="mt-2 inline-block text-sm font-semibold text-brand-600 group-hover:translate-x-0.5 transition-transform">Read more →</span>
+        </a>
+  );
+
+  const VISA_STYLE: Record<string, string> = {
+    'visa-free':    'bg-green-50 text-green-800 ring-green-200',
+    'domestic':     'bg-green-50 text-green-800 ring-green-200',
+    'on-arrival':   'bg-sky-50 text-sky-800 ring-sky-200',
+    'eta':          'bg-sky-50 text-sky-800 ring-sky-200',
+    'e-visa':       'bg-amber-50 text-amber-800 ring-amber-200',
+    'required':     'bg-orange-50 text-orange-800 ring-orange-200',
+    'no-admission': 'bg-red-50 text-red-800 ring-red-200',
+  };
+  const VISA_ICON: Record<string, string> = { 'visa-free': '✅', domestic: '🏠', 'on-arrival': '🛬', eta: '📱', 'e-visa': '💻', required: '📝', 'no-admission': '⛔' };
+
+  const TourismList = () => {
+    if (!hasSearched) return null;
+    if (loading) return <p className="text-gray-500 mt-6">Searching {tourChoice.label.toLowerCase()}...</p>;
+    return (
+      <div className="mt-6 space-y-3">
+        {tourVisa && (
+          <div className={`rounded-2xl p-5 ring-1 animate-[panelIn_250ms_ease-out] ${VISA_STYLE[tourVisa.status] ?? 'bg-gray-50 text-gray-800 ring-gray-200'}`}>
+            <p className="text-xs font-bold uppercase tracking-wider opacity-70">{tourVisa.fromName} passport → {tourVisa.toName}</p>
+            <p className="mt-1 flex items-center gap-2 text-xl font-bold">
+              <span aria-hidden>{VISA_ICON[tourVisa.status] ?? 'ℹ️'}</span>{tourVisa.label}
+            </p>
+            {tourVisa.status !== 'domestic' && (
+              <p className="mt-2 text-sm opacity-80">
+                Visa types, documents and fees for a {tourForm.purpose} trip are below, with official government and embassy sources first.
+                Rules and fees change, so always confirm on the official site before you travel.
+              </p>
+            )}
+          </div>
+        )}
+        {results.length === 0 ? (
+          (!tourVisa || tourVisa.status !== 'domestic') && (
+            <NoLiveResults
+              service="tourism"
+              icon={tourChoice.icon}
+              title={tourError ?? 'No results found'}
+              hint="Try a nearby or bigger place, or check the spelling."
+            />
+          )
+        ) : (
+          results.map(r => r.kind === 'place' ? placeCard(r) : linkCard(r))
+        )}
+      </div>
+    );
+  };
+
   const StudyList = () => {
     if (!hasSearched) return null;
     if (loading) return <p className="text-gray-500 mt-6">Searching {studyChoice === 'Academy' ? 'schools and universities' : studyChoice === 'Admission' ? 'admission info' : 'scholarships'}...</p>;
@@ -1587,49 +1731,7 @@ export default function Home() {
     );
     return (
       <div className="mt-6 space-y-3">
-        {results.map(r => r.kind === 'place' ? (
-          <div key={r.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition animate-[panelIn_250ms_ease-out]">
-            {/* Placeholder sits under the photo, so a missing, slow or broken image still shows something */}
-            <div className="relative w-24 sm:w-36 shrink-0 bg-brand-50 flex items-center justify-center text-4xl" aria-hidden>
-              🏫
-              {r.imageUrl && (
-                <img src={r.imageUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-              )}
-            </div>
-            <div className="flex-1 min-w-0 p-4">
-              <h3 className="font-bold text-gray-900 leading-tight">{r.name}</h3>
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
-                {r.placeType && <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600">{r.placeType}</span>}
-                {r.rating != null && <span className="text-yellow-600 font-semibold">★ {r.rating}</span>}
-                {r.reviewCount != null && <span>({r.reviewCount.toLocaleString()} reviews)</span>}
-                {r.openState && <span>· {r.openState}</span>}
-              </div>
-              {r.address && <p className="mt-1 text-sm text-gray-600 line-clamp-2">{r.address}</p>}
-              <div className="mt-3 flex flex-wrap gap-2">
-                {r.website && (
-                  <a href={r.website} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition">Website</a>
-                )}
-                {r.mapsLink && (
-                  <a href={r.mapsLink} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">Map</a>
-                )}
-                {r.phone && (
-                  <a href={`tel:${r.phone}`} className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">{r.phone}</a>
-                )}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <a key={r.id} href={r.link} target="_blank" rel="noopener noreferrer" className="group block bg-white rounded-xl border border-gray-200 p-4 hover:shadow-md hover:border-brand-200 transition animate-[panelIn_250ms_ease-out]">
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              {r.favicon && <img src={r.favicon} alt="" className="h-4 w-4 rounded-sm" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
-              <span className="truncate">{r.source}</span>
-              {r.postedAt && <span className="shrink-0">· {r.postedAt}</span>}
-            </div>
-            <h3 className="mt-1 font-bold text-gray-900 leading-snug group-hover:text-brand-700">{r.name}</h3>
-            {r.description && <p className="mt-1 text-sm text-gray-600 line-clamp-3">{r.description}</p>}
-            <span className="mt-2 inline-block text-sm font-semibold text-brand-600 group-hover:translate-x-0.5 transition-transform">Read more →</span>
-          </a>
-        ))}
+        {results.map(r => r.kind === 'place' ? placeCard(r) : linkCard(r))}
       </div>
     );
   };
@@ -2540,23 +2642,64 @@ export default function Home() {
             {/* Tourism */}
             {activeTab === 'tourism' && (
               <div>
-                {optionTiles(TOUR_OPTIONS, formData.activityType, label => setFormData(prev => ({ ...prev, activityType: label })), 'Tour category', 'grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7')}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Destination</label>
-                    <input type="text" name="destination" value={formData.destination} onChange={handleInputChange} placeholder="City or attraction" className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Tour Type</label>
-                    <input type="text" name="activityType" value={formData.activityType} onChange={handleInputChange} placeholder="E.g. Museum, Adventure" className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Date</label>
-                    <input type="date" name="depart" value={formData.depart} onChange={handleInputChange} className={inputClass} />
-                  </div>
-                  {searchBtn('tourism')}
+                {optionTiles(TOUR_OPTIONS, tourChoice.label, pickTour, 'Tour category', 'grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-7')}
+                <div key={tourSlug} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 animate-[panelIn_250ms_ease-out]">
+                  {tourSlug === 'visa' ? (
+                    <>
+                    <div>
+                      <label htmlFor="tour-from" className="block text-sm font-semibold text-gray-700 mb-2">Passport from</label>
+                      <select id="tour-from" value={tourForm.from} onChange={e => setTourForm(f => ({ ...f, from: e.target.value }))} className={inputClass}>
+                        <option value="">Select country</option>
+                        {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="tour-to" className="block text-sm font-semibold text-gray-700 mb-2">Travelling to</label>
+                      <select id="tour-to" value={tourForm.to} onChange={e => setTourForm(f => ({ ...f, to: e.target.value }))} className={inputClass}>
+                        <option value="">Select country</option>
+                        {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+                      </select>
+                    </div>
+                      <div>
+                        <label htmlFor="tour-purpose" className="block text-sm font-semibold text-gray-700 mb-2">Visa type</label>
+                        <select id="tour-purpose" value={tourForm.purpose} onChange={e => setTourForm(f => ({ ...f, purpose: e.target.value }))} className={inputClass}>
+                          <option value="tourist">Tourist</option>
+                          <option value="business">Business</option>
+                          <option value="student">Student</option>
+                          <option value="work">Work</option>
+                          <option value="transit">Transit</option>
+                          <option value="family visit">Family visit</option>
+                        </select>
+                      </div>
+                    </>
+                  ) : tourSlug === 'passport' || tourSlug === 'id' ? (
+                    <div className="md:col-span-3">
+                      <label htmlFor="tour-from" className="block text-sm font-semibold text-gray-700 mb-2">Your country</label>
+                      <select id="tour-from" value={tourForm.from} onChange={e => setTourForm(f => ({ ...f, from: e.target.value }))} className={inputClass}>
+                        <option value="">Select country</option>
+                        {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+                      </select>
+                    </div>
+                  ) : (
+                    <>
+                      <div className={tourSlug === 'insurance' ? 'md:col-span-2' : 'md:col-span-3'}>
+                        <label htmlFor="tour-destination" className="block text-sm font-semibold text-gray-700 mb-2">{tourSlug === 'insurance' ? 'Travelling to' : 'Destination'}</label>
+                        <input id="tour-destination" type="text" value={tourForm.destination} onChange={e => setTourForm(f => ({ ...f, destination: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && tourReady) handleSearch('tourism'); }} placeholder="City, region or country" className={inputClass} />
+                      </div>
+                      {tourSlug === 'insurance' && (
+                        <div>
+                      <label htmlFor="tour-from" className="block text-sm font-semibold text-gray-700 mb-2">Travelling from <span className="text-gray-400 font-normal">(opt.)</span></label>
+                      <select id="tour-from" value={tourForm.from} onChange={e => setTourForm(f => ({ ...f, from: e.target.value }))} className={inputClass}>
+                        <option value="">Select country</option>
+                        {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+                      </select>
+                    </div>
+                      )}
+                    </>
+                  )}
+                  {searchBtn('tourism', !tourReady)}
                 </div>
-                <ResultsGrid />
+                <TourismList />
               </div>
             )}
 
