@@ -1912,6 +1912,68 @@ async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
   }));
 }
 
+// Study: schools/colleges/universities from Google Maps; admission and scholarship info from Google web results
+const STUDY_LEVELS = { school: 'schools', college: 'colleges', institute: 'institutes', university: 'universities' };
+
+async function searchStudySerpApi({ category, level, query, location }) {
+  const kind  = STUDY_LEVELS[level] || 'schools colleges universities';
+  const where = location ? ` in ${location}` : '';
+  const year  = new Date().getFullYear();
+  const keywords = (query || '').trim();
+
+  if (category === 'academy') {
+    const params = new URLSearchParams({
+      engine:  'google_maps',
+      type:    'search',
+      q:       `${keywords ? `${keywords} ` : ''}${kind}${where}`,
+      hl:      'en',
+      api_key: process.env.SERPAPI_KEY,
+    });
+    const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) throw new Error(`SerpAPI study (maps) error (${res.status}): ${await res.text()}`);
+    const data = await res.json();
+    return (data.local_results ?? []).map((p, i) => ({
+      id:          p.place_id ?? String(i),
+      kind:        'place',
+      name:        p.title,
+      placeType:   p.type ?? null,
+      address:     p.address ?? null,
+      rating:      p.rating ?? null,
+      reviewCount: p.reviews ?? null,
+      website:     p.website ?? null,
+      phone:       p.phone ?? null,
+      openState:   p.open_state ?? null,
+      imageUrl:    p.thumbnail ?? null,
+      mapsLink:    `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${p.title} ${p.address ?? ''}`.trim())}${p.place_id ? `&query_place_id=${p.place_id}` : ''}`,
+      price:       null,
+    }));
+  }
+
+  const topic = category === 'admission' ? `admission ${year}` : `scholarships ${year}`;
+  const params = new URLSearchParams({
+    engine:  'google',
+    q:       `${keywords || kind} ${topic}${where}`,
+    hl:      'en',
+    num:     '10',
+    api_key: process.env.SERPAPI_KEY,
+  });
+  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`SerpAPI study (web) error (${res.status}): ${await res.text()}`);
+  const data = await res.json();
+  return (data.organic_results ?? []).map((r, i) => ({
+    id:          String(r.position ?? i),
+    kind:        'link',
+    name:        r.title,
+    description: r.snippet ?? '',
+    link:        r.link,
+    source:      r.source ?? (() => { try { return new URL(r.link).hostname.replace(/^www\./, ''); } catch { return null; } })(),
+    favicon:     r.favicon ?? null,
+    postedAt:    r.date ?? null,
+    rating:      null,
+    price:       null,
+  }));
+}
+
 async function handleClassroomAssign(event) {
   const { courseId, courseWorkId, studentIds, accessToken } = JSON.parse(event.body || '{}');
   if (!accessToken) return json(401, { error: 'No access token' });
@@ -2036,6 +2098,20 @@ async function handleSearch(event) {
         } catch (serpErr) {
           console.error('SerpAPI jobs search error (falling back to mock):', serpErr.message);
         }
+      }
+    }
+
+    // --- Study: SerpAPI (no placeholder data) ---
+    if (service === 'study') {
+      const { category, level, query, location } = body;
+      if (!['academy', 'admission', 'scholarship'].includes(category)) return json(400, { error: 'Unknown study category' });
+      if (!process.env.SERPAPI_KEY) return json(200, { success: true, service, results: [], total: 0, error: 'Study search is not available right now' });
+      try {
+        const results = await searchStudySerpApi({ category, level, query, location });
+        return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
+      } catch (serpErr) {
+        console.error('SerpAPI study search error:', serpErr.message);
+        return json(200, { success: true, service, results: [], total: 0, error: 'Study search is temporarily unavailable' });
       }
     }
 

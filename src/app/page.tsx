@@ -113,6 +113,16 @@ interface SearchResult {
   testBooking?: boolean;
   totalPrice?: number;
   basePrice?: number;
+  // study: 'place' = school/college from Maps, 'link' = admission/scholarship web result
+  kind?: 'place' | 'link';
+  placeType?: string | null;
+  address?: string | null;
+  website?: string | null;
+  phone?: string | null;
+  openState?: string | null;
+  mapsLink?: string;
+  source?: string | null;
+  favicon?: string | null;
   // placeholder result shown when no provider answered; not bookable
   demo?: boolean;
   // job-specific
@@ -789,7 +799,15 @@ export default function Home() {
   }, []);
 
   // Sub-option tiles (Tourism categories, Study options): animated icon + label, one selectable
-  const [studyChoice, setStudyChoice] = useState('');
+  const [studyChoice, setStudyChoice] = useState('Academy');
+  const [studyForm, setStudyForm] = useState({ level: '', query: '', location: '' });
+  const [studyError, setStudyError] = useState<string | null>(null);
+  const pickStudy = (label: string) => {
+    setStudyChoice(label);
+    setResults([]);
+    setHasSearched(false);
+    setStudyError(null);
+  };
   const optionTiles = (
     options: { id: string; icon: string; label: string }[],
     selectedLabel: string,
@@ -922,6 +940,25 @@ export default function Home() {
   };
 
 
+  const searchStudyViaApi = async (): Promise<SearchResult[]> => {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service:  'study',
+        category: studyChoice.toLowerCase(),
+        level:    studyForm.level || null,
+        query:    studyForm.query.trim() || null,
+        location: studyForm.location.trim() || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Study search failed');
+    setStudyError(data.error ?? null);
+    return (data.results ?? []) as SearchResult[];
+  };
+
   const searchJobsViaApi = async (): Promise<SearchResult[]> => {
     const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
     const res = await fetch(`${baseUrl}/api/search`, {
@@ -988,6 +1025,9 @@ export default function Home() {
         setResults(data);
       } else if (service === 'career') {
         const data = await searchJobsViaApi();
+        setResults(data);
+      } else if (service === 'study') {
+        const data = await searchStudyViaApi();
         setResults(data);
       } else if (service === 'train') {
         const data = await searchTrainsViaApi();
@@ -1433,6 +1473,64 @@ export default function Home() {
             {other.map(r => <FlightRow key={r.id} r={r} />)}
           </>
         )}
+      </div>
+    );
+  };
+
+  const StudyList = () => {
+    if (!hasSearched) return null;
+    if (loading) return <p className="text-gray-500 mt-6">Searching {studyChoice === 'Academy' ? 'schools and universities' : studyChoice === 'Admission' ? 'admission info' : 'scholarships'}...</p>;
+    if (results.length === 0) return (
+      <NoLiveResults
+        service="study"
+        icon={studyChoice === 'Academy' ? '🏫' : studyChoice === 'Admission' ? '📬' : '🏅'}
+        title={studyError ?? 'No results found'}
+        hint="Try a broader keyword, a different level, or a bigger place like a country instead of a town."
+      />
+    );
+    return (
+      <div className="mt-6 space-y-3">
+        {results.map(r => r.kind === 'place' ? (
+          <div key={r.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition animate-[panelIn_250ms_ease-out]">
+            {r.imageUrl ? (
+              <img src={r.imageUrl} alt="" className="w-24 sm:w-36 object-cover shrink-0 bg-gray-100" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+            ) : (
+              <div className="w-24 sm:w-36 bg-brand-50 flex items-center justify-center shrink-0 text-4xl" aria-hidden>🏫</div>
+            )}
+            <div className="flex-1 min-w-0 p-4">
+              <h3 className="font-bold text-gray-900 leading-tight">{r.name}</h3>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
+                {r.placeType && <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600">{r.placeType}</span>}
+                {r.rating != null && <span className="text-yellow-600 font-semibold">★ {r.rating}</span>}
+                {r.reviewCount != null && <span>({r.reviewCount.toLocaleString()} reviews)</span>}
+                {r.openState && <span>· {r.openState}</span>}
+              </div>
+              {r.address && <p className="mt-1 text-sm text-gray-600 line-clamp-2">{r.address}</p>}
+              <div className="mt-3 flex flex-wrap gap-2">
+                {r.website && (
+                  <a href={r.website} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition">Website</a>
+                )}
+                {r.mapsLink && (
+                  <a href={r.mapsLink} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">Map</a>
+                )}
+                {r.phone && (
+                  <a href={`tel:${r.phone}`} className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">{r.phone}</a>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <a key={r.id} href={r.link} target="_blank" rel="noopener noreferrer" className="group block bg-white rounded-xl border border-gray-200 p-4 hover:shadow-md hover:border-brand-200 transition animate-[panelIn_250ms_ease-out]">
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              {r.favicon && <img src={r.favicon} alt="" className="h-4 w-4 rounded-sm" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
+              <span className="truncate">{r.source}</span>
+              {r.postedAt && <span className="shrink-0">· {r.postedAt}</span>}
+            </div>
+            <h3 className="mt-1 font-bold text-gray-900 leading-snug group-hover:text-brand-700">{r.name}</h3>
+            {r.description && <p className="mt-1 text-sm text-gray-600 line-clamp-3">{r.description}</p>}
+            <span className="mt-2 inline-block text-sm font-semibold text-brand-600 group-hover:translate-x-0.5 transition-transform">Read more →</span>
+          </a>
+        ))}
       </div>
     );
   };
@@ -2365,17 +2463,36 @@ export default function Home() {
 
             {/* Study */}
             {activeTab === 'study' && (() => {
-              const choice = STUDY_OPTIONS.find(o => o.label === studyChoice);
+              const choice = STUDY_OPTIONS.find(o => o.label === studyChoice) ?? STUDY_OPTIONS[0];
+              const keywordHint = choice.id === 'study-academy' ? 'e.g. engineering, art, MBA' : choice.id === 'study-admission' ? 'e.g. MBA, nursing, Harvard' : 'e.g. computer science, women in STEM';
               return (
                 <div>
                   <div className="mx-auto max-w-2xl">
-                    {optionTiles(STUDY_OPTIONS, studyChoice, setStudyChoice, 'Study option', 'grid-cols-3')}
+                    {optionTiles(STUDY_OPTIONS, studyChoice, pickStudy, 'Study option', 'grid-cols-3')}
                   </div>
-                  <div key={choice?.id ?? 'study'} className="py-6 text-center animate-[panelIn_250ms_ease-out]">
-                    <p className="text-4xl mb-3" aria-hidden>{choice?.icon ?? '🎓'}</p>
-                    <h3 className="text-lg font-bold text-gray-900">{choice ? `${choice.label} is coming soon` : 'Study is coming soon'}</h3>
-                    <p className="text-sm text-gray-600 mt-1">{choice?.blurb ?? 'Find courses, schools and study-abroad programs right here on Lyrtrip.'}</p>
+                  <p key={choice.id} className="-mt-2 mb-5 text-center text-sm text-gray-600 animate-[panelIn_250ms_ease-out]">{choice.blurb}</p>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                    <div>
+                      <label htmlFor="study-level" className="block text-sm font-semibold text-gray-700 mb-2">Level</label>
+                      <select id="study-level" value={studyForm.level} onChange={e => setStudyForm(f => ({ ...f, level: e.target.value }))} className={inputClass}>
+                        <option value="">Any</option>
+                        <option value="school">School</option>
+                        <option value="college">College</option>
+                        <option value="institute">Institute</option>
+                        <option value="university">University</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="study-query" className="block text-sm font-semibold text-gray-700 mb-2">{choice.id === 'study-academy' ? 'Subject / Name' : 'Program / Field'}</label>
+                      <input id="study-query" type="text" value={studyForm.query} onChange={e => setStudyForm(f => ({ ...f, query: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') handleSearch('study'); }} placeholder={keywordHint} className={inputClass} />
+                    </div>
+                    <div>
+                      <label htmlFor="study-location" className="block text-sm font-semibold text-gray-700 mb-2">Location <span className="text-gray-400 font-normal">(worldwide)</span></label>
+                      <input id="study-location" type="text" value={studyForm.location} onChange={e => setStudyForm(f => ({ ...f, location: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter') handleSearch('study'); }} placeholder="City or country" className={inputClass} />
+                    </div>
+                    {searchBtn('study', choice.id === 'study-academy' && !studyForm.location.trim() && !studyForm.query.trim())}
                   </div>
+                  <StudyList />
                 </div>
               );
             })()}
