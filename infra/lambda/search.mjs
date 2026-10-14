@@ -6,11 +6,16 @@ import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import {
   AdminCreateUserCommand,
+  AdminDeleteUserCommand,
+  AdminDisableUserCommand,
+  AdminEnableUserCommand,
   AdminGetUserCommand,
   AdminInitiateAuthCommand,
   AdminRespondToAuthChallengeCommand,
+  AdminSetUserPasswordCommand,
   AdminUpdateUserAttributesCommand,
   CognitoIdentityProviderClient,
+  ListUsersCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 
 // ---------------------------------------------------------------------------
@@ -1307,11 +1312,23 @@ async function handleFlightConfirm(event) {
 
 const HOTEL_MARKUP = 1.12; // 12% Lyrtrip margin on the hotel's total incl. taxes & fees
 const HOTEL_MAX_NIGHTS = 30;
-const adminEmails = () => (process.env.ADMIN_EMAILS || 'lyrclouds@gmail.com').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
 const bookingsAlertEmail = () => process.env.BOOKINGS_ALERT_EMAIL || 'lyrtrips@gmail.com';
 
+// Like Lyrshop: one fixed super admin (by email) who grants or removes admin
+// access; other admins are listed by email in the `admins` collection. Roles
+// are read on every request so a change applies immediately.
+const superAdminEmail = () => (process.env.SUPER_ADMIN_EMAIL || 'lyrclouds@gmail.com').trim().toLowerCase();
+
+async function roleForEmail(email) {
+  email = String(email ?? '').trim().toLowerCase();
+  if (!email) return 'user';
+  if (email === superAdminEmail()) return 'superadmin';
+  return (await (await getDb()).collection('admins').findOne({ email })) ? 'admin' : 'user';
+}
+
 let idVerifier;
-// Admin calls carry the Cognito ID token in the body (the API's CORS only allows content-type)
+// Admin calls carry the Cognito ID token in the body (the API's CORS only allows content-type).
+// Resolves to { sub, email, role } for an admin or the super admin.
 async function requireAdmin(idToken) {
   if (!process.env.COGNITO_USER_POOL_ID || !process.env.COGNITO_USER_POOL_CLIENT_ID) throw new Error('Admin sign-in is not configured');
   idVerifier ??= CognitoJwtVerifier.create({
@@ -1321,8 +1338,9 @@ async function requireAdmin(idToken) {
   });
   const claims = await idVerifier.verify(String(idToken ?? ''));
   const email = String(claims.email ?? '').toLowerCase();
-  if (!adminEmails().includes(email)) throw new Error('Not an admin account');
-  return email;
+  const role = await roleForEmail(email);
+  if (role === 'user') throw new Error('Not an admin account');
+  return { sub: String(claims.sub), email, role };
 }
 
 async function sendEmail({ to, subject, html, text }) {
@@ -2595,6 +2613,191 @@ export async function handler(event) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Admin console (/admin) — users and admin access in Cognito, plus every
+// customer's tours and flight bookings. Admins manage regular users; only the
+// super admin manages admins and grants or removes admin access.
+// ---------------------------------------------------------------------------
+
+function cognitoUserRow(u, attributes = u.Attributes) {
+  const attr = Object.fromEntries((attributes ?? []).map(a => [a.Name, a.Value]));
+  let provider = attr['custom:wechat_openid'] ? 'WeChat' : 'Email';
+  try {
+    provider = JSON.parse(attr.identities ?? '[]')[0]?.providerName ?? provider;
+  } catch {
+    // ignore malformed identities attribute
+  }
+  return {
+    username:  u.Username,
+    sub:       attr.sub,
+    email:     String(attr.email ?? '').toLowerCase(),
+    name:      attr.name ?? '',
+    provider,
+    status:    u.UserStatus,
+    enabled:   u.Enabled !== false,
+    createdAt: u.UserCreateDate ?? null,
+  };
+}
+
+async function getCognitoUserRow(username) {
+  const u = await getCognitoClient().send(new AdminGetUserCommand({ UserPoolId: process.env.COGNITO_USER_POOL_ID, Username: String(username ?? '') }));
+  const row = cognitoUserRow(u, u.UserAttributes);
+  return { ...row, role: await roleForEmail(row.email) };
+}
+
+// Returns [status, message] when `actor` may not make this change to `target`, else null.
+function accountChangeError(actor, target, body, deleting = false) {
+  if (target.role === 'superadmin' && (deleting || 'role' in body || body.enabled === false)) {
+    return [403, "The super admin account can't be deleted, disabled or demoted."];
+  }
+  if (target.role !== 'user' && actor.role !== 'superadmin') return [403, 'Only the super admin can change admin accounts.'];
+  if ('role' in body) {
+    if (actor.role !== 'superadmin') return [403, 'Only the super admin can grant or remove admin access.'];
+    if (!['admin', 'user'].includes(body.role)) return [400, 'Role must be admin or user.'];
+  }
+  if ((deleting || body.enabled === false) && target.sub === actor.sub) return [400, "You can't delete or disable your own account."];
+  return null;
+}
+
+async function setAdminRole(email, role) {
+  const admins = (await getDb()).collection('admins');
+  if (role === 'admin') await admins.updateOne({ email }, { $setOnInsert: { email, createdAt: new Date().toISOString() } }, { upsert: true });
+  else await admins.deleteOne({ email });
+}
+
+async function handleAdmin(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  let actor;
+  try {
+    actor = await requireAdmin(body.idToken);
+  } catch (err) {
+    return json(401, { error: `Sign in with an admin account (${err.message})` });
+  }
+  const UserPoolId = process.env.COGNITO_USER_POOL_ID;
+  const cognito = getCognitoClient();
+  const db = await getDb();
+
+  try {
+    switch (body.action) {
+      case 'me':
+        return json(200, { email: actor.email, role: actor.role });
+
+      case 'users.list': {
+        const users = [];
+        let PaginationToken;
+        do {
+          const page = await cognito.send(new ListUsersCommand({ UserPoolId, PaginationToken }));
+          users.push(...(page.Users ?? []).map(u => cognitoUserRow(u)));
+          PaginationToken = page.PaginationToken;
+        } while (PaginationToken);
+        const admins = new Set((await db.collection('admins').find().toArray()).map(a => a.email));
+        const roleOf = email => (email && email === superAdminEmail() ? 'superadmin' : admins.has(email) ? 'admin' : 'user');
+        users.sort((a, b) => new Date(b.createdAt ?? 0) - new Date(a.createdAt ?? 0));
+        return json(200, { users: users.map(u => ({ ...u, role: roleOf(u.email) })) });
+      }
+
+      case 'users.create': {
+        const email = String(body.email ?? '').trim().toLowerCase();
+        const password = String(body.password ?? '');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json(400, { error: 'Enter a valid email address.' });
+        if (!password) return json(400, { error: 'Set a password for the new account.' });
+        const refused = accountChangeError(actor, { role: await roleForEmail(email) }, body);
+        if (refused) return json(refused[0], { error: refused[1] });
+        const name = String(body.name ?? '').trim().slice(0, 100);
+        // No invite email: the admin hands over the password, and the sign-in form has no new-password step.
+        await cognito.send(new AdminCreateUserCommand({
+          UserPoolId,
+          Username: email,
+          MessageAction: 'SUPPRESS',
+          UserAttributes: [
+            { Name: 'email', Value: email },
+            { Name: 'email_verified', Value: 'true' },
+            ...(name ? [{ Name: 'name', Value: name }] : []),
+          ],
+        }));
+        try {
+          await cognito.send(new AdminSetUserPasswordCommand({ UserPoolId, Username: email, Password: password, Permanent: true }));
+        } catch (err) {
+          await cognito.send(new AdminDeleteUserCommand({ UserPoolId, Username: email })).catch(() => {});
+          throw err;
+        }
+        if ('role' in body) await setAdminRole(email, body.role);
+        return json(201, { user: await getCognitoUserRow(email) });
+      }
+
+      case 'users.update': {
+        const target = await getCognitoUserRow(body.username);
+        const refused = accountChangeError(actor, target, body);
+        if (refused) return json(refused[0], { error: refused[1] });
+        if ('name' in body) {
+          await cognito.send(new AdminUpdateUserAttributesCommand({
+            UserPoolId, Username: target.username,
+            UserAttributes: [{ Name: 'name', Value: String(body.name ?? '').trim().slice(0, 100) }],
+          }));
+        }
+        if (body.password) {
+          await cognito.send(new AdminSetUserPasswordCommand({ UserPoolId, Username: target.username, Password: String(body.password), Permanent: true }));
+        }
+        if (body.enabled === true) await cognito.send(new AdminEnableUserCommand({ UserPoolId, Username: target.username }));
+        if (body.enabled === false) await cognito.send(new AdminDisableUserCommand({ UserPoolId, Username: target.username }));
+        if ('role' in body) {
+          if (!target.email) return json(400, { error: 'This account has no email, so it cannot be an admin.' });
+          await setAdminRole(target.email, body.role);
+        }
+        return json(200, { user: await getCognitoUserRow(target.username) });
+      }
+
+      case 'users.delete': {
+        const target = await getCognitoUserRow(body.username);
+        const refused = accountChangeError(actor, target, {}, true);
+        if (refused) return json(refused[0], { error: refused[1] });
+        await cognito.send(new AdminDeleteUserCommand({ UserPoolId, Username: target.username }));
+        // Otherwise a new account with this email would inherit admin access.
+        if (target.role === 'admin') await setAdminRole(target.email, 'user');
+        return json(200, { deleted: target.username });
+      }
+
+      case 'tours.list': {
+        const tours = await db.collection('tours').find().sort({ created_at: -1 }).limit(500).toArray();
+        return json(200, { tours: tours.map(serializeTour) });
+      }
+
+      case 'tours.delete': {
+        if (!ObjectId.isValid(body.id)) return json(400, { error: 'Invalid tour id' });
+        const r = await db.collection('tours').deleteOne({ _id: new ObjectId(body.id) });
+        return r.deletedCount ? json(200, { deleted: body.id }) : json(404, { error: 'Tour not found' });
+      }
+
+      case 'flights.list': {
+        const rows = await db.collection('flight_bookings').find().sort({ createdAt: -1 }).limit(200).toArray();
+        return json(200, {
+          bookings: rows.map(b => ({
+            id:            b._id.toString(),
+            status:        b.status,
+            testBooking:   !!b.testBooking,
+            userSub:       b.userSub ?? null,
+            pnr:           b.pnr ?? null,
+            passengers:    (b.passengers ?? []).map(p => ({ name: [p.givenName, p.familyName].filter(Boolean).join(' '), email: p.email ?? null })),
+            from:          b.flightSummary?.from ?? null,
+            to:            b.flightSummary?.to ?? null,
+            depart:        b.flightSummary?.depart ?? null,
+            markedUpPrice: b.markedUpPrice ?? null,
+            currency:      b.currency ?? null,
+            createdAt:     b.createdAt ?? null,
+          })),
+        });
+      }
+
+      default:
+        return json(400, { error: 'Unknown admin action' });
+    }
+  } catch (err) {
+    console.error('Admin action failed:', body.action, err);
+    const status = err.name === 'UserNotFoundException' ? 404 : err.name === 'UsernameExistsException' ? 409 : 400;
+    return json(status, { error: err.message || 'Admin action failed' });
+  }
+}
+
 async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
@@ -2611,6 +2814,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/hotel/checkout')         && method === 'POST')         return handleHotelCheckout(event);
     if (path.endsWith('/api/hotel/confirm')          && method === 'POST')         return handleHotelConfirm(event);
     if (path.endsWith('/api/hotel/admin')            && method === 'POST')         return handleHotelAdmin(event);
+    if (path.endsWith('/api/admin')                  && method === 'POST')         return handleAdmin(event);
     if (path.includes('/api/uber/estimates')         && method === 'GET')          return handleUberEstimates(event);
     if (path.includes('/api/uber/checkout')          && method === 'POST')         return handleUberCheckout(event);
     if (path.includes('/api/uber/token')             && method === 'POST')         return handleUberToken(event);

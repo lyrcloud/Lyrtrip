@@ -1,5 +1,5 @@
 import type { Tour } from '@/types/database';
-import { getAccessToken } from './auth';
+import { getAccessToken, getSession } from './auth';
 
 type CreateTourInput = Omit<Tour, 'id' | 'user_id' | 'created_at' | 'updated_at'>;
 
@@ -64,3 +64,24 @@ export async function searchHotels(params: HotelSearchParams): Promise<HotelResu
   return res.results;
 }
 
+/**
+ * The signed-in user's admin role, or null for regular users. Admin calls send
+ * the ID token in the body because the API's CORS only allows content-type.
+ */
+export async function getAdminRole(): Promise<'superadmin' | 'admin' | null> {
+  const session = await getSession();
+  if (!session?.idToken) return null;
+  const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${baseUrl}/api/admin`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'me', idToken: session.idToken }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.role === 'superadmin' || data.role === 'admin' ? data.role : null;
+  } catch {
+    return null;
+  }
+}

@@ -62,9 +62,24 @@ aws lambda update-function-configuration --function-name $FUNCTION $R --timeout 
 rm -f "$ENV_FILE"
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
-echo "4/5 API routes and CORS"
+echo "4/5 admin permissions, API routes and CORS"
+# The admin console (/admin) manages accounts in the Lyrtrip user pool only.
+[[ -n "${COGNITO_USER_POOL_ID:-}" ]] || { echo "Missing COGNITO_USER_POOL_ID in .env.local" >&2; exit 1; }
+POOL_ARN=$(aws cognito-idp describe-user-pool --user-pool-id "$COGNITO_USER_POOL_ID" $R --query UserPool.Arn --output text)
+ROLE_ARN=$(aws lambda get-function-configuration --function-name $FUNCTION $R --query Role --output text)
+aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admin-cognito --policy-document "{
+  \"Version\": \"2012-10-17\",
+  \"Statement\": [{
+    \"Effect\": \"Allow\",
+    \"Action\": [\"cognito-idp:ListUsers\", \"cognito-idp:AdminGetUser\", \"cognito-idp:AdminCreateUser\",
+                 \"cognito-idp:AdminSetUserPassword\", \"cognito-idp:AdminUpdateUserAttributes\", \"cognito-idp:AdminDeleteUser\",
+                 \"cognito-idp:AdminEnableUser\", \"cognito-idp:AdminDisableUser\"],
+    \"Resource\": \"$POOL_ARN\"
+  }]
+}"
+echo "admin policy on ${ROLE_ARN##*/}"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}"; do
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
     echo "exists: $ROUTE"
   else

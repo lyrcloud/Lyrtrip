@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { listTours } from '@/lib/api';
+import { getAdminRole, listTours } from '@/lib/api';
 import TourCard from '@/components/TourCard';
 import type { Tour } from '@/types/database';
 import { getBookings, cancelBooking, updateBookingStatus, type Booking } from '@/lib/bookings';
@@ -40,6 +40,7 @@ export default function DashboardPage() {
   const [tours, setTours] = useState<Tour[]>([]);
   const [toursLoading, setToursLoading] = useState(true);
   const [toursError, setToursError] = useState<string | null>(null);
+  const [adminRole, setAdminRole] = useState<'superadmin' | 'admin' | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [payingId, setPayingId] = useState<string | null>(null);
   const [payError, setPayError] = useState<string | null>(null);
@@ -71,6 +72,7 @@ export default function DashboardPage() {
       .catch(err => setToursError((err as Error).message || 'Could not load tours.'))
       .finally(() => setToursLoading(false));
     setBookings(getBookings());
+    getAdminRole().then(setAdminRole);
   }, [user]);
 
   const handleCancelBooking = (id: string) => {
@@ -161,6 +163,14 @@ export default function DashboardPage() {
               <span className="inline-block mt-2 text-xs font-medium bg-white/15 text-white rounded-full px-3 py-1">
                 {providerLabel[user.provider || 'cognito']}
               </span>
+              {adminRole && (
+                <Link
+                  href="/admin"
+                  className="inline-block mt-2 ml-2 text-xs font-semibold bg-white text-brand-700 rounded-full px-3 py-1 hover:bg-brand-50"
+                >
+                  {adminRole === 'superadmin' ? 'Super admin console' : 'Admin console'} →
+                </Link>
+              )}
             </div>
           </div>
         </div>
