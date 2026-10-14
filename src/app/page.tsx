@@ -1134,7 +1134,7 @@ export default function Home() {
     { id: 'cruise', icon: '🚢', label: 'Cruise', sub: 'Sail away' },
     { id: 'tourism', icon: '🎒', label: 'Tourism', sub: 'Tours & trips' },
     { id: 'study', icon: '🎓', label: 'Study', sub: 'Study abroad' },
-    { id: 'career', icon: '💼', label: 'Jobs', sub: 'Find work' },
+    { id: 'career', icon: '💼', label: 'Job', sub: 'Find work' },
     { id: 'events', icon: '🎟️', label: 'Events', sub: 'Concerts & shows' },
     { id: 'shipping', icon: '📦', label: 'Shipping', sub: 'Send parcels' },
   ];
