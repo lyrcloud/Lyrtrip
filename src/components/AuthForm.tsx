@@ -14,6 +14,7 @@ import {
   signUp,
 } from '@/lib/auth';
 import { SocialButton } from '@/components/SocialButton';
+import { useLocale } from '@/i18n/LocaleContext';
 
 interface AuthFormProps {
   mode?: 'signin' | 'signup';
@@ -29,6 +30,7 @@ function errorName(err: unknown) {
 
 export function AuthForm({ mode = 'signin' }: AuthFormProps) {
   const router = useRouter();
+  const { t } = useLocale();
   const [activeMode, setActiveMode] = useState<'signin' | 'signup'>(mode);
   const [step, setStep] = useState<Step>('form');
   const [name, setName] = useState('');
@@ -90,7 +92,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
   const resumeConfirmation = async () => {
     const { error } = await resendConfirmationCode(email);
     if (error) throw error;
-    openStep('confirm', `This email isn't verified yet. We sent a new 6-digit code to ${email}.`);
+    openStep('confirm', t("This email isn't verified yet. We sent a new 6-digit code to {email}.", { email }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -109,16 +111,16 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
             await resumeConfirmation();
             return;
           } catch {
-            throw new Error('An account with this email already exists. Please sign in.');
+            throw new Error(t('An account with this email already exists. Please sign in.'));
           }
         }
         if (error) throw error;
 
         if (data.confirmed) {
-          setInfo('Account created. You can sign in now.');
+          setInfo(t('Account created. You can sign in now.'));
           switchMode('signin');
         } else {
-          openStep('confirm', `We sent a 6-digit code to ${email}.`);
+          openStep('confirm', t('We sent a 6-digit code to {email}.', { email }));
         }
       } else {
         const { error } = await signIn(email, password);
@@ -155,7 +157,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         return;
       }
       switchMode('signin');
-      setInfo('Email verified! You can sign in now.');
+      setInfo(t('Email verified! You can sign in now.'));
     } catch (err) {
       setError((err as Error).message || 'Could not confirm your account.');
     } finally {
@@ -171,21 +173,21 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     if (error) {
       setError(error.message);
     } else {
-      setInfo(`We sent a new code to ${email}.`);
+      setInfo(t('We sent a new code to {email}.', { email }));
       setResendIn(RESEND_COOLDOWN_SECONDS);
     }
   };
 
   const handleForgotPassword = async () => {
     if (!email) {
-      setError('Enter your email above first.');
+      setError(t('Enter your email above first.'));
       return;
     }
     setError(null);
     setInfo(null);
     const { error } = await resetPassword(email);
     if (error) setError(error.message);
-    else openStep('reset', `We sent a 6-digit reset code to ${email}.`);
+    else openStep('reset', t('We sent a 6-digit reset code to {email}.', { email }));
   };
 
   const handleReset = async (e: React.FormEvent) => {
@@ -204,7 +206,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         return;
       }
       switchMode('signin');
-      setInfo('Password updated. You can sign in now.');
+      setInfo(t('Password updated. You can sign in now.'));
     } catch (err) {
       setError((err as Error).message || 'Could not reset your password.');
     } finally {
@@ -220,15 +222,15 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     return (
       <form onSubmit={isReset ? handleReset : handleConfirm} className="space-y-4">
         <h2 className="text-2xl font-bold text-gray-900">
-          {isReset ? 'Reset your password' : 'Verify your email'}
+          {isReset ? t('Reset your password') : t('Verify your email')}
         </h2>
         <p className="text-sm text-gray-600">
-          Enter the 6-digit code we sent to {email}. Check your spam folder if it doesn&apos;t arrive.
+          {t("Enter the 6-digit code we sent to {email}. Check your spam folder if it doesn't arrive.", { email })}
         </p>
 
         <div>
           <label htmlFor="code" className="block text-sm font-medium mb-2 text-gray-700">
-            Verification code
+            {t('Verification code')}
           </label>
           <input
             id="code"
@@ -249,7 +251,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         {isReset && (
           <div>
             <label htmlFor="new-password" className="block text-sm font-medium mb-2 text-gray-700">
-              New password
+              {t('New password')}
             </label>
             <input
               id="new-password"
@@ -264,7 +266,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
               disabled={loading}
             />
             <p className="mt-1 text-xs text-gray-500">
-              At least 8 characters with upper and lower case letters, a number and a symbol.
+              {t('At least 8 characters with upper and lower case letters, a number and a symbol.')}
             </p>
           </div>
         )}
@@ -277,7 +279,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           disabled={loading}
           className="w-full px-4 py-2.5 bg-btn text-white font-medium rounded-md hover:bg-btn-hover disabled:opacity-50 transition-colors"
         >
-          {loading ? 'Checking…' : isReset ? 'Reset password' : 'Verify and continue'}
+          {loading ? t('Checking…') : isReset ? t('Reset password') : t('Verify and continue')}
         </button>
 
         <div className="flex items-center justify-between text-sm">
@@ -286,7 +288,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
             onClick={cancelStep}
             className="text-gray-600 hover:text-gray-800 font-medium"
           >
-            Cancel
+            {t('Cancel')}
           </button>
           <button
             type="button"
@@ -294,7 +296,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
             disabled={resendIn > 0 || loading}
             className="text-brand-600 hover:text-brand-700 font-medium disabled:text-gray-400 disabled:cursor-not-allowed"
           >
-            {resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend code'}
+            {resendIn > 0 ? t('Resend code in {seconds}s', { seconds: resendIn }) : t('Resend code')}
           </button>
         </div>
       </form>
@@ -305,31 +307,31 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-gray-900">
-          {activeMode === 'signup' ? 'Create your account' : 'Welcome back'}
+          {activeMode === 'signup' ? t('Create your account') : t('Welcome back')}
         </h2>
         <p className="mt-1 text-sm text-gray-600">
           {activeMode === 'signup'
-            ? 'Start planning your next tour in seconds.'
-            : 'Sign in to manage your tours.'}
+            ? t('Start planning your next tour in seconds.')
+            : t('Sign in to manage your tours.')}
         </p>
       </div>
 
       <div className="space-y-3">
         <SocialButton
           provider="google"
-          label="Continue with Google"
+          label={t('Continue with {provider}', { provider: 'Google' })}
           onClick={() => handleSocial('google')}
           disabled={socialLoading !== null}
         />
         <SocialButton
           provider="facebook"
-          label="Continue with Facebook"
+          label={t('Continue with {provider}', { provider: 'Facebook' })}
           onClick={() => handleSocial('facebook')}
           disabled={socialLoading !== null}
         />
         <SocialButton
           provider="wechat"
-          label="Continue with WeChat"
+          label={t('Continue with {provider}', { provider: 'WeChat' })}
           onClick={() => handleSocial('wechat')}
           disabled={socialLoading !== null}
         />
@@ -340,7 +342,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           <div className="w-full border-t border-gray-200" />
         </div>
         <div className="relative flex justify-center text-xs">
-          <span className="bg-white px-3 text-gray-500">or continue with email</span>
+          <span className="bg-white px-3 text-gray-500">{t('or continue with email')}</span>
         </div>
       </div>
 
@@ -348,7 +350,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         {activeMode === 'signup' && (
           <div>
             <label htmlFor="name" className="block text-sm font-medium mb-2 text-gray-700">
-              Full name
+              {t('Full name')}
             </label>
             <input
               id="name"
@@ -364,7 +366,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
 
         <div>
           <label htmlFor="email" className="block text-sm font-medium mb-2 text-gray-700">
-            Email
+            {t('Email')}
           </label>
           <input
             id="email"
@@ -381,7 +383,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
         <div>
           <div className="flex items-center justify-between mb-2">
             <label htmlFor="password" className="block text-sm font-medium text-gray-700">
-              Password
+              {t('Password')}
             </label>
             {activeMode === 'signin' && (
               <button
@@ -389,7 +391,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
                 onClick={handleForgotPassword}
                 className="text-xs font-medium text-brand-600 hover:text-brand-700"
               >
-                Forgot password?
+                {t('Forgot password?')}
               </button>
             )}
           </div>
@@ -414,18 +416,18 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           disabled={loading}
           className="w-full px-4 py-2.5 bg-btn text-white font-medium rounded-md hover:bg-btn-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {loading ? 'Loading…' : activeMode === 'signup' ? 'Create account' : 'Sign in'}
+          {loading ? t('Loading…') : activeMode === 'signup' ? t('Create account') : t('Sign in')}
         </button>
       </form>
 
       <p className="text-center text-sm text-gray-600">
-        {activeMode === 'signup' ? 'Already have an account?' : "Don't have an account?"}{' '}
+        {activeMode === 'signup' ? t('Already have an account?') : t("Don't have an account?")}{' '}
         <button
           type="button"
           onClick={() => switchMode(activeMode === 'signup' ? 'signin' : 'signup')}
           className="font-medium text-brand-600 hover:text-brand-700"
         >
-          {activeMode === 'signup' ? 'Sign in' : 'Sign up'}
+          {activeMode === 'signup' ? t('Sign in') : t('Sign up')}
         </button>
       </p>
     </div>

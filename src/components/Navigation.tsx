@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import InteractiveLogo from '@/components/InteractiveLogo';
 import { useAuth } from '@/context/AuthContext';
+import LocalePicker from '@/components/LocalePicker';
+import { useLocale } from '@/i18n/LocaleContext';
 
 function initialsFor(name?: string, email?: string) {
   if (name) {
@@ -23,6 +25,7 @@ function initialsFor(name?: string, email?: string) {
  */
 export default function Navigation() {
   const { user, loading, signOut } = useAuth();
+  const { t } = useLocale();
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -40,7 +43,8 @@ export default function Navigation() {
           <InteractiveLogo />
 
           {/* Navigation Links */}
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-3 sm:gap-6">
+            <LocalePicker />
             {loading ? (
               <div className="w-9 h-9 rounded-full bg-gray-100 animate-pulse" />
             ) : user ? (
@@ -63,19 +67,19 @@ export default function Navigation() {
                 </button>
 
                 {menuOpen && (
-                  <div className="absolute right-0 mt-2 w-48 rounded-lg border border-gray-200 bg-white shadow-lg py-1">
+                  <div className="absolute end-0 mt-2 w-48 rounded-lg border border-gray-200 bg-white shadow-lg py-1">
                     <Link
                       href="/dashboard"
                       onClick={() => setMenuOpen(false)}
                       className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
                     >
-                      Dashboard
+                      {t('Dashboard')}
                     </Link>
                     <button
                       onClick={handleSignOut}
-                      className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                      className="block w-full text-start px-4 py-2 text-sm text-red-600 hover:bg-red-50"
                     >
-                      Sign out
+                      {t('Sign out')}
                     </button>
                   </div>
                 )}
@@ -94,7 +98,7 @@ export default function Navigation() {
                   <circle cx="12" cy="8" r="4" />
                   <path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" />
                 </svg>
-                <span className="relative">Sign In</span>
+                <span className="relative">{t('Sign In')}</span>
                 <svg
                   aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round"
                   className="relative -ml-1 h-4 w-0 opacity-0 transition-all duration-300 group-hover:ml-0 group-hover:w-4 group-hover:opacity-100 group-hover:translate-x-0.5"

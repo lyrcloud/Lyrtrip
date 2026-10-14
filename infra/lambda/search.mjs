@@ -671,6 +671,7 @@ async function searchFlightsDuffel({ from, to, depart, returnDate, passengers = 
       isBest:               i < 3,
       price:                pricePerPerson,
       totalPrice:           markedUp,
+      currency:             offer.total_currency ?? 'USD',
       basePrice:            baseTotal,
       totalDuration:        parseDuffelDuration(slice?.duration),
       airlineLogo:          firstSeg?.marketing_carrier?.logo_symbol_url ?? null,
@@ -1880,7 +1881,21 @@ async function searchFlightsSerpApi({ from, to, depart, returnDate }) {
 
   const best  = (data.best_flights  ?? []).map((f, i) => mapFlight(f, true,  i));
   const other = (data.other_flights ?? []).map((f, i) => mapFlight(f, false, i));
-  return [...best, ...other];
+  return { results: [...best, ...other], insights: priceInsights(data.price_insights) };
+}
+
+// Google Flights' read on the route (USD): the market price a Lyrtrip fare is compared against
+function priceInsights(p) {
+  if (!p || typeof p.lowest_price !== 'number') return null;
+  const range = Array.isArray(p.typical_price_range) ? p.typical_price_range.filter(n => typeof n === 'number') : [];
+  return {
+    source:      'Google Flights',
+    currency:    'USD',
+    lowestPrice: p.lowest_price,
+    priceLevel:  p.price_level ?? null,
+    typicalLow:  range[0] ?? null,
+    typicalHigh: range[1] ?? range[0] ?? null,
+  };
 }
 
 async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
@@ -2233,25 +2248,27 @@ async function handleSearch(event) {
           const missing = !from ? body.from : body.to;
           return json(200, { success: true, service, results: [], total: 0, source: 'none', error: `No airport found for "${missing}"` });
         }
+        // Google Flights runs alongside Duffel: it is the fallback and the market price to compare against
+        const serp = process.env.SERPAPI_KEY
+          ? searchFlightsSerpApi({ from, to, depart, returnDate }).catch(serpErr => {
+            console.error('SerpAPI flight search error:', serpErr.message);
+            return null;
+          })
+          : Promise.resolve(null);
         if (process.env.DUFFEL_API_KEY) {
           try {
             const results = await searchFlightsDuffel({ from, to, depart, returnDate, passengers: Number(passengers || 1) });
             if (results.length > 0) {
-              return json(200, { success: true, service, results, total: results.length, source: 'duffel' });
+              const insights = (await serp)?.insights ?? null;
+              return json(200, { success: true, service, results, total: results.length, source: 'duffel', priceInsights: insights });
             }
           } catch (duffelErr) {
             console.error('Duffel flight search error (falling back to SerpAPI):', duffelErr.message);
           }
         }
-        if (process.env.SERPAPI_KEY) {
-          try {
-            const results = await searchFlightsSerpApi({ from, to, depart, returnDate });
-            if (results.length > 0) {
-              return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
-            }
-          } catch (serpErr) {
-            console.error('SerpAPI flight search error (falling back to mock):', serpErr.message);
-          }
+        const serpResult = await serp;
+        if (serpResult?.results.length) {
+          return json(200, { success: true, service, results: serpResult.results, total: serpResult.results.length, source: 'serpapi', priceInsights: serpResult.insights });
         }
         // Placeholder flights: shown so the page isn't empty, never bookable
         const results = makeMockFlights(from, to, depart).map(r => ({ ...r, demo: true }));
@@ -2615,6 +2632,153 @@ export async function handler(event) {
 }
 
 // ---------------------------------------------------------------------------
+// Worldwide visitors: exchange rates for local-currency prices, interface
+// translations for the visitor's language, and hotel price comparison.
+// ---------------------------------------------------------------------------
+
+const RATES_MAX_AGE_MS = 6 * 3600 * 1000;
+let ratesCache = null;
+
+// USD-based rates for every currency, refreshed from open.er-api.com at most every 6 hours
+async function handleRates() {
+  if (ratesCache && Date.now() - ratesCache.fetchedAt < RATES_MAX_AGE_MS) return json(200, ratesCache.body);
+  const coll = (await getDb()).collection('fx_rates');
+  const stored = await coll.findOne({ _id: 'USD' });
+  if (stored && Date.now() - stored.fetchedAt < RATES_MAX_AGE_MS) {
+    ratesCache = stored;
+    return json(200, stored.body);
+  }
+  try {
+    const res = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(8000) });
+    const data = await res.json();
+    if (!res.ok || data.result !== 'success' || !data.rates) throw new Error(`rates ${res.status}`);
+    const body = { base: 'USD', rates: data.rates, updatedAt: data.time_last_update_utc ?? new Date().toUTCString() };
+    ratesCache = { fetchedAt: Date.now(), body };
+    await coll.updateOne({ _id: 'USD' }, { $set: ratesCache }, { upsert: true });
+    return json(200, body);
+  } catch (err) {
+    console.error('Exchange rate refresh failed:', err.message);
+    // Stale rates beat none; the page labels converted prices as approximate anyway
+    if (stored) return json(200, stored.body);
+    return json(503, { error: 'Exchange rates are unavailable' });
+  }
+}
+
+// Interface strings the site may ask to translate: scripts/extract-i18n.mjs collects every t('...') in src/.
+// Only these are translated, so the endpoint can't be used as a free general translator.
+let i18nCatalog;
+async function getI18nCatalog() {
+  if (!i18nCatalog) {
+    const { readFile } = await import('node:fs/promises');
+    const strings = JSON.parse(await readFile(new URL('./i18n-strings.json', import.meta.url), 'utf8'));
+    i18nCatalog = new Set(strings);
+  }
+  return i18nCatalog;
+}
+
+const I18N_BATCH = 120;
+
+async function translateStrings(lang, strings) {
+  const message = await getAnthropicClient().beta.messages.create({
+    model: LYRBOT_MODEL,
+    max_tokens: 16000,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    system: 'You translate the user interface of Lyrtrip, a travel booking website. Translate each string into the requested language as a native speaker would see it on a travel site: short, natural and consistent. Keep placeholders in curly braces such as {name} exactly as written, keep brand names (Lyrtrip, Lyrbot, Google, Facebook, WeChat, WhatsApp, Uber, Stripe) and email addresses unchanged, and keep emoji. Return the translations in the same order as the input.',
+    output_config: {
+      effort: 'low',
+      format: {
+        type: 'json_schema',
+        schema: {
+          type: 'object',
+          properties: { translations: { type: 'array', items: { type: 'string' } } },
+          required: ['translations'],
+          additionalProperties: false,
+        },
+      },
+    },
+    messages: [{ role: 'user', content: `Language: ${lang}\n\nStrings (JSON array):\n${JSON.stringify(strings)}` }],
+  });
+  if (message.stop_reason === 'refusal') return {};
+  const text = message.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  const out = JSON.parse(text).translations;
+  if (!Array.isArray(out) || out.length !== strings.length) throw new Error('Translation count mismatch');
+  return Object.fromEntries(strings.map((src, i) => [src, String(out[i])]));
+}
+
+// Returns { lang, translations } for the requested interface strings; missing ones are
+// translated once with Claude and kept in MongoDB for every later visitor.
+async function handleI18n(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const lang = String(body.lang ?? '').trim();
+  if (!/^[a-z]{2,3}(-[A-Za-z0-9]{2,4})?$/.test(lang) || lang === 'en' || lang.startsWith('en-')) {
+    return json(400, { error: 'Unsupported language' });
+  }
+  const catalog = await getI18nCatalog();
+  const wanted = [...new Set(Array.isArray(body.strings) ? body.strings : [])].filter(str => catalog.has(str)).slice(0, 1000);
+
+  const coll = (await getDb()).collection('translations');
+  const doc = await coll.findOne({ _id: lang });
+  const known = Object.fromEntries(Object.entries(doc?.strings ?? {}).map(([k, v]) => [Buffer.from(k, 'base64url').toString('utf8'), v]));
+  const missing = wanted.filter(str => !(str in known));
+
+  if (missing.length && process.env.ANTHROPIC_API_KEY) {
+    // Each language is translated once and shared, but cap how often a visitor can trigger new work
+    const visitor = event.requestContext?.http?.sourceIp || 'unknown';
+    if (await countLyrbotUse(`i18n#${visitor}`, 3600) <= 30 && await countLyrbotUse('i18n#all', 86400) <= 400) {
+      try {
+        for (let i = 0; i < missing.length; i += I18N_BATCH) {
+          const done = await translateStrings(lang, missing.slice(i, i + I18N_BATCH));
+          Object.assign(known, done);
+          const set = Object.fromEntries(Object.entries(done).map(([k, v]) => [`strings.${Buffer.from(k).toString('base64url')}`, v]));
+          // Keys are base64url so dots and dollar signs in English text are safe as MongoDB field names
+          await coll.updateOne({ _id: lang }, { $set: { ...set, updatedAt: new Date() } }, { upsert: true });
+        }
+      } catch (err) {
+        console.error(`Translation to ${lang} failed:`, err.message);
+      }
+    }
+  }
+  const translations = Object.fromEntries(wanted.filter(str => str in known).map(str => [str, known[str]]));
+  return json(200, { lang, translations });
+}
+
+// Same room, every booking site: Google Hotels' price list for one property (USD)
+async function handleHotelCompare(event) {
+  if (!process.env.SERPAPI_KEY) return json(503, { error: 'Price comparison is not configured' });
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const s = v => String(v ?? '').trim();
+  const propertyToken = s(body.propertyToken), checkin = s(body.checkin), checkout = s(body.checkout);
+  if (!propertyToken || !/^\d{4}-\d{2}-\d{2}$/.test(checkin) || !/^\d{4}-\d{2}-\d{2}$/.test(checkout)) {
+    return json(400, { error: 'Choose check-in and check-out dates to compare prices' });
+  }
+  const params = new URLSearchParams({
+    engine: 'google_hotels', q: s(body.destination) ? `Hotels in ${s(body.destination)}` : 'Hotels',
+    property_token: propertyToken, check_in_date: checkin, check_out_date: checkout,
+    adults: String(Math.min(Math.max(Number(body.adults) || 1, 1), 10)), currency: 'USD', gl: 'us', hl: 'en',
+    api_key: process.env.SERPAPI_KEY,
+  });
+  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(25_000) });
+  const p = await res.json().catch(() => ({}));
+  if (!res.ok || p.error) return json(502, { error: 'Could not load prices from other sites. Try again in a moment.' });
+
+  const seen = new Set();
+  const offers = [...(p.featured_prices ?? []), ...(p.prices ?? [])]
+    .map(o => ({
+      source:           o.source ?? 'Unknown',
+      link:             o.link ?? null,
+      logo:             o.logo ?? null,
+      official:         !!o.official,
+      nightly:          o.rate_per_night?.extracted_lowest ?? null,
+      total:            o.total_rate?.extracted_lowest ?? null,
+      freeCancellation: !!o.free_cancellation,
+    }))
+    .filter(o => (o.total ?? o.nightly) != null && !seen.has(o.source) && seen.add(o.source))
+    .sort((a, b) => (a.total ?? a.nightly) - (b.total ?? b.nightly));
+  return json(200, { currency: 'USD', nights: nightsBetween(checkin, checkout), offers });
+}
+
+// ---------------------------------------------------------------------------
 // Lyrbot: the site's help assistant, as on Lyrshop. Claude answers travel and
 // booking questions from the Lyrtrip facts below and points to WhatsApp or
 // email for anything that needs a person. Open to every visitor, so use is
@@ -2935,6 +3099,9 @@ async function routeRequest(event) {
     if (path.endsWith('/api/hotel/admin')            && method === 'POST')         return handleHotelAdmin(event);
     if (path.endsWith('/api/admin')                  && method === 'POST')         return handleAdmin(event);
     if (path.endsWith('/api/assistant/chat')         && method === 'POST')         return handleLyrbotChat(event);
+    if (path.endsWith('/api/rates')                  && method === 'GET')          return handleRates();
+    if (path.endsWith('/api/i18n')                   && method === 'POST')         return handleI18n(event);
+    if (path.endsWith('/api/hotel/compare')          && method === 'POST')         return handleHotelCompare(event);
     if (path.includes('/api/uber/estimates')         && method === 'GET')          return handleUberEstimates(event);
     if (path.includes('/api/uber/checkout')          && method === 'POST')         return handleUberCheckout(event);
     if (path.includes('/api/uber/token')             && method === 'POST')         return handleUberToken(event);

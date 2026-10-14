@@ -1,6 +1,7 @@
 'use client';
 
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useLocale } from '@/i18n/LocaleContext';
 
 // Lyrbot: the floating help assistant, as on Lyrshop. A robot button opens a chat answered by
 // /api/assistant/chat, with quick questions and WhatsApp/email contact for a person.
@@ -10,14 +11,6 @@ const STORAGE_KEY = 'lyrbotChat';
 const WHATSAPP_URL = 'https://wa.me/16615809465';
 const WHATSAPP_LABEL = '+1 661 580 9465';
 const SUPPORT_EMAIL = 'support@lyrtrip.com';
-const GREETING = "Hi, I'm Lyrbot! Ask me about flights, hotels, bookings, refunds or your Lyrtrip account.";
-const QUICK_QUESTIONS = [
-  'Where is my e-ticket?',
-  'How do hotel bookings work?',
-  'Can I get a refund?',
-  'How do I reset my password?',
-];
-const CONNECT_ERROR = `I couldn't connect just now. You can reach our team on WhatsApp ${WHATSAPP_LABEL} or at ${SUPPORT_EMAIL}.`;
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 type Bubble = ChatMessage & { error?: boolean };
@@ -93,6 +86,15 @@ function saveHistory(history: ChatMessage[]) {
 }
 
 export default function Lyrbot() {
+  const { t } = useLocale();
+  const GREETING = t("Hi, I'm Lyrbot! Ask me about flights, hotels, bookings, refunds or your Lyrtrip account.");
+  const QUICK_QUESTIONS = [
+    t('Where is my e-ticket?'),
+    t('How do hotel bookings work?'),
+    t('Can I get a refund?'),
+    t('How do I reset my password?'),
+  ];
+  const CONNECT_ERROR = t("I couldn't connect just now. You can reach our team on WhatsApp {phone} or at {email}.", { phone: WHATSAPP_LABEL, email: SUPPORT_EMAIL });
   const [open, setOpen] = useState(false);
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
@@ -162,12 +164,12 @@ export default function Lyrbot() {
   ];
 
   return (
-    <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end gap-3">
+    <div className="fixed end-4 bottom-4 z-40 flex flex-col items-end gap-3">
       {open && (
         <section
           id="lyrbot-panel"
           role="dialog"
-          aria-label="Lyrbot AI assistant"
+          aria-label={t('Lyrbot AI assistant')}
           className="lyrbot-panel flex flex-col w-[min(370px,calc(100vw-2rem))] h-[min(540px,calc(100dvh-8rem))] bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden"
         >
           <header className="flex items-center gap-2.5 px-4 py-3 bg-gradient-to-br from-brand-500 to-brand-700 text-white">
@@ -176,12 +178,12 @@ export default function Lyrbot() {
             </span>
             <div className="flex-1 leading-tight">
               <strong className="block">Lyrbot</strong>
-              <small className="text-xs opacity-90">AI assistant · replies in seconds</small>
+              <small className="text-xs opacity-90">{t('AI assistant · replies in seconds')}</small>
             </div>
             <button
               type="button"
               onClick={() => { setOpen(false); toggleRef.current?.focus(); }}
-              aria-label="Close Lyrbot"
+              aria-label={t('Close Lyrbot')}
               className="w-9 h-9 rounded-full bg-white/15 hover:bg-white/30 text-2xl leading-none"
             >
               &times;
@@ -204,14 +206,14 @@ export default function Lyrbot() {
               </div>
             ))}
             {busy && (
-              <div className="w-fit px-3 py-2.5 rounded-2xl rounded-bl-md bg-white border border-gray-200" aria-label="Lyrbot is typing">
+              <div className="w-fit px-3 py-2.5 rounded-2xl rounded-bl-md bg-white border border-gray-200" aria-label={t('Lyrbot is typing')}>
                 <span className="lyrbot-typing flex gap-1"><i /><i /><i /></span>
               </div>
             )}
           </div>
 
           {history.length === 0 && !busy && (
-            <div className="flex flex-wrap gap-1.5 px-3 pb-2 bg-gray-50" aria-label="Suggested questions">
+            <div className="flex flex-wrap gap-1.5 px-3 pb-2 bg-gray-50" aria-label={t('Suggested questions')}>
               {QUICK_QUESTIONS.map(q => (
                 <button
                   key={q}
@@ -234,15 +236,15 @@ export default function Lyrbot() {
               value={draft}
               onChange={e => setDraft(e.target.value)}
               maxLength={1000}
-              placeholder="Ask Lyrbot a question…"
-              aria-label="Your question"
+              placeholder={t('Ask Lyrbot a question…')}
+              aria-label={t('Your question')}
               autoComplete="off"
               className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
             <button
               type="submit"
               disabled={busy}
-              aria-label="Send"
+              aria-label={t('Send')}
               className="grid place-items-center w-10 h-10 shrink-0 rounded-full bg-btn hover:bg-btn-hover text-white disabled:opacity-50"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true" className="w-5 h-5"><path fill="currentColor" d="M3.4 20.4 21 12 3.4 3.6 3.3 10l12.6 2-12.6 2z" /></svg>
@@ -250,7 +252,7 @@ export default function Lyrbot() {
           </form>
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pb-3 text-xs text-gray-500">
-            <span>Prefer a person?</span>
+            <span>{t('Prefer a person?')}</span>
             <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-green-700 hover:underline">
               <WhatsAppIcon /> WhatsApp {WHATSAPP_LABEL}
             </a>
@@ -265,7 +267,7 @@ export default function Lyrbot() {
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         aria-controls="lyrbot-panel"
-        aria-label={open ? 'Close Lyrbot' : 'Open Lyrbot, AI assistant'}
+        aria-label={open ? t('Close Lyrbot') : t('Open Lyrbot, AI assistant')}
         className={`lyrbot-toggle inline-flex items-center gap-1.5 h-13 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-white font-bold shadow-lg shadow-brand-600/30 hover:-translate-y-0.5 hover:shadow-xl transition focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-300 ${open ? 'px-2.5' : 'pl-2.5 pr-4'}`}
       >
         <RobotIcon className="w-8 h-8" />

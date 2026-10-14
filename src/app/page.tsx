@@ -8,6 +8,8 @@ import LocationMap from '@/components/LocationMap';
 import LocationPicker from '@/components/LocationPicker';
 import { calcNights } from '@/lib/bookings';
 import { useAuth } from '@/context/AuthContext';
+import { Price, useLocale } from '@/i18n/LocaleContext';
+import HotelPriceCompare from '@/components/HotelPriceCompare';
 
 interface FlightLeg {
   airline: string;
@@ -72,6 +74,16 @@ function passengerProblems(pax: PassengerDetail[], idDocsRequired?: boolean, dep
     if (!missing.length) return [];
     return [`${pax.length > 1 ? `Passenger ${i + 1}: ` : ''}${missing.join(', ')}`];
   });
+}
+
+// Google Flights' market read on a route (USD), used to show how a fare compares
+interface PriceInsights {
+  source: string;
+  currency: string;
+  lowestPrice: number;
+  priceLevel: string | null;
+  typicalLow: number | null;
+  typicalHigh: number | null;
 }
 
 interface SearchResult {
@@ -525,6 +537,7 @@ for (const o of STUDY_OPTIONS) ICON_MOTION[o.id] = o.motion;
 
 export default function Home() {
   const { user } = useAuth();
+  const { t, money, original } = useLocale();
   const router = useRouter();
   const [activeTab, setActiveTab] = useState('flights');
   const [loading, setLoading] = useState(false);
@@ -532,6 +545,7 @@ export default function Home() {
   const [hasSearched, setHasSearched] = useState(false);
   const [showLocationMap, setShowLocationMap] = useState(false);
   const [flightSearchError, setFlightSearchError] = useState<string | null>(null);
+  const [priceInsights, setPriceInsights] = useState<PriceInsights | null>(null);
 
   const [formData, setFormData] = useState({
     destination: '',
@@ -952,6 +966,7 @@ export default function Home() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Flight search failed');
     setFlightSearchError(data.error ?? null);
+    setPriceInsights(data.priceInsights ?? null);
     return (data.results ?? []) as SearchResult[];
   };
 
@@ -1318,18 +1333,18 @@ export default function Home() {
   };
 
   const tabs = [
-    { id: 'flights', icon: '✈️', label: 'Flights', sub: 'Fly anywhere' },
-    { id: 'hotels', icon: '🏨', label: 'Hotels', sub: 'Places to stay' },
-    { id: 'car', icon: '🚗', label: 'Car', sub: 'Book a ride' },
-    { id: 'dash', icon: '🍔', label: 'Dash', sub: 'Food & groceries' },
-    { id: 'bus', icon: '🚌', label: 'Bus', sub: 'Intercity routes' },
-    { id: 'train', icon: '🚂', label: 'Train', sub: 'Rail journeys' },
-    { id: 'cruise', icon: '🚢', label: 'Cruise', sub: 'Sail away' },
-    { id: 'tourism', icon: '🎒', label: 'Tourism', sub: 'Tours & trips' },
-    { id: 'study', icon: '🎓', label: 'Study', sub: 'Study abroad' },
-    { id: 'career', icon: '💼', label: 'Job', sub: 'Find work' },
-    { id: 'events', icon: '🎟️', label: 'Events', sub: 'Concerts & shows' },
-    { id: 'shipping', icon: '📦', label: 'Shipping', sub: 'Send parcels' },
+    { id: 'flights', icon: '✈️', label: t('Flights'), sub: t('Fly anywhere') },
+    { id: 'hotels', icon: '🏨', label: t('Hotels'), sub: t('Places to stay') },
+    { id: 'car', icon: '🚗', label: t('Car'), sub: t('Book a ride') },
+    { id: 'dash', icon: '🍔', label: t('Dash'), sub: t('Food & groceries') },
+    { id: 'bus', icon: '🚌', label: t('Bus'), sub: t('Intercity routes') },
+    { id: 'train', icon: '🚂', label: t('Train'), sub: t('Rail journeys') },
+    { id: 'cruise', icon: '🚢', label: t('Cruise'), sub: t('Sail away') },
+    { id: 'tourism', icon: '🎒', label: t('Tourism'), sub: t('Tours & trips') },
+    { id: 'study', icon: '🎓', label: t('Study'), sub: t('Study abroad') },
+    { id: 'career', icon: '💼', label: t('Job'), sub: t('Find work') },
+    { id: 'events', icon: '🎟️', label: t('Events'), sub: t('Concerts & shows') },
+    { id: 'shipping', icon: '📦', label: t('Shipping'), sub: t('Send parcels') },
   ];
 
   const inputClass = "w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border border-gray-200 rounded-xl shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-brand-300 hover:bg-white focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100";
@@ -1377,7 +1392,7 @@ export default function Home() {
 
   const HotelList = () => {
     if (!hasSearched) return null;
-    if (loading) return <p className="text-gray-500 mt-6">Searching hotels...</p>;
+    if (loading) return <p className="text-gray-500 mt-6">{t('Searching hotels...')}</p>;
     if (results.length === 0 || results.every(r => r.demo)) {
       const place = formData.destination.trim() || formData.destinationLocation?.address || '';
       return (
@@ -1407,8 +1422,8 @@ export default function Home() {
                   <h3 className="font-bold text-gray-900 text-base leading-tight">{result.name}</h3>
                   {result.pricePerNight != null && result.pricePerNight > 0 && (
                     <div className="shrink-0 text-right">
-                      <p className="text-xl font-bold text-brand-700">${result.pricePerNight}</p>
-                      <p className="text-xs text-gray-500">per night</p>
+                      <p className="text-xl font-bold text-brand-700"><Price amount={result.pricePerNight} currency={result.currency ?? 'USD'} /></p>
+                      <p className="text-xs text-gray-500">{t('per night')}</p>
                     </div>
                   )}
                 </div>
@@ -1443,7 +1458,7 @@ export default function Home() {
                   onClick={() => openHotelRequest(result)}
                   className="ml-auto px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
                 >
-                  Book
+                  {t('Book')}
                 </button>
                 ) : (
                 // No price to book against; hotel websites are only shown to admins
@@ -1459,7 +1474,7 @@ export default function Home() {
 
   const FlightList = () => {
     if (!hasSearched) return null;
-    if (loading) return <p className="text-gray-500 mt-6">Searching flights...</p>;
+    if (loading) return <p className="text-gray-500 mt-6">{t('Searching flights...')}</p>;
     if (results.length === 0 && flightSearchError) return <p className="text-gray-600 mt-6">{flightSearchError}. Pick a city or airport from the suggestions.</p>;
     if (results.length === 0 || results.every(r => r.demo)) return (
       <NoLiveResults
@@ -1510,8 +1525,11 @@ export default function Home() {
             )}
           </div>
           <div className="text-right shrink-0 ml-4 flex flex-col items-end gap-1">
-            <p className="text-xl font-bold text-brand-700">${r.price?.toLocaleString()}</p>
-            <p className="text-xs text-gray-500">per person</p>
+            {r.price != null && <p className="text-xl font-bold text-brand-700"><Price amount={r.price} currency={r.currency ?? 'USD'} /></p>}
+            <p className="text-xs text-gray-500">{t('per person')}</p>
+            {priceInsights?.typicalLow != null && r.price != null && (r.currency ?? 'USD') === 'USD' && r.price < priceInsights.typicalLow && (
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-green-100 text-green-800">{t('Below typical price')}</span>
+            )}
             {r.demo ? (
               <span className="mt-1 px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
             ) : !r.duffelOfferId ? (
@@ -1522,7 +1540,7 @@ export default function Home() {
                 rel="noopener noreferrer"
                 className="mt-1 px-4 py-1.5 border border-brand-600 text-brand-700 text-sm font-semibold rounded-lg hover:bg-brand-50 transition"
               >
-                View deal ↗
+                {t('View deal')} ↗
               </a>
             ) : (
             <button
@@ -1537,7 +1555,7 @@ export default function Home() {
               }}
               className="mt-1 px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
             >
-              Select
+              {t('Select')}
             </button>
             )}
           </div>
@@ -1546,15 +1564,30 @@ export default function Home() {
     };
     return (
       <div className="mt-6 space-y-2">
+        {priceInsights && (
+          <div className="mb-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-700">
+            <span className="font-semibold text-gray-900">{t('Compared with other sites')}: </span>
+            {priceInsights.typicalLow != null && priceInsights.typicalHigh != null
+              ? t('{source} shows typical fares of {low} to {high} for this route, and the lowest today is {lowest}.', {
+                source: priceInsights.source,
+                low: money(priceInsights.typicalLow),
+                high: money(priceInsights.typicalHigh),
+                lowest: money(priceInsights.lowestPrice),
+              })
+              : t('{source} shows the lowest fare today at {lowest}.', { source: priceInsights.source, lowest: money(priceInsights.lowestPrice) })}
+            {priceInsights.priceLevel === 'low' && <span className="ms-1 font-semibold text-green-700">{t('Prices are low right now.')}</span>}
+            {priceInsights.priceLevel === 'high' && <span className="ms-1 font-semibold text-orange-600">{t('Prices are higher than usual.')}</span>}
+          </div>
+        )}
         {best.length > 0 && (
           <>
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Best flights</p>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">{t('Best flights')}</p>
             {best.map(r => <FlightRow key={r.id} r={r} />)}
           </>
         )}
         {other.length > 0 && (
           <>
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mt-5 mb-2">Other flights</p>
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mt-5 mb-2">{t('Other flights')}</p>
             {other.map(r => <FlightRow key={r.id} r={r} />)}
           </>
         )}
@@ -1837,8 +1870,7 @@ export default function Home() {
             {result.rating && <p className="text-yellow-500 mt-2">⭐ {result.rating}</p>}
             {result.price !== undefined && (
               <p className="text-lg font-bold text-brand-600 mt-2">
-                {result.currency && result.currency !== 'USD' ? result.currency + ' ' : '$'}
-                {result.price.toLocaleString()}{result.unit ?? ''}
+                <Price amount={result.price} currency={result.currency ?? 'USD'} />{result.unit ?? ''}
               </p>
             )}
           </div>
@@ -2044,8 +2076,8 @@ export default function Home() {
             <div className="text-right shrink-0 ml-4 flex flex-col items-end gap-1">
               {j.price != null && (
                 <>
-                  <p className="text-xl font-bold text-brand-700">{j.currency} {j.price.toFixed(2)}</p>
-                  <p className="text-xs text-gray-500">per person</p>
+                  <p className="text-xl font-bold text-brand-700"><Price amount={j.price} currency={j.currency} /></p>
+                  <p className="text-xs text-gray-500">{t('per person')}</p>
                 </>
               )}
               <a
@@ -2396,7 +2428,7 @@ export default function Home() {
                               </p>
                             </div>
                             <div className="text-right shrink-0 ml-3">
-                              <p className="font-bold text-gray-900">${ride.lowEstimate}–${ride.highEstimate}</p>
+                              <p className="font-bold text-gray-900">{money(ride.lowEstimate, ride.currencyCode || 'USD')}–{money(ride.highEstimate, ride.currencyCode || 'USD')}</p>
                               <p className="text-xs text-gray-400">+${serviceFee} fee</p>
                               <button
                                 onClick={() => {
@@ -2859,7 +2891,7 @@ export default function Home() {
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 my-auto">
                 <div className="flex items-start justify-between mb-4 gap-3">
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold text-gray-900">Book Hotel</h2>
+                    <h2 className="text-xl font-bold text-gray-900">{t('Book Hotel')}</h2>
                     <p className="text-sm text-gray-600 truncate">{d.hotel.name}</p>
                   </div>
                   <button onClick={close} className="text-gray-400 hover:text-gray-600 text-2xl leading-none" aria-label="Close">&times;</button>
@@ -2885,15 +2917,26 @@ export default function Home() {
                 <div className="bg-brand-50 rounded-xl p-4 mb-4 text-sm">
                   {total != null ? (
                     <>
-                      <div className="flex justify-between text-gray-600"><span>Room, {nights} night{nights !== 1 ? 's' : ''}, incl. taxes &amp; fees</span><span>${(total - (fee ?? 0)).toFixed(2)}</span></div>
-                      <div className="flex justify-between text-gray-600 mt-1"><span>Lyrtrip service fee (12%)</span><span>${(fee ?? 0).toFixed(2)}</span></div>
-                      <div className="flex justify-between font-bold text-gray-900 text-base mt-2 pt-2 border-t border-brand-100"><span>Total</span><span>${total.toFixed(2)}</span></div>
+                      <div className="flex justify-between text-gray-600"><span>{nights === 1 ? t('Room, 1 night, incl. taxes & fees') : t('Room, {n} nights, incl. taxes & fees', { n: nights })}</span><span>{money(total - (fee ?? 0))}</span></div>
+                      <div className="flex justify-between text-gray-600 mt-1"><span>{t('Lyrtrip service fee (12%)')}</span><span>{money(fee ?? 0)}</span></div>
+                      <div className="flex justify-between font-bold text-gray-900 text-base mt-2 pt-2 border-t border-brand-100"><span>{t('Total')}</span><span className="text-end"><Price amount={total} /></span></div>
                       {!hotelServerQuote && <p className="text-xs text-gray-500 mt-2">Estimated from today&apos;s rate; the exact price is checked before you pay.</p>}
                     </>
                   ) : (
-                    <p className="text-gray-600">Choose your dates to see the price.</p>
+                    <p className="text-gray-600">{t('Choose your dates to see the price.')}</p>
                   )}
                 </div>
+
+                {d.hotel.propertyToken && (
+                  <HotelPriceCompare
+                    propertyToken={d.hotel.propertyToken}
+                    destination={formData.destination}
+                    checkin={d.checkin}
+                    checkout={d.checkout}
+                    adults={hotelForm.adults}
+                    lyrtripTotal={total}
+                  />
+                )}
 
                 <div className="space-y-3 mb-4">
                   <div className="grid grid-cols-2 gap-2">
@@ -2949,7 +2992,7 @@ export default function Home() {
                     disabled={hotelSubmitting}
                     className="flex-1 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover disabled:bg-gray-300 transition"
                   >
-                    {hotelSubmitting ? 'Checking price…' : total != null ? `Pay $${total.toFixed(2)} →` : 'Continue'}
+                    {hotelSubmitting ? t('Checking price…') : total != null ? `${t('Pay {amount}', { amount: original(total) })} →` : t('Continue')}
                   </button>
                 </div>
               </div>
@@ -2975,7 +3018,7 @@ export default function Home() {
               <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 px-4 py-6 overflow-y-auto">
                 <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 my-auto">
                   <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-xl font-bold text-gray-900">Book Flight</h2>
+                    <h2 className="text-xl font-bold text-gray-900">{t('Book Flight')}</h2>
                     <button onClick={() => setFlightDraft(null)} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
                   </div>
 
@@ -2994,7 +3037,7 @@ export default function Home() {
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-2xl font-bold text-brand-700">${total.toLocaleString()}</p>
+                        <p className="text-2xl font-bold text-brand-700"><Price amount={total} currency={f.currency ?? 'USD'} /></p>
                         <p className="text-xs text-gray-500">total · {flightPassengers} pax</p>
                         <p className="text-xs text-brand-500 mt-0.5">incl. taxes &amp; fees</p>
                       </div>
@@ -3105,8 +3148,8 @@ export default function Home() {
                       {flightBookingLoading ? (
                         <><span className="animate-spin">⟳</span> Processing…</>
                       ) : user ? (
-                        `Pay $${total.toLocaleString()} →`
-                      ) : 'Sign in to Book'}
+                        `${t('Pay {amount}', { amount: original(total, f.currency ?? 'USD') })} →`
+                      ) : t('Sign in to Book')}
                     </button>
                   </div>
                   {!user && (
@@ -3149,7 +3192,7 @@ export default function Home() {
                 </div>
                 <div className="bg-brand-50 rounded-lg p-3 mb-5 text-sm">
                   <div className="flex justify-between font-bold text-brand-700">
-                    <span>Total</span><span>${total.toLocaleString()}</span>
+                    <span>{t('Total')}</span><span className="text-end"><Price amount={total} currency={f.currency ?? 'USD'} /></span>
                   </div>
                 </div>
                 <div className="flex gap-3">
@@ -3206,16 +3249,16 @@ export default function Home() {
                 return (
                   <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm space-y-1">
                     <div className="flex justify-between text-gray-600">
-                      <span>Uber fare (est.)</span>
-                      <span>${rideDraft.ride.lowEstimate}–${rideDraft.ride.highEstimate}</span>
+                      <span>{t('Uber fare (est.)')}</span>
+                      <span>{money(rideDraft.ride.lowEstimate, rideDraft.ride.currencyCode || 'USD')}–{money(rideDraft.ride.highEstimate, rideDraft.ride.currencyCode || 'USD')}</span>
                     </div>
                     <div className="flex justify-between text-gray-600">
-                      <span>Lyrtrip service fee</span>
-                      <span>${serviceFee}</span>
+                      <span>{t('Lyrtrip service fee')}</span>
+                      <span>{money(serviceFee)}</span>
                     </div>
                     <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1">
-                      <span>Total charged now</span>
-                      <span>~${total}</span>
+                      <span>{t('Total charged now')}</span>
+                      <span>~{original(total)}</span>
                     </div>
                   </div>
                 );

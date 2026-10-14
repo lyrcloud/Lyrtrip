@@ -23,6 +23,7 @@ R="--region us-east-1"
 
 cd "$(git rev-parse --show-toplevel)"
 [[ -z "$(git status --porcelain infra/lambda src)" ]] || { echo "Uncommitted changes in infra/lambda or src; commit first" >&2; exit 1; }
+node scripts/extract-i18n.mjs --check
 set -a; . ./.env.local; set +a
 [[ -n "${DUFFEL_API_KEY:-}" ]] || { echo "Missing DUFFEL_API_KEY in .env.local" >&2; exit 1; }
 if [[ "$DUFFEL_API_KEY" == duffel_test_* ]]; then
@@ -37,7 +38,7 @@ aws lambda publish-version --function-name $FUNCTION $R --description "before de
 
 echo "2/5 deploy API code from $(git rev-parse --short HEAD)"
 T=$(mktemp -d)
-for f in search.mjs package.json package-lock.json; do git show "HEAD:infra/lambda/$f" > "$T/$f"; done
+for f in search.mjs package.json package-lock.json i18n-strings.json; do git show "HEAD:infra/lambda/$f" > "$T/$f"; done
 (cd "$T" && npm ci --omit=dev --silent && zip -qr "$T.zip" .)
 aws lambda update-function-code --function-name $FUNCTION $R --zip-file "fileb://$T.zip" --query LastUpdateStatus --output text
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
@@ -83,7 +84,7 @@ aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admi
 }"
 echo "admin policy on ${ROLE_ARN##*/}"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/assistant/chat"; do
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
     echo "exists: $ROUTE"
   else

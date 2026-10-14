@@ -5,6 +5,7 @@ import Footer from "@/components/Footer";
 import Lyrbot from "@/components/Lyrbot";
 import Navigation from "@/components/Navigation";
 import { AuthProvider } from "@/context/AuthContext";
+import { LocaleProvider } from "@/i18n/LocaleContext";
 
 const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
@@ -30,12 +31,14 @@ export default function RootLayout({
         <script src="https://accounts.google.com/gsi/client" async defer />
       </head>
       <body className="min-h-screen flex flex-col">
-        <AuthProvider>
-          <Navigation />
-          <div className="flex-1 flex flex-col">{children}</div>
-          <Footer />
-          <Lyrbot />
-        </AuthProvider>
+        <LocaleProvider>
+          <AuthProvider>
+            <Navigation />
+            <div className="flex-1 flex flex-col">{children}</div>
+            <Footer />
+            <Lyrbot />
+          </AuthProvider>
+        </LocaleProvider>
       </body>
     </html>
   );
