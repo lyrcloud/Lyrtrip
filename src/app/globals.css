@@ -99,3 +99,18 @@ body {
   [class*="animate-[mapIn"], [class*="animate-[panelIn"], [class*="animate-[logoPop"], [class*="animate-[tileIn"], [class*="animate-[signIn"] { animation: none !important; }
   * { transition-duration: 0ms !important; }
 }
+
+/* Lyrbot help assistant (src/components/Lyrbot.tsx) */
+.lyrbot-toggle svg { animation: lyrbot-bob 3s ease-in-out infinite; }
+.lyrbot-toggle .lyrbot-eye { animation: lyrbot-blink 4s infinite; transform-origin: center; transform-box: fill-box; }
+.lyrbot-panel { animation: lyrbot-open 0.2s ease; }
+.lyrbot-typing i { width: 6px; height: 6px; border-radius: 50%; background: #9ca3af; animation: lyrbot-dot 1.2s infinite ease-in-out; }
+.lyrbot-typing i:nth-child(2) { animation-delay: 0.15s; }
+.lyrbot-typing i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes lyrbot-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+@keyframes lyrbot-blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.1); } }
+@keyframes lyrbot-open { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes lyrbot-dot { 0%, 80%, 100% { opacity: 0.3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) {
+  .lyrbot-toggle svg, .lyrbot-toggle .lyrbot-eye, .lyrbot-panel, .lyrbot-typing i { animation: none; }
+}

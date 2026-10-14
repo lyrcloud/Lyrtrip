@@ -3,6 +3,8 @@
 #
 #   bash infra/deploy-site.sh
 #
+# Set ANTHROPIC_API_KEY in .env.local for Lyrbot, the help assistant (optional: without it Lyrbot
+# points visitors to WhatsApp and email).
 # Needs DUFFEL_API_KEY in .env.local. While it is a duffel_test_ key, flight checkouts are paid
 # with the Stripe TEST key from .env.local (STRIPE_SECRET_KEY=sk_test_...) so no real card is
 # charged for a test ticket; the site's own Stripe key on the Lambda is left alone. With a
@@ -40,7 +42,7 @@ for f in search.mjs package.json package-lock.json; do git show "HEAD:infra/lamb
 aws lambda update-function-code --function-name $FUNCTION $R --zip-file "fileb://$T.zip" --query LastUpdateStatus --output text
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
-echo "3/5 settings (Duffel in, TRAVELPORT_* out, existing keys kept)"
+echo "3/5 settings (Duffel and Anthropic in, TRAVELPORT_* out, existing keys kept)"
 ENV_FILE=$(mktemp); chmod 600 "$ENV_FILE"
 aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Environment.Variables' --output json |
   node -e '
@@ -52,6 +54,8 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       // Hotel requests: emails from the verified lyrtrip.com domain, admin sign-in via Cognito ID tokens
       cur.SES_FROM_EMAIL = cur.SES_FROM_EMAIL || "bookings@lyrtrip.com";
       for (const k of ["COGNITO_USER_POOL_ID", "COGNITO_USER_POOL_CLIENT_ID"]) if (process.env[k]) cur[k] = process.env[k];
+      // Lyrbot (the help assistant) answers with Claude; without a key it offers WhatsApp and email instead
+      if (process.env.ANTHROPIC_API_KEY) cur.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
       if (process.env.DUFFEL_STRIPE_SECRET_KEY) cur.DUFFEL_STRIPE_SECRET_KEY = process.env.DUFFEL_STRIPE_SECRET_KEY;
       else delete cur.DUFFEL_STRIPE_SECRET_KEY;   // live Duffel pays with the main STRIPE_SECRET_KEY
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
@@ -79,7 +83,7 @@ aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admi
 }"
 echo "admin policy on ${ROLE_ARN##*/}"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin"; do
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/assistant/chat"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
     echo "exists: $ROUTE"
   else

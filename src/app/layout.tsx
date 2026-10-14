@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import HotelSearch from "@/components/HotelSearch";
 import Footer from "@/components/Footer";
+import Lyrbot from "@/components/Lyrbot";
 import Navigation from "@/components/Navigation";
 import { AuthProvider } from "@/context/AuthContext";
 
@@ -33,6 +34,7 @@ export default function RootLayout({
           <Navigation />
           <div className="flex-1 flex flex-col">{children}</div>
           <Footer />
+          <Lyrbot />
         </AuthProvider>
       </body>
     </html>
