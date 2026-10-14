@@ -1974,6 +1974,44 @@ async function searchStudySerpApi({ category, level, query, location }) {
   }));
 }
 
+// Events: Google Events via SerpAPI (concerts, festivals, sports, shows...)
+const EVENT_WHEN = { today: 'date:today', tomorrow: 'date:tomorrow', weekend: 'date:weekend', week: 'date:week', next_week: 'date:next_week', month: 'date:month', next_month: 'date:next_month' };
+
+async function searchEventsSerpApi({ location, category, query, when }) {
+  const what = [query, category].map(v => (v || '').trim()).filter(Boolean).join(' ') || 'events';
+  const params = new URLSearchParams({
+    engine:  'google_events',
+    q:       `${what} in ${location}`,
+    hl:      'en',
+    api_key: process.env.SERPAPI_KEY,
+  });
+  if (EVENT_WHEN[when]) params.set('htichips', EVENT_WHEN[when]);
+  const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`SerpAPI events error (${res.status}): ${await res.text()}`);
+  const data = await res.json();
+  return (data.events_results ?? []).map((e, i) => {
+    const tickets = (e.ticket_info ?? []).filter(t => t.link);
+    const ticket  = tickets.find(t => t.link_type === 'tickets') ?? null;
+    return {
+      id:          `${i}-${e.title}`,
+      name:        e.title,
+      when:        e.date?.when ?? null,
+      startDate:   e.date?.start_date ?? null,
+      address:     (e.address ?? []).join(', ') || null,
+      venue:       e.venue?.name ?? null,
+      rating:      e.venue?.rating ?? null,
+      reviewCount: e.venue?.reviews ?? null,
+      description: (e.description ?? '').slice(0, 300),
+      imageUrl:    e.image ?? e.thumbnail ?? null,
+      link:        e.link ?? null,
+      ticketLink:  ticket?.link ?? null,
+      ticketSource: ticket?.source ?? null,
+      mapsLink:    e.event_location_map?.link ?? null,
+      price:       null,
+    };
+  });
+}
+
 async function handleClassroomAssign(event) {
   const { courseId, courseWorkId, studentIds, accessToken } = JSON.parse(event.body || '{}');
   if (!accessToken) return json(401, { error: 'No access token' });
@@ -2098,6 +2136,20 @@ async function handleSearch(event) {
         } catch (serpErr) {
           console.error('SerpAPI jobs search error (falling back to mock):', serpErr.message);
         }
+      }
+    }
+
+    // --- Events: SerpAPI Google Events (no placeholder data) ---
+    if (service === 'events') {
+      const { location, category, query, when } = body;
+      if (!location || !String(location).trim()) return json(400, { error: 'Location is required' });
+      if (!process.env.SERPAPI_KEY) return json(200, { success: true, service, results: [], total: 0, error: 'Event search is not available right now' });
+      try {
+        const results = await searchEventsSerpApi({ location: String(location).trim(), category, query, when });
+        return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
+      } catch (serpErr) {
+        console.error('SerpAPI events search error:', serpErr.message);
+        return json(200, { success: true, service, results: [], total: 0, error: 'Event search is temporarily unavailable' });
       }
     }
 

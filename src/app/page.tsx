@@ -113,6 +113,12 @@ interface SearchResult {
   testBooking?: boolean;
   totalPrice?: number;
   basePrice?: number;
+  // events
+  when?: string | null;
+  startDate?: string | null;
+  venue?: string | null;
+  ticketLink?: string | null;
+  ticketSource?: string | null;
   // study: 'place' = school/college from Maps, 'link' = admission/scholarship web result
   kind?: 'place' | 'link';
   placeType?: string | null;
@@ -940,6 +946,28 @@ export default function Home() {
   };
 
 
+  const [eventForm, setEventForm] = useState({ category: '', query: '', location: '', when: '' });
+  const [eventError, setEventError] = useState<string | null>(null);
+
+  const searchEventsViaApi = async (): Promise<SearchResult[]> => {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service:  'events',
+        location: eventForm.location.trim(),
+        category: eventForm.category || null,
+        query:    eventForm.query.trim() || null,
+        when:     eventForm.when || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Event search failed');
+    setEventError(data.error ?? null);
+    return (data.results ?? []) as SearchResult[];
+  };
+
   const searchStudyViaApi = async (): Promise<SearchResult[]> => {
     const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
     const res = await fetch(`${baseUrl}/api/search`, {
@@ -1025,6 +1053,9 @@ export default function Home() {
         setResults(data);
       } else if (service === 'career') {
         const data = await searchJobsViaApi();
+        setResults(data);
+      } else if (service === 'events') {
+        const data = await searchEventsViaApi();
         setResults(data);
       } else if (service === 'study') {
         const data = await searchStudyViaApi();
@@ -1473,6 +1504,64 @@ export default function Home() {
             {other.map(r => <FlightRow key={r.id} r={r} />)}
           </>
         )}
+      </div>
+    );
+  };
+
+  const EventList = () => {
+    if (!hasSearched) return null;
+    if (loading) return <p className="text-gray-500 mt-6">Searching events...</p>;
+    if (results.length === 0) return (
+      <NoLiveResults
+        service="events"
+        icon="🎟️"
+        title={eventError ?? `No events found${eventForm.location.trim() ? ` in ${eventForm.location.trim()}` : ''}`}
+        hint="Try a bigger city nearby, a wider date range, or a different event type."
+      />
+    );
+    return (
+      <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {results.map(r => (
+          <div key={r.id} className="flex flex-col bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg hover:-translate-y-0.5 transition-all animate-[panelIn_250ms_ease-out]">
+            {/* Placeholder sits under the photo, so a missing, slow or broken image still shows something */}
+            <div className="relative h-40 bg-brand-50 flex items-center justify-center text-5xl" aria-hidden>
+              🎟️
+              {r.imageUrl && (
+                <img src={r.imageUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              )}
+              {r.startDate && (
+                <span className="absolute left-3 top-3 rounded-lg bg-white/95 px-2.5 py-1 text-xs font-bold text-brand-700 shadow">{r.startDate}</span>
+              )}
+            </div>
+            <div className="flex flex-1 flex-col p-4">
+              <h3 className="font-bold text-gray-900 leading-snug line-clamp-2">{r.name}</h3>
+              {r.when && <p className="mt-1 text-sm font-medium text-brand-600">{r.when}</p>}
+              {(r.venue || r.address) && (
+                <p className="mt-1 text-sm text-gray-600 line-clamp-2">
+                  {r.venue && <span className="font-semibold text-gray-700">{r.venue}</span>}
+                  {r.venue && r.address && ' · '}
+                  {r.address && r.address !== r.venue ? r.address.replace(`${r.venue}, `, '') : ''}
+                </p>
+              )}
+              {r.description && <p className="mt-2 text-xs text-gray-500 line-clamp-2">{r.description}</p>}
+              <div className="mt-auto flex flex-wrap gap-2 pt-3">
+                {r.ticketLink && (
+                  <a href={r.ticketLink} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition" title={r.ticketSource ? `Tickets on ${r.ticketSource}` : 'Tickets'}>
+                    Tickets
+                  </a>
+                )}
+                {r.link && (
+                  <a href={r.link} target="_blank" rel="noopener noreferrer" className={`px-3 py-1.5 text-sm font-semibold rounded-lg transition ${r.ticketLink ? 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700' : 'bg-btn text-white hover:bg-btn-hover'}`}>
+                    Details
+                  </a>
+                )}
+                {r.mapsLink && (
+                  <a href={r.mapsLink} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">Map</a>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     );
   };
@@ -2501,10 +2590,48 @@ export default function Home() {
 
             {/* Events */}
             {activeTab === 'events' && (
-              <div className="py-10 text-center">
-                <p className="text-4xl mb-3">🎟️</p>
-                <h3 className="text-lg font-bold text-gray-900">Events are coming soon</h3>
-                <p className="text-sm text-gray-600 mt-1">Find concerts, festivals, sports and shows wherever your trip takes you.</p>
+              <div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
+                  <div>
+                    <label htmlFor="event-location" className="block text-sm font-semibold text-gray-700 mb-2">Location</label>
+                    <input id="event-location" type="text" value={eventForm.location} onChange={e => setEventForm(f => ({ ...f, location: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && eventForm.location.trim()) handleSearch('events'); }} placeholder="City, e.g. London" className={inputClass} />
+                  </div>
+                  <div>
+                    <label htmlFor="event-category" className="block text-sm font-semibold text-gray-700 mb-2">Type</label>
+                    <select id="event-category" value={eventForm.category} onChange={e => setEventForm(f => ({ ...f, category: e.target.value }))} className={inputClass}>
+                      <option value="">All events</option>
+                      <option value="concerts">Concerts</option>
+                      <option value="festivals">Festivals</option>
+                      <option value="sports">Sports</option>
+                      <option value="comedy shows">Comedy</option>
+                      <option value="theatre">Theatre</option>
+                      <option value="nightlife">Nightlife</option>
+                      <option value="food and drink events">Food &amp; drink</option>
+                      <option value="exhibitions">Exhibitions</option>
+                      <option value="conferences">Conferences</option>
+                      <option value="family events">Family</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="event-query" className="block text-sm font-semibold text-gray-700 mb-2">Keywords <span className="text-gray-400 font-normal">(opt.)</span></label>
+                    <input id="event-query" type="text" value={eventForm.query} onChange={e => setEventForm(f => ({ ...f, query: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && eventForm.location.trim()) handleSearch('events'); }} placeholder="Artist, team, show" className={inputClass} />
+                  </div>
+                  <div>
+                    <label htmlFor="event-when" className="block text-sm font-semibold text-gray-700 mb-2">When</label>
+                    <select id="event-when" value={eventForm.when} onChange={e => setEventForm(f => ({ ...f, when: e.target.value }))} className={inputClass}>
+                      <option value="">Any date</option>
+                      <option value="today">Today</option>
+                      <option value="tomorrow">Tomorrow</option>
+                      <option value="weekend">This weekend</option>
+                      <option value="week">This week</option>
+                      <option value="next_week">Next week</option>
+                      <option value="month">This month</option>
+                      <option value="next_month">Next month</option>
+                    </select>
+                  </div>
+                  {searchBtn('events', !eventForm.location.trim())}
+                </div>
+                <EventList />
               </div>
             )}
 
