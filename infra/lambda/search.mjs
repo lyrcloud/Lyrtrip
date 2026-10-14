@@ -2050,7 +2050,8 @@ async function handleSearch(event) {
       return json(200, { message: 'Hello from LyrTrip API!', timestamp: new Date().toISOString() });
     }
 
-    if (!(service in mockData)) {
+    // 'events' has no mock data; it is served live only
+    if (!(service in mockData) && service !== 'events') {
       return json(400, { error: 'Invalid service type' });
     }
 
