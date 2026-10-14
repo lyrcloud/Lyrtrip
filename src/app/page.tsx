@@ -11,6 +11,7 @@ import { useAuth } from '@/context/AuthContext';
 import { Price, useLocale } from '@/i18n/LocaleContext';
 import HotelPriceCompare from '@/components/HotelPriceCompare';
 import CheckoutExtras from '@/components/CheckoutExtras';
+import ShippingTab from '@/components/ShippingTab';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -2869,11 +2870,7 @@ export default function Home() {
 
             {/* Shipping */}
             {activeTab === 'shipping' && (
-              <div className="py-10 text-center">
-                <p className="text-4xl mb-3">📦</p>
-                <h3 className="text-lg font-bold text-gray-900">Shipping is coming soon</h3>
-                <p className="text-sm text-gray-600 mt-1">Send parcels and compare courier rates right here on Lyrtrip.</p>
-              </div>
+              <ShippingTab user={user} />
             )}
 
           </div>

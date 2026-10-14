@@ -43,12 +43,12 @@ const QUICK_ACTIONS = [
   { href: '/?tab=tourism', icon: '🎒', label: 'Tours',       tint: 'bg-teal-50 text-teal-700 ring-teal-100' },
   { href: '/?tab=events',  icon: '🎟️', label: 'Events',      tint: 'bg-rose-50 text-rose-700 ring-rose-100' },
   { href: '/rewards',      icon: '⭐', label: 'Rewards',     tint: 'bg-yellow-50 text-yellow-700 ring-yellow-100' },
-  { href: '/rewards',      icon: '🎁', label: 'Gift cards',  tint: 'bg-pink-50 text-pink-700 ring-pink-100' },
+  { href: '/?tab=shipping', icon: '📦', label: 'Shipping',   tint: 'bg-orange-50 text-orange-700 ring-orange-100' },
 ];
 
 interface Trip {
   id: string;
-  kind: 'flight' | 'hotel';
+  kind: 'flight' | 'hotel' | 'shipment';
   status: string;
   title: string;
   subtitle: string;
@@ -81,8 +81,11 @@ const TRIP_STATUS: Record<string, [string, string]> = {
   declined:       ['Refunded', 'bg-gray-50 text-gray-600 ring-gray-200'],
   refunded:       ['Refunded', 'bg-gray-50 text-gray-600 ring-gray-200'],
   booking_failed: ['Needs support', 'bg-rose-50 text-rose-700 ring-rose-200'],
+  needs_review:   ['Finishing up', 'bg-amber-50 text-amber-700 ring-amber-200'],
+  label_failed:   ['Needs support', 'bg-rose-50 text-rose-700 ring-rose-200'],
 };
-const CLOSED = new Set(['declined', 'refunded', 'booking_failed', 'declining']);
+const CLOSED = new Set(['declined', 'refunded', 'booking_failed', 'declining', 'label_failed']);
+const TRIP_ICON = { flight: ['✈️', 'bg-sky-50'], hotel: ['🏨', 'bg-violet-50'], shipment: ['📦', 'bg-amber-50'] } as const;
 
 const TIER_TINT: Record<string, string> = {
   Member: 'bg-gray-100 text-gray-700', Bronze: 'bg-amber-100 text-amber-800', Silver: 'bg-slate-100 text-slate-700',
@@ -188,7 +191,9 @@ export default function DashboardPage() {
   }
 
   const today = new Date(now).toISOString().slice(0, 10);
-  const isUpcoming = (t: Trip) => !CLOSED.has(t.status) && (t.end ?? t.start ?? today) >= today;
+  // A shipment stays "upcoming" for two weeks after its label, while it's on the way
+  const isUpcoming = (t: Trip) => !CLOSED.has(t.status)
+    && (t.kind === 'shipment' ? now - new Date(t.createdAt).getTime() < 14 * 864e5 : (t.end ?? t.start ?? today) >= today);
   const upcomingTrips = (trips ?? []).filter(isUpcoming).sort((a, b) => String(a.start).localeCompare(String(b.start)));
   const shownTrips = tripFilter === 'upcoming' ? upcomingTrips
     : tripFilter === 'past' ? (trips ?? []).filter(t => !isUpcoming(t))
@@ -290,7 +295,7 @@ export default function DashboardPage() {
           <div className="lg:col-span-2 space-y-6">
             <div className={`${card} p-5 sm:p-6`}>
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <h2 className="text-lg font-semibold text-slate-900">My trips</h2>
+                <h2 className="text-lg font-semibold text-slate-900">My trips &amp; shipments</h2>
                 <div className="flex rounded-xl bg-slate-100 p-1 text-sm">
                   {(['upcoming', 'past', 'all'] as const).map(f => (
                     <button key={f} onClick={() => setTripFilter(f)}
@@ -307,7 +312,7 @@ export default function DashboardPage() {
                 <div className="rounded-xl border-2 border-dashed border-slate-200 px-6 py-10 text-center">
                   <p className="text-3xl mb-2">🌍</p>
                   <p className="font-medium text-slate-800">{tripFilter === 'upcoming' ? 'No upcoming trips' : 'No trips here yet'}</p>
-                  <p className="text-sm text-slate-500 mt-1">Flights and hotels you book while signed in show up here.</p>
+                  <p className="text-sm text-slate-500 mt-1">Flights, hotels and parcels you book while signed in show up here.</p>
                   <div className="flex justify-center gap-2 mt-4">
                     <Link href="/?tab=flights" className="rounded-xl bg-sky-50 text-sky-700 px-4 py-2 text-sm font-semibold hover:bg-sky-100">✈️ Find a flight</Link>
                     <Link href="/?tab=hotels" className="rounded-xl bg-violet-50 text-violet-700 px-4 py-2 text-sm font-semibold hover:bg-violet-100">🏨 Find a hotel</Link>
@@ -319,8 +324,8 @@ export default function DashboardPage() {
                     const [label, tint] = TRIP_STATUS[t.status] ?? [t.status, 'bg-slate-50 text-slate-600 ring-slate-200'];
                     return (
                       <li key={`${t.kind}-${t.id}`} className="flex flex-wrap sm:flex-nowrap items-center gap-4 rounded-xl border border-slate-100 p-4 hover:border-slate-200 hover:bg-slate-50/50 transition">
-                        <span className={`w-12 h-12 shrink-0 rounded-xl flex items-center justify-center text-xl ${t.kind === 'flight' ? 'bg-sky-50' : 'bg-violet-50'}`}>
-                          {t.kind === 'flight' ? '✈️' : '🏨'}
+                        <span className={`w-12 h-12 shrink-0 rounded-xl flex items-center justify-center text-xl ${TRIP_ICON[t.kind][1]}`}>
+                          {TRIP_ICON[t.kind][0]}
                         </span>
                         <div className="flex-1 min-w-0">
                           <p className="font-semibold text-slate-900 truncate">

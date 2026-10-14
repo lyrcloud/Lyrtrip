@@ -33,7 +33,7 @@ export interface RewardsSettings { pointsPerDollarSpent: number; affiliatePercen
 
 interface Coupon {
   code: string; type: 'percent' | 'fixed'; value: number; min_total: number; max_uses: number; uses?: number; usedBy?: number;
-  once_per_customer: boolean; expires: string; applies_to: 'all' | 'flight' | 'hotel'; active: boolean; description: string;
+  once_per_customer: boolean; expires: string; applies_to: 'all' | 'flight' | 'hotel' | 'shipping'; active: boolean; description: string;
 }
 
 interface GiftCard {
@@ -317,7 +317,7 @@ export function CouponsPanel({ call, isSuper }: { call: Call; isSuper: boolean }
             <input className={input} type="date" value={draft.expires} onChange={e => setDraft({ ...draft, expires: e.target.value })} /></label>
           <label className="space-y-1"><span className="text-xs text-gray-600">Works on</span>
             <select className={input} value={draft.applies_to} onChange={e => setDraft({ ...draft, applies_to: e.target.value as Coupon['applies_to'] })}>
-              <option value="all">Flights and hotels</option><option value="flight">Flights only</option><option value="hotel">Hotels only</option>
+              <option value="all">Everything</option><option value="flight">Flights only</option><option value="hotel">Hotels only</option><option value="shipping">Shipping only</option>
             </select></label>
           <label className="space-y-1 sm:col-span-2"><span className="text-xs text-gray-600">Description (internal)</span>
             <input className={input} maxLength={120} value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>
@@ -343,7 +343,7 @@ export function CouponsPanel({ call, isSuper }: { call: Call; isSuper: boolean }
                 <td className="p-3"><span className="font-semibold font-mono">{c.code}</span>{c.description && <p className="text-xs text-gray-500">{c.description}</p>}</td>
                 <td className="p-3">{c.type === 'percent' ? `${c.value}% off` : `${usd(c.value)} off`}</td>
                 <td className="p-3 text-xs text-gray-600">
-                  {[c.applies_to !== 'all' && `${c.applies_to}s only`, c.min_total > 0 && `min ${usd(c.min_total)}`, c.once_per_customer && 'once per customer', c.expires && `until ${c.expires}`].filter(Boolean).join(' · ') || '—'}
+                  {[c.applies_to !== 'all' && `${c.applies_to === 'shipping' ? 'shipping' : `${c.applies_to}s`} only`, c.min_total > 0 && `min ${usd(c.min_total)}`, c.once_per_customer && 'once per customer', c.expires && `until ${c.expires}`].filter(Boolean).join(' · ') || '—'}
                 </td>
                 <td className="p-3">{c.uses ?? 0}{c.max_uses ? ` / ${c.max_uses}` : ''}</td>
                 <td className="p-3"><span className={`px-2 py-0.5 rounded-full text-xs ${state(c) === 'Active' ? STATUS_STYLE.active : STATUS_STYLE.disabled}`}>{state(c)}</span></td>
@@ -493,6 +493,69 @@ export function SettingsPanel({ call, isSuper, settings, tiers, reload }: {
           {busy === 'settings' ? 'Saving…' : 'Save settings'}
         </button>
       ) : superOnly}
+    </div>
+  );
+}
+
+// ── Shipments (Easyship labels) ──────────────────────────────────────────────
+
+interface AdminShipment {
+  orderId: string; status: string; courier: string; sender: string; totalPrice: number; amountPaid: number; baseCost: number;
+  from: { city: string; country_alpha2: string }; to: { contact_name?: string; city: string; country_alpha2: string };
+  easyshipId: string | null; tracking: { number: string }[]; trackingUrl: string | null; documents: { category: string; url: string }[];
+  labelError: string | null; createdAt: string;
+}
+
+const SHIP_STATUS: Record<string, string> = {
+  confirmed: 'bg-emerald-100 text-emerald-800', processing: 'bg-sky-100 text-sky-800', needs_review: 'bg-amber-100 text-amber-800',
+  refunded: 'bg-gray-200 text-gray-700', label_failed: 'bg-red-100 text-red-800',
+};
+
+export function ShipmentsPanel({ call }: { call: Call }) {
+  const [rows, setRows] = useState<AdminShipment[] | null>(null);
+  useEffect(() => {
+    call({ action: 'shipments.list' }).then(d => setRows(d.shipments as AdminShipment[])).catch(() => setRows([]));
+  }, [call]);
+  const confirmed = (rows ?? []).filter(r => r.status === 'confirmed');
+  const margin = confirmed.reduce((s, r) => s + (r.totalPrice - r.baseCost), 0);
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['Labels bought', String(confirmed.length)],
+          ['Need review', String((rows ?? []).filter(r => r.status === 'needs_review').length)],
+          ['Sales', usd(confirmed.reduce((s, r) => s + r.totalPrice, 0))],
+          ['Lyrtrip margin', usd(margin)],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <p className="text-xs text-gray-500">&quot;Need review&quot; means the payment went through but the label result is unknown: find the order number in Easyship, then send the label or refund in Stripe.</p>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No shipments yet.</p>}
+        {rows?.map(r => (
+          <div key={r.orderId} className="p-4 flex flex-wrap items-start justify-between gap-3 text-sm">
+            <div className="min-w-0">
+              <p className="font-semibold text-gray-900">
+                {r.from.city}, {r.from.country_alpha2} → {r.to.city}, {r.to.country_alpha2}
+                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${SHIP_STATUS[r.status] ?? 'bg-gray-100 text-gray-700'}`}>{r.status.replace('_', ' ')}</span>
+              </p>
+              <p className="text-gray-600">{r.courier} · {r.sender}</p>
+              <p className="text-xs text-gray-400">
+                Order {r.orderId}{r.easyshipId ? ` · ${r.easyshipId}` : ''}{r.tracking[0] ? ` · ${r.tracking[0].number}` : ''} · {new Date(r.createdAt).toLocaleString()}
+              </p>
+              {r.labelError && <p className="text-xs text-red-600 mt-1">{r.labelError}</p>}
+              <div className="flex gap-3 mt-1 text-xs">
+                {r.documents.filter(d => d.category === 'label').map(d => <a key={d.url} href={d.url} target="_blank" rel="noopener noreferrer" className="text-brand-600 font-semibold">Label</a>)}
+                {r.trackingUrl && <a href={r.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-brand-600 font-semibold">Tracking</a>}
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="font-bold text-gray-900">{usd(r.totalPrice)}</p>
+              <p className="text-xs text-gray-500">cost {usd(r.baseCost)} · {r.amountPaid !== r.totalPrice ? `${usd(r.amountPaid)} by card` : 'card'}</p>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -97,6 +97,29 @@ function CreditRows({ c, money }: { c: BookingCredits; money: (n: number) => str
   );
 }
 
+interface ShipAddress { contact_name?: string; company_name?: string | null; line_1: string; line_2?: string; city: string; state?: string; postal_code?: string; country_alpha2: string }
+
+interface ShipmentReceipt {
+  status: 'processing' | 'confirmed' | 'needs_review' | 'refunded' | 'label_failed';
+  orderId: string;
+  courier: string;
+  minDays: number | null;
+  maxDays: number | null;
+  from: ShipAddress;
+  to: ShipAddress;
+  parcel: { total_actual_weight: number; box: { length: number; width: number; height: number } };
+  totalPrice: number;
+  amountPaid: number;
+  credits?: BookingCredits | null;
+  easyshipId: string | null;
+  tracking: { number: string; courier: string | null }[];
+  trackingUrl: string | null;
+  documents: { category: string; url: string }[];
+  message: string | null;
+}
+
+const DOC_LABEL: Record<string, string> = { label: 'Shipping label', commercial_invoice: 'Commercial invoice (customs)', packing_slip: 'Packing slip' };
+
 function fmtDate(d: string): string {
   if (!d) return '';
   const dt = new Date(`${d}T12:00:00`);
@@ -125,6 +148,7 @@ export default function BookingSuccessPage() {
   const [flightLoading, setFlightLoading]   = useState(false);
   const [flightError, setFlightError]       = useState<string | null>(null);
   const [hotelReceipt, setHotelReceipt]     = useState<HotelReceipt | null>(null);
+  const [shipment, setShipment]             = useState<ShipmentReceipt | null>(null);
   const [giftCard, setGiftCard]             = useState<{ code: string; amount: number; recipient_email: string | null } | null>(null);
 
   useEffect(() => {
@@ -182,6 +206,25 @@ export default function BookingSuccessPage() {
           : data?.error ?? data?.message ?? 'Booking confirmation failed.');
       };
       confirm(0).finally(() => setFlightLoading(false));
+      return;
+    }
+
+    // Shipping label: the label is bought after payment, which can take a little while
+    if (type === 'shipping' && sessionId) {
+      setFlightLoading(true);
+      const load = async (attempt: number): Promise<void> => {
+        const res = await fetch(`${baseUrl}/api/ship/confirm`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }),
+        }).catch(() => null);
+        const data = res ? await res.json().catch(() => null) : null;
+        if (data?.success) { setShipment(data as ShipmentReceipt); return; }
+        if ((!res || res.status >= 502 || data?.pending) && attempt < 30) {
+          await new Promise(r => setTimeout(r, 4000));
+          return load(attempt + 1);
+        }
+        setFlightError(data?.error ?? 'Could not load your shipment. Please contact support@lyrtrip.com.');
+      };
+      load(0).finally(() => setFlightLoading(false));
       return;
     }
 
@@ -280,6 +323,69 @@ export default function BookingSuccessPage() {
   }
 
   // ── Flight — e-ticket & itinerary (printable) ─────────────────────────────
+  if (shipment) {
+    const sh = shipment;
+    const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const addr = (a: ShipAddress) => [a.contact_name, a.company_name && a.company_name !== a.contact_name ? a.company_name : null, a.line_1, a.line_2,
+      [a.city, a.state, a.postal_code].filter(Boolean).join(' '), a.country_alpha2].filter(Boolean);
+    const state = {
+      confirmed:    ['Label ready', 'bg-emerald-100 text-emerald-800', 'Print the label, attach it to the parcel and hand it to the courier, or book a pickup with them.'],
+      processing:   ['Creating label', 'bg-sky-100 text-sky-800', 'Your label is being created.'],
+      needs_review: ['Finishing up', 'bg-amber-100 text-amber-800', sh.message ?? ''],
+      refunded:     ['Refunded', 'bg-gray-100 text-gray-700', sh.message ?? ''],
+      label_failed: ['Needs support', 'bg-red-100 text-red-800', sh.message ?? ''],
+    }[sh.status] ?? [sh.status, 'bg-gray-100 text-gray-700', sh.message ?? ''];
+    return (
+      <div className="flex-1 bg-gray-50 py-10 px-4">
+        <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden">
+          <div className="px-8 py-6 border-b border-gray-200 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-widest text-gray-500">Lyrtrip shipment</p>
+              <h1 className="text-2xl font-bold text-gray-900">📦 {sh.courier}</h1>
+              <p className="text-sm text-gray-600">{sh.from.city} → {sh.to.city}{sh.minDays != null ? ` · ${sh.minDays}–${sh.maxDays} business days` : ''}</p>
+            </div>
+            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${state[1]}`}>{state[0]}</span>
+          </div>
+          {state[2] && <p className="px-8 pt-5 text-sm text-gray-700">{state[2]}</p>}
+          {sh.documents.length > 0 && (
+            <div className="px-8 pt-5 flex flex-wrap gap-2">
+              {sh.documents.map(d => (
+                <a key={d.url} href={d.url} target="_blank" rel="noopener noreferrer"
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold ${d.category === 'label' ? 'bg-btn text-white hover:bg-btn-hover' : 'border border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
+                  ⬇ {DOC_LABEL[d.category] ?? d.category}
+                </a>
+              ))}
+            </div>
+          )}
+          <div className="px-8 py-5 grid sm:grid-cols-2 gap-4 text-sm">
+            <div><p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">From</p>{addr(sh.from).map((l, i) => <p key={i}>{l}</p>)}</div>
+            <div><p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">To</p>{addr(sh.to).map((l, i) => <p key={i}>{l}</p>)}</div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Tracking</p>
+              {sh.tracking.length ? sh.tracking.map(t => <p key={t.number} className="font-mono">{t.number}</p>) : <p>—</p>}
+              {sh.trackingUrl && <a href={sh.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-brand-600 font-semibold hover:underline">Track parcel →</a>}
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Parcel</p>
+              <p>{sh.parcel.total_actual_weight} kg · {sh.parcel.box.length}×{sh.parcel.box.width}×{sh.parcel.box.height} cm</p>
+              <p className="text-xs text-gray-500 mt-1">Order {sh.orderId}{sh.easyshipId ? ` · ${sh.easyshipId}` : ''}</p>
+            </div>
+          </div>
+          <div className="px-8 py-5 border-t border-gray-200">
+            <table className="w-full text-sm"><tbody>
+              <tr><td className="font-bold text-gray-900">Total</td><td className="text-right text-xl font-black">USD {money(sh.totalPrice)}</td></tr>
+              {sh.credits && <CreditRows c={sh.credits} money={money} />}
+            </tbody></table>
+          </div>
+          <div className="px-8 py-5 bg-gray-50 flex gap-3">
+            <Link href="/?tab=shipping" className="px-4 py-2 rounded-xl border border-gray-300 text-sm font-medium text-gray-700 bg-white">Send another</Link>
+            <Link href="/dashboard" className="px-4 py-2 rounded-xl bg-btn text-white text-sm font-semibold">Dashboard</Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (giftCard) {
     return (
       <div className="flex-1 bg-gray-50 flex items-center justify-center px-4 py-10">

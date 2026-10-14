@@ -3288,6 +3288,16 @@ async function handleAdmin(event) {
         });
       }
 
+      case 'shipments.list': {
+        const rows = await db.collection('shipments').find({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] } }).sort({ createdAt: -1 }).limit(200).toArray();
+        return json(200, {
+          shipments: rows.map(b => ({
+            ...shipmentReceipt(b), userSub: b.userSub ?? null, sender: b.from.contact_email, baseCost: b.baseCost,
+            labelError: b.labelError ?? null, createdAt: b.createdAt,
+          })),
+        });
+      }
+
       // ── Rewards: admins see everything; only the super admin changes it ──
 
       case 'rewards.list': {
@@ -3333,8 +3343,8 @@ async function handleAdmin(event) {
 // ---------------------------------------------------------------------------
 
 const mainStripe = () => (process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' }) : null);
-const BOOKING_STRIPE = { flight: () => duffelStripe().stripe ?? null, hotel: mainStripe };
-const BOOKING_COLLECTION = { flight: 'flight_bookings', hotel: 'hotel_bookings' };
+const BOOKING_STRIPE = { flight: () => duffelStripe().stripe ?? null, hotel: mainStripe, shipping: mainStripe };
+const BOOKING_COLLECTION = { flight: 'flight_bookings', hotel: 'hotel_bookings', shipping: 'shipments' };
 const HELD = { $or: [{ 'credits.points': { $gt: 0 } }, { 'credits.giftCardCents': { $gt: 0 } }, { 'credits.couponCode': { $type: 'string' } }] };
 
 // Ends an unpaid checkout and gives back its coupon, gift card and points. Returns true if it did.
@@ -3353,7 +3363,7 @@ async function releaseUnpaid(db, type, booking, stripe) {
 // Stripe sessions last 30 minutes; bookings never paid give back what they held.
 async function releaseExpiredHolds(db) {
   const cutoff = new Date(Date.now() - 35 * 60 * 1000).toISOString();
-  for (const type of ['flight', 'hotel']) {
+  for (const type of ['flight', 'hotel', 'shipping']) {
     const rows = await db.collection(BOOKING_COLLECTION[type])
       .find({ status: 'pending_stripe', createdAt: { $lt: cutoff }, 'credits.released': { $ne: true }, ...HELD }).limit(10).toArray();
     for (const b of rows) await releaseUnpaid(db, type, b, BOOKING_STRIPE[type]()).catch(err => console.error('Release failed:', err.message));
@@ -3401,8 +3411,8 @@ async function handleRewards(event) {
       // What a booking will cost with the guest's coupon, gift card, points and business pricing (display only;
       // checkout prices it again from the airline or hotel).
       case 'quote': {
-        const kind = body.kind === 'hotel' ? 'hotel' : 'flight';
-        const retailRate = kind === 'hotel' ? HOTEL_MARKUP : FLIGHT_MARKUP;
+        const kind = ['hotel', 'shipping'].includes(body.kind) ? body.kind : 'flight';
+        const retailRate = { flight: FLIGHT_MARKUP, hotel: HOTEL_MARKUP, shipping: SHIP_MARKUP }[kind];
         const listed = Number(body.listedTotal);
         if (!(listed > 0)) return json(400, { error: 'listedTotal is required' });
         const settings = await rw.getSettings(db);
@@ -3425,9 +3435,10 @@ async function handleRewards(event) {
       case 'trips': {
         const me = signedIn();
         const mine = field => ({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] }, $or: [{ userSub: me._id }, ...(me.email ? [{ [field]: me.email }] : [])] });
-        const [flights, hotels] = await Promise.all([
+        const [flights, hotels, parcels] = await Promise.all([
           db.collection('flight_bookings').find(mine('passengers.0.email')).sort({ createdAt: -1 }).limit(50).toArray(),
           db.collection('hotel_bookings').find(mine('guest.email')).sort({ createdAt: -1 }).limit(50).toArray(),
+          db.collection('shipments').find(mine('from.contact_email')).sort({ createdAt: -1 }).limit(50).toArray(),
         ]);
         const legs = b => b.itinerary ?? [];
         return json(200, {
@@ -3449,13 +3460,21 @@ async function handleRewards(event) {
               receiptUrl: b.stripeSessionId ? `/booking/success?session_id=${b.stripeSessionId}&type=hotel` : null,
               testBooking: false, createdAt: b.createdAt,
             })),
+            ...parcels.map(b => ({
+              id: String(b._id), kind: 'shipment', status: b.status, title: `${b.from.city} → ${b.to.city}, ${b.to.country_alpha2}`,
+              subtitle: [b.rate.courier, b.tracking?.[0]?.number && `Tracking ${b.tracking[0].number}`].filter(Boolean).join(' · '),
+              start: (b.confirmedAt ?? b.createdAt).slice(0, 10), end: null,
+              total: b.totalPrice, paid: b.credits?.amountDue ?? b.totalPrice, currency: 'USD',
+              receiptUrl: b.stripeSessionId ? `/booking/success?session_id=${b.stripeSessionId}&type=shipping` : null,
+              testBooking: false, createdAt: b.createdAt,
+            })),
           ],
         });
       }
 
       // The cancel page: end the Stripe session now and give back what the booking held.
       case 'release': {
-        const type = body.type === 'hotel' ? 'hotel' : 'flight';
+        const type = ['hotel', 'shipping'].includes(body.type) ? body.type : 'flight';
         const booking = await db.collection(BOOKING_COLLECTION[type]).findOne({ stripeSessionId: String(body.sessionId ?? ''), status: 'pending_stripe' });
         const released = booking ? await releaseUnpaid(db, type, booking, BOOKING_STRIPE[type]()) : false;
         return json(200, { released });
@@ -3544,6 +3563,385 @@ async function handleRewards(event) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Shipping (Easyship): live courier rates + 12%, paid on Stripe, then Lyrtrip
+// buys the label from its Easyship balance. Like flights, a label that can't
+// be bought is refunded; one whose outcome is unknown goes to a person.
+// ---------------------------------------------------------------------------
+
+const SHIP_MARKUP = 1.12;  // 12% Lyrtrip margin on the courier's charge
+const EASYSHIP_API = 'https://public-api.easyship.com/2024-09';
+const SHIP_CATEGORIES = new Set(['mobile_phones', 'tablets', 'computers_laptops', 'cameras', 'accessory_no_battery', 'accessory_with_battery',
+  'health_beauty', 'fashion', 'watches', 'home_appliances', 'home_decor', 'toys', 'sport_leisure', 'bags_luggages', 'audio_video', 'documents',
+  'jewelry', 'dry_food_supplements', 'books_collectibles', 'pet_accessory', 'gaming', 'board_games', 'shoes', 'health_beauty_non_liquid', 'crafts']);
+
+class EasyshipError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function easyshipFetch(path, { method = 'GET', body, timeoutMs = 25_000 } = {}) {
+  if (!process.env.EASYSHIP_API_KEY) throw new EasyshipError('Shipping is not configured', 500);
+  const res = await fetch(`${EASYSHIP_API}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${process.env.EASYSHIP_API_KEY}`, 'content-type': 'application/json' },
+    body: body && JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const e = data.error ?? {};
+    throw new EasyshipError([e.message, ...(e.details ?? [])].filter(Boolean).join(' ') || `Easyship error ${res.status}`, res.status);
+  }
+  return data;
+}
+
+// Returns a clean address, or an error string. Rates only need where; a label also needs who.
+function cleanShipAddress(a, { full, origin }) {
+  const s = v => String(v ?? '').trim();
+  const out = {
+    line_1: s(a?.line1).slice(0, 35), line_2: s(a?.line2).slice(0, 35), city: s(a?.city).slice(0, 35), state: s(a?.state).slice(0, 35),
+    postal_code: s(a?.postalCode).slice(0, 12), country_alpha2: s(a?.country).toUpperCase(),
+  };
+  const side = origin ? 'sender' : 'recipient';
+  if (!/^[A-Z]{2}$/.test(out.country_alpha2)) return `Choose the ${side}'s country`;
+  if (!out.city) return `Enter the ${side}'s city`;
+  if (['US', 'CA', 'MX', 'AU'].includes(out.country_alpha2) && !out.state) return `Enter the ${side}'s state or province`;
+  if (!full) return out;
+  if (!out.line_1) return `Enter the ${side}'s street address`;
+  const name = s(a?.name).slice(0, 50);
+  if (name.length < 2) return `Enter the ${side}'s full name`;
+  const phone = parsePhoneNumberFromString(s(a?.phone), out.country_alpha2);
+  if (!phone?.isValid()) return `The ${side}'s phone number isn't valid. Include the country code, e.g. +1 415 555 2671`;
+  const email = s(a?.email).toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return `Enter the ${side}'s email`;
+  const company = s(a?.company).slice(0, 50);
+  // Couriers print the sender's company on the label; a person sending a parcel is their own "company"
+  return { ...out, contact_name: name, company_name: company || (origin ? name : null), contact_phone: phone.number, contact_email: email };
+}
+
+function cleanParcel(p) {
+  const n = v => Number(v);
+  const weight = n(p?.weightKg), length = n(p?.lengthCm), width = n(p?.widthCm), height = n(p?.heightCm);
+  if (!(weight >= 0.01 && weight <= 70)) return 'Weight must be 0.01 to 70 kg';
+  if (![length, width, height].every(d => d >= 1 && d <= 200)) return 'Each side of the box must be 1 to 200 cm';
+  const items = (Array.isArray(p?.items) ? p.items : []).slice(0, 10).map(i => ({
+    description: String(i?.description ?? '').trim().slice(0, 100),
+    category: SHIP_CATEGORIES.has(i?.category) ? i.category : 'fashion',
+    quantity: Math.trunc(n(i?.quantity) || 1),
+    declared_currency: 'USD',
+    declared_customs_value: Math.round(n(i?.value) * 100) / 100,
+  }));
+  if (!items.length) return "Describe what's in the parcel";
+  for (const i of items) {
+    if (i.description.length < 2) return "Describe each item in the parcel";
+    if (!(i.quantity >= 1 && i.quantity <= 100)) return 'Item quantities must be 1 to 100';
+    if (!(i.declared_customs_value >= 0 && i.declared_customs_value <= 10000)) return 'Each item’s value must be $0 to $10,000';
+  }
+  return { total_actual_weight: Math.round(weight * 1000) / 1000, box: { length, width, height }, items };
+}
+
+async function easyshipRates(origin, destination, parcel) {
+  const data = await easyshipFetch('/rates', {
+    method: 'POST',
+    body: {
+      origin_address: origin, destination_address: destination, parcels: [parcel],
+      courier_settings: { show_courier_logo_url: true },
+      shipping_settings: { output_currency: 'USD', units: { weight: 'kg', dimensions: 'cm' } },
+    },
+  });
+  return (data.rates ?? []).filter(r => r.currency === 'USD' && r.total_charge > 0);
+}
+
+function publicRate(r) {
+  return {
+    id:          r.courier_service.id,
+    courier:     r.courier_service.name,
+    umbrella:    r.courier_service.umbrella_name ?? null,
+    logo:        r.courier_service.logo ?? null,
+    minDays:     r.min_delivery_time ?? null,
+    maxDays:     r.max_delivery_time ?? null,
+    price:       withMarkup(r.total_charge, SHIP_MARKUP),
+    currency:    'USD',
+    incoterms:   r.incoterms ?? 'DDU',
+    description: r.description ?? '',
+  };
+}
+
+async function handleShipRates(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const origin = cleanShipAddress(body.from, { full: false, origin: true });
+  const destination = cleanShipAddress(body.to, { full: false, origin: false });
+  const parcel = cleanParcel(body.parcel);
+  const problem = [origin, destination, parcel].find(v => typeof v === 'string');
+  if (problem) return json(400, { error: problem });
+  try {
+    const rates = (await easyshipRates(origin, destination, parcel)).map(publicRate).sort((a, b) => a.price - b.price);
+    if (!rates.length) return json(200, { rates: [], error: 'No courier ships this parcel between these addresses. Try other details.' });
+    return json(200, { rates, international: origin.country_alpha2 !== destination.country_alpha2 });
+  } catch (err) {
+    const msg = err.status === 422 ? 'No courier ships this parcel between these addresses. Check the addresses and parcel details.' : err.message;
+    return json(err.status === 422 ? 200 : 502, { rates: [], error: msg });
+  }
+}
+
+function shipmentReceipt(b) {
+  return {
+    success:       true,
+    status:        b.status,           // processing | confirmed | needs_review | refunded | label_failed
+    orderId:       String(b._id),
+    courier:       b.rate.courier,
+    minDays:       b.rate.minDays,
+    maxDays:       b.rate.maxDays,
+    from:          b.from,
+    to:            b.to,
+    parcel:        b.parcel,
+    totalPrice:    b.totalPrice,
+    amountPaid:    b.credits?.amountDue ?? b.totalPrice,
+    credits:       publicCredits(b.credits),
+    currency:      'USD',
+    easyshipId:    b.easyshipId ?? null,
+    tracking:      b.tracking ?? [],
+    trackingUrl:   b.trackingUrl ?? null,
+    documents:     b.documents ?? [],
+    payment:       b.payment ?? null,
+    message:       b.customerMessage ?? null,
+    confirmedAt:   b.confirmedAt ?? null,
+  };
+}
+
+async function handleShipCheckout(event) {
+  const stripe = mainStripe();
+  if (!stripe) return json(500, { error: 'Payments are not configured' });
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const origin = cleanShipAddress(body.from, { full: true, origin: true });
+  const destination = cleanShipAddress(body.to, { full: true, origin: false });
+  const parcel = cleanParcel(body.parcel);
+  const problem = [origin, destination, parcel].find(v => typeof v === 'string');
+  if (problem) return json(400, { error: problem });
+  if (!body.agreeProhibited) return json(400, { error: 'Please confirm the parcel has no prohibited items' });
+
+  // Price again on the server; never trust the browser's price
+  let rate;
+  try {
+    rate = (await easyshipRates(origin, destination, parcel)).find(r => r.courier_service.id === String(body.courierServiceId ?? ''));
+  } catch (err) {
+    return json(502, { error: `Could not price this shipment: ${err.message}` });
+  }
+  if (!rate) return json(409, { priceChanged: true, error: 'That courier is no longer available for this parcel. Please choose again.' });
+  const retailTotal = withMarkup(rate.total_charge, SHIP_MARKUP);
+  const agreed = Number(body.quotedTotal);
+  if (!(agreed > 0) || retailTotal > agreed + 0.5) {
+    return json(409, { priceChanged: true, totalPrice: retailTotal, error: `The price for this courier is now ${usd(retailTotal)}. Please review and continue.` });
+  }
+
+  const db = await getDb();
+  const user = await optionalUser(body.idToken);
+  const account = user ? await rw.getAccount(db, user) : null;
+  const feeRate = rw.feeRate(account, await rw.getSettings(db), SHIP_MARKUP);
+  const totalPrice = withMarkup(rate.total_charge, feeRate);
+  const coll = db.collection('shipments');
+  const _id = new ObjectId();
+  const orderId = _id.toString();
+  let credits;
+  try {
+    const q = await rw.quoteCredits(db, { account, kind: 'shipping', totalCents: rw.cents(totalPrice), currency: 'USD', body, strict: true });
+    const held = await rw.holdCredits(db, q, { sub: account?._id, ref: orderId, note: `shipment ${orderId.slice(-8)}` });
+    credits = await rw.bookingCredits(db, { q, held, account, feeRate, retailTotal, affiliateCode: body.ref });
+  } catch (err) {
+    if (err instanceof rw.RewardsError) return json(err.status, { error: err.message });
+    throw err;
+  }
+
+  const now = new Date().toISOString();
+  const pub = publicRate(rate);
+  await coll.insertOne({
+    _id, status: 'pending_stripe', userSub: account?._id ?? null,
+    from: origin, to: destination, parcel,
+    rate: { id: pub.id, courier: pub.courier, minDays: pub.minDays, maxDays: pub.maxDays, incoterms: pub.incoterms },
+    baseCost: rate.total_charge, totalPrice, currency: 'USD', credits, createdAt: now, updatedAt: now,
+  });
+
+  let session;
+  try {
+    session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [{ price_data: { currency: 'usd', unit_amount: rw.cents(credits.amountDue), product_data: {
+        name: `${pub.courier}: ${origin.city} → ${destination.city}`,
+        description: `${parcel.total_actual_weight} kg parcel · shipping label incl. Lyrtrip service fee${creditsNote(credits)}`,
+      } }, quantity: 1 }],
+      metadata: { type: 'shipment', shipmentId: orderId },
+      customer_email: origin.contact_email,
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+      success_url: `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=shipping`,
+      cancel_url: `${SITE_URL}/booking/cancel?session_id={CHECKOUT_SESSION_ID}&type=shipping`,
+    });
+  } catch (err) {
+    await coll.updateOne({ _id }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
+    await rw.releaseCredits(db, coll, _id, 'checkout could not start');
+    throw err;
+  }
+  await coll.updateOne({ _id }, { $set: { stripeSessionId: session.id } });
+  return json(200, { url: session.url, orderId });
+}
+
+// The label's links may be short-lived, so a receipt asks Easyship for fresh ones.
+async function freshDocuments(b) {
+  if (b.status !== 'confirmed' || !b.easyshipId) return b;
+  try {
+    const s = (await easyshipFetch(`/shipments/${b.easyshipId}`, { timeoutMs: 8000 })).shipment;
+    return { ...b, ...shipmentResult(s) };
+  } catch {
+    return b;
+  }
+}
+
+function shipmentResult(s) {
+  return {
+    easyshipId:  s.easyship_shipment_id,
+    labelState:  s.label_state,
+    tracking:    (s.trackings ?? []).map(t => ({ number: t.tracking_number, courier: t.handler ?? null })).filter(t => t.number),
+    trackingUrl: s.tracking_page_url ?? null,
+    documents:   (s.shipping_documents ?? []).filter(d => d.url).map(d => ({ category: d.category, url: d.url, format: d.format ?? null })),
+  };
+}
+
+async function handleShipConfirm(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const stripe = mainStripe();
+  if (!stripe) return json(500, { error: 'Payments are not configured' });
+  let session;
+  try { session = await stripe.checkout.sessions.retrieve(String(body.sessionId ?? '')); } catch { return json(400, { error: 'Invalid session ID' }); }
+  if (session.metadata?.type !== 'shipment') return json(400, { error: 'Not a shipping payment' });
+  if (session.payment_status !== 'paid') return json(402, { error: 'Payment not completed' });
+  const id = session.metadata.shipmentId;
+  if (!ObjectId.isValid(id)) return json(400, { error: 'Invalid shipment' });
+
+  const db = await getDb();
+  const coll = db.collection('shipments');
+  const _id = new ObjectId(id);
+  const claimed = await coll.findOneAndUpdate(
+    { _id, status: 'pending_stripe', stripeSessionId: session.id },
+    { $set: { status: 'processing', paymentIntent: session.payment_intent, updatedAt: new Date().toISOString() } },
+    { returnDocument: 'after' },
+  );
+  const order = claimed?.value !== undefined ? claimed.value : claimed;
+  if (!order) {
+    const existing = await coll.findOne({ _id });
+    if (!existing) return json(404, { error: 'Shipment not found' });
+    if (existing.status === 'processing') {
+      if (Date.now() - new Date(existing.updatedAt).getTime() < STALE_PROCESSING_MS) return json(202, { pending: true, message: 'Your label is being created' });
+      // The run buying this label died mid-purchase; whether Easyship charged is unknown, so a person checks it
+      const r = await coll.updateOne({ _id, status: 'processing', updatedAt: existing.updatedAt }, { $set: { status: 'needs_review', customerMessage: REVIEW_MESSAGE, updatedAt: new Date().toISOString() } });
+      if (r.modifiedCount) await alertShipmentReview({ ...existing, status: 'needs_review' }, 'label purchase timed out');
+      return json(200, shipmentReceipt({ ...existing, status: 'needs_review', customerMessage: REVIEW_MESSAGE }));
+    }
+    return json(200, shipmentReceipt(await freshDocuments(existing)));
+  }
+
+  const payment = await stripePaymentDetails(stripe, session);
+  await coll.updateOne({ _id }, { $set: { payment } });
+
+  const fail = async (reason, label = 'label_failed') => {
+    console.error('Shipping label failed:', reason);
+    let refunded = false;
+    try {
+      await stripe.refunds.create({ payment_intent: session.payment_intent });
+      refunded = true;
+    } catch (err) {
+      console.error('Stripe refund failed:', err.message);
+    }
+    const customerMessage = refunded
+      ? `The courier couldn't create this label, so your payment has been refunded in full. Please try another courier. Order ID: ${id}`
+      : `The courier couldn't create this label. Please contact support@lyrtrip.com with order ID ${id} for a refund.`;
+    await coll.updateOne({ _id }, { $set: { status: refunded ? 'refunded' : label, labelError: String(reason), customerMessage, updatedAt: new Date().toISOString() } });
+    await rw.releaseCredits(db, coll, _id, `shipment ${id.slice(-8)} had no label`);
+    return json(500, { error: customerMessage });
+  };
+
+  // The courier's charge must not have risen since the guest paid (2% or 50 cents of slack for currency moves)
+  try {
+    const now = (await easyshipRates(order.from, order.to, order.parcel)).find(r => r.courier_service.id === order.rate.id);
+    if (!now) return fail('courier no longer offers this route');
+    if (now.total_charge > order.baseCost * 1.02 + 0.5) return fail(`courier charge rose from ${order.baseCost} to ${now.total_charge}`);
+  } catch (err) {
+    return fail(`re-pricing failed: ${err.message}`);
+  }
+
+  let shipment;
+  try {
+    const data = await easyshipFetch('/shipments', {
+      method: 'POST',
+      timeoutMs: 90_000,
+      body: {
+        origin_address: order.from,
+        destination_address: order.to,
+        parcels: [order.parcel],
+        incoterms: 'DDU',
+        insurance: { is_insured: false },
+        courier_settings: { courier_service_id: order.rate.id, allow_fallback: false },
+        shipping_settings: {
+          units: { weight: 'kg', dimensions: 'cm' },
+          buy_label: true,
+          buy_label_synchronous: true,
+          printing_options: { format: 'url', label: '4x6', commercial_invoice: 'A4' },
+        },
+        order_data: { platform_order_number: id },
+      },
+    });
+    shipment = data.shipment;
+  } catch (err) {
+    // A clear no (bad address, no funds) is refunded; a timeout or server error may still have bought it
+    if (err.status === 402) await alertShipmentReview(order, `Easyship balance is too low: ${err.message}`);
+    if (err.status >= 400 && err.status < 500) return fail(err.message);
+    await coll.updateOne({ _id }, { $set: { status: 'needs_review', labelError: err.message, customerMessage: REVIEW_MESSAGE, updatedAt: new Date().toISOString() } });
+    await alertShipmentReview(order, err.message);
+    return json(200, shipmentReceipt({ ...order, status: 'needs_review', customerMessage: REVIEW_MESSAGE }));
+  }
+
+  const result = shipmentResult(shipment);
+  if (result.labelState !== 'generated' && result.labelState !== 'printed') {
+    await coll.updateOne({ _id }, { $set: { easyshipId: result.easyshipId } });
+    await easyshipFetch(`/shipments/${result.easyshipId}/cancel`, { method: 'POST' }).catch(() => {});
+    return fail(`label state ${result.labelState}`);
+  }
+
+  const confirmed = { status: 'confirmed', ...result, confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await coll.updateOne({ _id }, { $set: confirmed });
+  await rw.earnRewards(db, coll, _id, `Shipment to ${order.to.city}`).catch(err => console.error('Rewards failed:', err));
+  const done = { ...order, ...confirmed };
+  const label = result.documents.find(d => d.category === 'label')?.url;
+  await sendEmail({
+    to: order.from.contact_email,
+    subject: `Your shipping label: ${order.rate.courier} to ${order.to.city}`,
+    html: hotelEmailHtml('Your shipping label is ready', [
+      ['Courier', order.rate.courier], ['From', `${order.from.city}, ${order.from.country_alpha2}`], ['To', `${order.to.contact_name}, ${order.to.city}, ${order.to.country_alpha2}`],
+      ['Tracking', result.tracking.map(t => t.number).join(', ') || '—'], ['Total paid', paidLabel(done)],
+      ['Next step', 'Print the label, stick it on the parcel and hand it to the courier (drop-off or pickup).'],
+    ], { url: label ?? `${SITE_URL}/booking/success?session_id=${session.id}&type=shipping`, label: label ? 'Download label' : 'View shipment' }),
+    text: `Your ${order.rate.courier} label to ${order.to.city} is ready. ${label ? `Download: ${label}` : ''} Tracking: ${result.trackingUrl ?? ''}`,
+  });
+  return json(200, shipmentReceipt(done));
+}
+
+const REVIEW_MESSAGE = 'Your payment went through and we are finishing your label with the courier. We will email it to you shortly, or refund you in full.';
+
+async function alertShipmentReview(order, reason) {
+  await sendEmail({
+    to: bookingsAlertEmail(),
+    subject: `Shipment needs review: ${order.rate?.courier} ${order.from?.city} → ${order.to?.city}`,
+    html: hotelEmailHtml('A shipping label needs a person', [
+      ['Order', String(order._id)], ['Reason', reason], ['Courier', order.rate?.courier ?? '—'],
+      ['Sender', order.from?.contact_email ?? '—'], ['Paid', usd(order.credits?.amountDue ?? order.totalPrice)],
+      ['What to do', 'Check Easyship for a shipment with this order number. If a label exists, send it to the sender; otherwise refund in Stripe.'],
+    ], { url: `${SITE_URL}/admin`, label: 'Open admin' }),
+    text: `Shipment ${order._id} needs review: ${reason}`,
+  });
+}
+
 async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
@@ -3562,6 +3960,9 @@ async function routeRequest(event) {
     if (path.endsWith('/api/hotel/admin')            && method === 'POST')         return handleHotelAdmin(event);
     if (path.endsWith('/api/admin')                  && method === 'POST')         return handleAdmin(event);
     if (path.endsWith('/api/rewards')                && method === 'POST')         return handleRewards(event);
+    if (path.endsWith('/api/ship/rates')             && method === 'POST')         return handleShipRates(event);
+    if (path.endsWith('/api/ship/checkout')          && method === 'POST')         return handleShipCheckout(event);
+    if (path.endsWith('/api/ship/confirm')           && method === 'POST')         return handleShipConfirm(event);
     if (path.endsWith('/api/assistant/chat')         && method === 'POST')         return handleLyrbotChat(event);
     if (path.endsWith('/api/rates')                  && method === 'GET')          return handleRates();
     if (path.endsWith('/api/i18n')                   && method === 'POST')         return handleI18n(event);

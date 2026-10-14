@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { rewardsCall, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface Props {
-  kind: 'flight' | 'hotel';
+  kind: 'flight' | 'hotel' | 'shipping';
   // The retail total shown to the guest (12% service fee included)
   listedTotal: number | null;
   currency: string;
