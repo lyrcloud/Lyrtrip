@@ -5,6 +5,7 @@ import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { MongoClient, ObjectId } from 'mongodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
+import * as rw from './rewards.mjs';
 import {
   AdminCreateUserCommand,
   AdminDeleteUserCommand,
@@ -945,6 +946,16 @@ function cleanPassenger(p, idDocsRequired, departDate) {
   return out;
 }
 
+// What came off the total, for the Stripe line's description.
+function creditsNote(c) {
+  const parts = [
+    c.couponCents && `coupon ${c.couponCode} −$${rw.dollars(c.couponCents).toFixed(2)}`,
+    c.giftCardCents && `gift card −$${rw.dollars(c.giftCardCents).toFixed(2)}`,
+    c.points && `${c.points} points −$${rw.dollars(c.points).toFixed(2)}`,
+  ].filter(Boolean);
+  return parts.length ? ` · total $${c.total.toFixed(2)}, less ${parts.join(', ')}` : '';
+}
+
 async function handleFlightCheckout(event) {
   if (!process.env.DUFFEL_API_KEY) return json(500, { error: 'Duffel is not configured' });
   const { stripe, error: stripeError } = duffelStripe();
@@ -977,9 +988,15 @@ async function handleFlightCheckout(event) {
     passengers.push(clean);
   }
 
+  const user = await optionalUser(body.idToken) ?? await getAuthenticatedUser(event).catch(() => null);
+  const db  = await getDb();
+  const account  = user ? await rw.getAccount(db, user) : null;
+  const settings = await rw.getSettings(db);
+
   const numPassengers  = passengers.length;
   const baseTotal      = parseFloat(offer.total_amount || '0');
-  const markedUpTotal  = withMarkup(baseTotal, FLIGHT_MARKUP);
+  const feeRate        = rw.feeRate(account, settings, FLIGHT_MARKUP);
+  const markedUpTotal  = withMarkup(baseTotal, feeRate);
   const currency       = offer.total_currency ?? 'USD';
 
   const segs     = offer.slices?.[0]?.segments ?? [];
@@ -990,10 +1007,22 @@ async function handleFlightCheckout(event) {
     : 'Flight';
   const airlineName = offer.owner?.name ?? firstSeg?.marketing_carrier?.name ?? 'Flight';
 
-  const user = await getAuthenticatedUser(event).catch(() => null);
-  const db  = await getDb();
+  const coll = db.collection('flight_bookings');
+  const _id  = new ObjectId();
+  const flightOrderId = _id.toString();
+  let credits;
+  try {
+    const q = await rw.quoteCredits(db, { account, kind: 'flight', totalCents: rw.cents(markedUpTotal), currency, body, strict: true });
+    const held = await rw.holdCredits(db, q, { sub: account?._id, ref: flightOrderId, note: `flight ${flightOrderId.slice(-8)}` });
+    credits = await rw.bookingCredits(db, { q, held, account, feeRate, retailTotal: withMarkup(baseTotal, FLIGHT_MARKUP), affiliateCode: body.ref, currency });
+  } catch (err) {
+    if (err instanceof rw.RewardsError) return json(err.status, { error: err.message });
+    throw err;
+  }
+
   const now = new Date().toISOString();
-  const result = await db.collection('flight_bookings').insertOne({
+  await coll.insertOne({
+    _id,
     status:             'pending_stripe',
     testBooking:        DUFFEL_TEST(),
     userSub:            user?.sub ?? null,
@@ -1005,35 +1034,42 @@ async function handleFlightCheckout(event) {
     markedUpPrice:      markedUpTotal,
     currency,
     numPassengers,
+    credits,
     createdAt:          now,
     updatedAt:          now,
   });
-  const flightOrderId = result.insertedId.toString();
 
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    payment_method_types: ['card'],
-    line_items: [{
-      price_data: {
-        currency:     currency.toLowerCase(),
-        unit_amount:  Math.round(markedUpTotal * 100),
-        product_data: {
-          name:        `${airlineName} — ${routeName}`,
-          description: `${numPassengers} passenger${numPassengers !== 1 ? 's' : ''} · includes taxes & service fees`,
+  let session;
+  try {
+    session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency:     currency.toLowerCase(),
+          unit_amount:  rw.cents(credits.amountDue),
+          product_data: {
+            name:        `${airlineName} — ${routeName}`,
+            description: `${numPassengers} passenger${numPassengers !== 1 ? 's' : ''} · includes taxes & service fees${creditsNote(credits)}`,
+          },
         },
-      },
-      quantity: 1,
-    }],
-    metadata: { type: 'flight', flightOrderId },
-    customer_email: passengers[0].email,
-    // Book or refund well before the offer lapses
-    expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
-    success_url: `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=flight`,
-    cancel_url:  `${SITE_URL}/booking/cancel`,
-  });
+        quantity: 1,
+      }],
+      metadata: { type: 'flight', flightOrderId },
+      customer_email: passengers[0].email,
+      // Book or refund well before the offer lapses
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+      success_url: `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=flight`,
+      cancel_url:  `${SITE_URL}/booking/cancel?session_id={CHECKOUT_SESSION_ID}&type=flight`,
+    });
+  } catch (err) {
+    await coll.updateOne({ _id }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
+    await rw.releaseCredits(db, coll, _id, 'checkout could not start');
+    throw err;
+  }
 
-  await db.collection('flight_bookings').updateOne(
-    { _id: result.insertedId },
+  await coll.updateOne(
+    { _id },
     { $set: { stripeSessionId: session.id, updatedAt: new Date().toISOString() } }
   );
 
@@ -1062,6 +1098,18 @@ function flightReceipt(order, flightOrderId) {
     totalPrice:    order.markedUpPrice,
     basePrice:     order.basePrice,
     currency:      order.currency,
+    credits:       publicCredits(order.credits),
+  };
+}
+
+// The receipt's view of coupons, gift cards, points and business pricing on a booking.
+function publicCredits(c) {
+  if (!c) return null;
+  return {
+    total: c.total, amountPaid: c.amountDue, coupon: rw.dollars(c.couponCents), couponCode: c.couponCode,
+    giftCard: rw.dollars(c.giftCardCents), points: c.points, pointsValue: rw.dollars(c.points),
+    buyerType: c.buyerType, company: c.company ?? null, retailTotal: c.retailTotal,
+    pointsEarned: (c.awarded ?? []).find(a => a.sub === c.sub)?.points ?? null,
   };
 }
 
@@ -1196,6 +1244,8 @@ async function handleFlightConfirm(event) {
       status: refunded ? 'refunded' : 'booking_failed', bookingError: String(reason), customerMessage, payment,
       updatedAt: new Date().toISOString(),
     } });
+    // Coupon, gift card and points come back whether or not the card refund went through.
+    await rw.releaseCredits(db, coll, _id, `flight ${flightOrderId.slice(-8)} wasn't ticketed`);
     return json(500, { error: customerMessage });
   };
 
@@ -1264,6 +1314,8 @@ async function handleFlightConfirm(event) {
     updatedAt:     new Date().toISOString(),
   };
   await coll.updateOne({ _id }, { $set: confirmed });
+  const awarded = await rw.earnRewards(db, coll, _id, `Flight ${confirmed.pnr ?? flightOrderId.slice(-8)}`).catch(err => console.error('Rewards failed:', err));
+  if (order.credits && awarded) order.credits.awarded = awarded;
   const receipt = flightReceipt({ ...order, ...confirmed }, flightOrderId);
 
   // 3. Send e-ticket via SES
@@ -1329,20 +1381,28 @@ async function roleForEmail(email) {
 }
 
 let idVerifier;
-// Admin calls carry the Cognito ID token in the body (the API's CORS only allows content-type).
-// Resolves to { sub, email, role } for an admin or the super admin.
-async function requireAdmin(idToken) {
-  if (!process.env.COGNITO_USER_POOL_ID || !process.env.COGNITO_USER_POOL_CLIENT_ID) throw new Error('Admin sign-in is not configured');
+// Signed-in calls carry the Cognito ID token in the body (the API's CORS only allowed content-type).
+// Resolves to { sub, email, name }.
+async function requireUser(idToken) {
+  if (!process.env.COGNITO_USER_POOL_ID || !process.env.COGNITO_USER_POOL_CLIENT_ID) throw new Error('Sign-in is not configured');
   idVerifier ??= CognitoJwtVerifier.create({
     userPoolId: process.env.COGNITO_USER_POOL_ID,
     tokenUse:   'id',
     clientId:   process.env.COGNITO_USER_POOL_CLIENT_ID,
   });
   const claims = await idVerifier.verify(String(idToken ?? ''));
-  const email = String(claims.email ?? '').toLowerCase();
+  return { sub: String(claims.sub), email: String(claims.email ?? '').toLowerCase(), name: String(claims.name ?? '') };
+}
+
+// The booking's signed-in traveller, if any (checkout also works as a guest).
+const optionalUser = idToken => (idToken ? requireUser(idToken).catch(() => null) : Promise.resolve(null));
+
+// Resolves to { sub, email, role } for an admin or the super admin.
+async function requireAdmin(idToken) {
+  const { sub, email } = await requireUser(idToken);
   const role = await roleForEmail(email);
   if (role === 'user') throw new Error('Not an admin account');
-  return { sub: String(claims.sub), email, role };
+  return { sub, email, role };
 }
 
 async function sendEmail({ to, subject, html, text }) {
@@ -1400,6 +1460,12 @@ async function serpHotelQuote({ propertyToken, destination, checkin, checkout, a
   };
 }
 
+// "USD 240.00", or with credits "USD 200.00 by card (total USD 240.00)"
+function paidLabel(b) {
+  const paid = b.credits?.amountDue ?? b.totalPrice;
+  return paid === b.totalPrice ? usd(paid) : `${usd(paid)} by card (total ${usd(b.totalPrice)})`;
+}
+
 function hotelReceipt(b) {
   return {
     success:           true,
@@ -1417,6 +1483,8 @@ function hotelReceipt(b) {
     hotelTotal:        b.hotelTotal,
     serviceFee:        Math.round((b.totalPrice - b.hotelTotal) * 100) / 100,
     totalPrice:        b.totalPrice,
+    amountPaid:        b.credits?.amountDue ?? b.totalPrice,
+    credits:           publicCredits(b.credits),
     currency:          b.currency,
     payment:           b.payment ?? null,
     requestedAt:       b.requestedAt,
@@ -1458,18 +1526,37 @@ async function handleHotelCheckout(event) {
   } catch (err) {
     return json(502, { error: err.message });
   }
-  const totalPrice = withMarkup(quote.hotelTotal, HOTEL_MARKUP);
-  // The guest agreed to a price in the form; if the hotel's rate rose since, show the new one first
+  const db = await getDb();
+  const user = await optionalUser(body.idToken);
+  const account = user ? await rw.getAccount(db, user) : null;
+  const feeRate = rw.feeRate(account, await rw.getSettings(db), HOTEL_MARKUP);
+  const totalPrice = withMarkup(quote.hotelTotal, feeRate);
+  // The guest agreed to a price in the form (before business pricing); if the hotel's rate rose since, show the new one first
   const agreed = Number(body.quotedTotal);
-  if (!(agreed > 0) || totalPrice > agreed + 0.5) {
-    return json(409, { priceChanged: true, totalPrice, hotelTotal: quote.hotelTotal, nightly: quote.nightly, nights: quote.nights,
-      error: `The price for these dates is now ${usd(totalPrice)}. Please review and continue.` });
+  const retailTotal = withMarkup(quote.hotelTotal, HOTEL_MARKUP);
+  if (!(agreed > 0) || retailTotal > agreed + 0.5) {
+    return json(409, { priceChanged: true, totalPrice: retailTotal, hotelTotal: quote.hotelTotal, nightly: quote.nightly, nights: quote.nights,
+      error: `The price for these dates is now ${usd(retailTotal)}. Please review and continue.` });
+  }
+
+  const coll = db.collection('hotel_bookings');
+  const insertedId = new ObjectId();
+  const hotelBookingId = insertedId.toString();
+  let credits;
+  try {
+    const q = await rw.quoteCredits(db, { account, kind: 'hotel', totalCents: rw.cents(totalPrice), currency: 'USD', body, strict: true });
+    const held = await rw.holdCredits(db, q, { sub: account?._id, ref: hotelBookingId, note: `hotel ${hotelBookingId.slice(-8)}` });
+    credits = await rw.bookingCredits(db, { q, held, account, feeRate, retailTotal, affiliateCode: body.ref });
+  } catch (err) {
+    if (err instanceof rw.RewardsError) return json(err.status, { error: err.message });
+    throw err;
   }
 
   const now = new Date().toISOString();
-  const db = await getDb();
   const doc = {
+    _id:             insertedId,
     status:          'pending_stripe',
+    userSub:         account?._id ?? null,
     propertyToken,
     hotel:           { name: quote.name, address: quote.address, phone: quote.phone, link: quote.link, imageUrl: quote.imageUrl },
     checkin, checkout, nights: quote.nights, adults,
@@ -1480,34 +1567,41 @@ async function handleHotelCheckout(event) {
     hotelTotal:      quote.hotelTotal,
     totalPrice,
     currency:        'USD',
+    credits,
     createdAt:       now,
     updatedAt:       now,
   };
-  const { insertedId } = await db.collection('hotel_bookings').insertOne(doc);
-  const hotelBookingId = insertedId.toString();
+  await coll.insertOne(doc);
 
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    payment_method_types: ['card'],
-    line_items: [{
-      price_data: {
-        currency:     'usd',
-        unit_amount:  Math.round(totalPrice * 100),
-        product_data: {
-          name:        `${quote.name} — ${quote.nights} night${quote.nights !== 1 ? 's' : ''}`,
-          description: `${checkin} → ${checkout} · ${adults} guest${adults !== 1 ? 's' : ''} · incl. taxes, fees & Lyrtrip service fee`,
+  let session;
+  try {
+    session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency:     'usd',
+          unit_amount:  rw.cents(credits.amountDue),
+          product_data: {
+            name:        `${quote.name} — ${quote.nights} night${quote.nights !== 1 ? 's' : ''}`,
+            description: `${checkin} → ${checkout} · ${adults} guest${adults !== 1 ? 's' : ''} · incl. taxes, fees & Lyrtrip service fee${creditsNote(credits)}`,
+          },
         },
-      },
-      quantity: 1,
-    }],
-    metadata:       { type: 'hotel_request', hotelBookingId },
-    customer_email: guest.email,
-    expires_at:     Math.floor(Date.now() / 1000) + 30 * 60,
-    success_url:    `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=hotel`,
-    cancel_url:     `${SITE_URL}/booking/cancel`,
-  });
-  await db.collection('hotel_bookings').updateOne({ _id: insertedId }, { $set: { stripeSessionId: session.id } });
+        quantity: 1,
+      }],
+      metadata:       { type: 'hotel_request', hotelBookingId },
+      customer_email: guest.email,
+      expires_at:     Math.floor(Date.now() / 1000) + 30 * 60,
+      success_url:    `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=hotel`,
+      cancel_url:     `${SITE_URL}/booking/cancel?session_id={CHECKOUT_SESSION_ID}&type=hotel`,
+    });
+  } catch (err) {
+    await coll.updateOne({ _id: insertedId }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
+    await rw.releaseCredits(db, coll, insertedId, 'checkout could not start');
+    throw err;
+  }
+  await coll.updateOne({ _id: insertedId }, { $set: { stripeSessionId: session.id } });
   return json(200, { url: session.url, hotelBookingId });
 }
 
@@ -1544,7 +1638,7 @@ async function handleHotelConfirm(event) {
   const details = [
     ['Hotel', fresh.hotel.name], ['Dates', `${fresh.checkin} → ${fresh.checkout} (${fresh.nights} night${fresh.nights !== 1 ? 's' : ''})`],
     ['Guests', fresh.adults], ['Guest name', `${fresh.guest.givenName} ${fresh.guest.familyName}`],
-    ['Total paid', usd(fresh.totalPrice)], ['Request reference', id],
+    ['Total paid', paidLabel(fresh)], ['Request reference', id],
   ];
   await sendEmail({
     to: bookingsAlertEmail(),
@@ -1596,13 +1690,14 @@ async function handleHotelAdmin(event) {
     );
     const b = r?.value !== undefined ? r.value : r;
     if (!b) return json(409, { error: 'This request is no longer awaiting confirmation' });
+    await rw.earnRewards(await getDb(), coll, _id, `Hotel ${b.hotel.name.slice(0, 40)}`).catch(err => console.error('Rewards failed:', err));
     await sendEmail({
       to: b.guest.email,
       subject: `Confirmed: ${b.hotel.name}, ${b.checkin} — confirmation ${conf}`,
       html: hotelEmailHtml('Your hotel is confirmed', [
         ['Hotel', b.hotel.name], ['Address', b.hotel.address || '—'], ['Hotel confirmation number', conf],
         ['Dates', `${b.checkin} → ${b.checkout}`], ['Guests', b.adults], ['Guest name', `${b.guest.givenName} ${b.guest.familyName}`],
-        ['Total paid', usd(b.totalPrice)],
+        ['Total paid', paidLabel(b)],
       ], { url: `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=hotel`, label: 'View your receipt' }),
       text: `Your stay at ${b.hotel.name} is confirmed. Hotel confirmation: ${conf}.`,
     });
@@ -1628,14 +1723,15 @@ async function handleHotelAdmin(event) {
     const done = { status: refunded ? 'declined' : 'requested', ...(refunded && { refunded: true, declineReason: reason, declinedAt: now }), updatedAt: new Date().toISOString() };
     await coll.updateOne({ _id }, { $set: done });
     if (!refunded) return json(500, { error: 'The refund failed, so the request was left open. Try again or refund it in Stripe.' });
+    await rw.releaseCredits(await getDb(), coll, _id, `hotel request for ${b.hotel.name.slice(0, 40)} was declined`);
     await sendEmail({
       to: b.guest.email,
       subject: `Refunded: we couldn't book ${b.hotel.name}`,
       html: hotelEmailHtml('We couldn’t book this room', [
         ['Hotel', b.hotel.name], ['Dates', `${b.checkin} → ${b.checkout}`], ['Reason', reason],
-        ['Refund', `${usd(b.totalPrice)} refunded to your card (allow 5–10 business days)`],
+        ['Refund', `${usd(b.credits?.amountDue ?? b.totalPrice)} refunded to your card (allow 5–10 business days)${b.credits?.giftCardCents || b.credits?.points ? '; gift card balance and points returned to your account' : ''}`],
       ], { url: `${SITE_URL}/`, label: 'Search other hotels' }),
-      text: `We couldn't book ${b.hotel.name}: ${reason}. ${usd(b.totalPrice)} has been refunded.`,
+      text: `We couldn't book ${b.hotel.name}: ${reason}. ${usd(b.credits?.amountDue ?? b.totalPrice)} has been refunded.`,
     });
     return json(200, { booking: hotelReceipt({ ...b, ...done }) });
   }
@@ -2948,6 +3044,122 @@ async function setAdminRole(email, role) {
   else await admins.deleteOne({ email });
 }
 
+// Super admin changes to the rewards program. Throws RewardsError for bad input.
+async function superAdminRewardsAction(db, actor, body) {
+  const now = new Date().toISOString();
+  const promos = db.collection('promos');
+  switch (body.action) {
+    // Add or remove points by hand (goodwill, corrections). Removing never takes the balance below zero.
+    case 'rewards.adjust': {
+      const points = Math.trunc(Number(body.points));
+      if (!points || Math.abs(points) > 1_000_000) throw new rw.RewardsError('Enter a number of points (up to 1,000,000), positive to add or negative to remove.');
+      const note = String(body.note ?? '').trim().slice(0, 120) || 'Adjusted by Lyrtrip';
+      if (!body.sub) throw new rw.RewardsError('Choose a user.');
+      // Users who haven't opened Rewards or booked yet get their account now.
+      await db.collection('accounts').updateOne({ _id: String(body.sub) },
+        { $setOnInsert: { email: String(body.email ?? '').toLowerCase(), name: String(body.name ?? ''), createdAt: now } }, { upsert: true });
+      if (points > 0) await rw.creditAccount(db, body.sub, points, {}, note);
+      else if (!await rw.takePoints(db, body.sub, -points, note)) throw new rw.RewardsError("They don't have that many points.", 409);
+      if ('adminNote' in body) await db.collection('accounts').updateOne({ _id: body.sub }, { $set: { admin_note: String(body.adminNote ?? '').slice(0, 300) } });
+      return { account: rw.adminAccountRow(await db.collection('accounts').findOne({ _id: body.sub })) };
+    }
+
+    case 'settings.save': {
+      const settings = rw.cleanSettings(body.settings);
+      await db.collection('settings').updateOne({ _id: 'rewards' }, { $set: { ...settings, updatedAt: now, updatedBy: actor.email } }, { upsert: true });
+      return { settings };
+    }
+
+    case 'coupons.save': {
+      if (body.editCode) {
+        const existing = await promos.findOne({ _id: rw.couponId(rw.normalizeCode(body.editCode)) });
+        if (!existing) throw new rw.RewardsError('Coupon not found.', 404);
+        const fields = rw.cleanCoupon({ ...body.coupon, code: existing.code });
+        await promos.updateOne({ _id: existing._id }, { $set: { ...fields, updatedAt: now } });
+        return { coupon: { ...existing, ...fields } };
+      }
+      const fields = rw.cleanCoupon(body.coupon);
+      try {
+        await promos.insertOne({ _id: rw.couponId(fields.code), kind: 'coupon', ...fields, uses: 0, used_by: [], createdAt: now, createdBy: actor.email });
+      } catch (err) {
+        if (err.code === 11000) throw new rw.RewardsError(`A coupon called ${fields.code} already exists.`, 409);
+        throw err;
+      }
+      return { coupon: fields };
+    }
+
+    case 'coupons.delete': {
+      const r = await promos.deleteOne({ _id: rw.couponId(rw.normalizeCode(body.code)), kind: 'coupon' });
+      if (!r.deletedCount) throw new rw.RewardsError('Coupon not found.', 404);
+      return { deleted: body.code };
+    }
+
+    // A gift card from Lyrtrip itself (prizes, apologies, partners), active straight away.
+    case 'giftcards.issue': {
+      const amount = Number(body.amount);
+      if (!(amount >= rw.GIFT_CARD_MIN && amount <= 5000)) throw new rw.RewardsError(`Issued gift cards are $${rw.GIFT_CARD_MIN} to $5,000.`);
+      const fields = rw.cleanGiftCard({ ...body, amount: Math.min(amount, rw.GIFT_CARD_MAX) });
+      fields.amount = Math.round(amount * 100) / 100;
+      fields.sender_name ||= 'Lyrtrip';
+      const card = await rw.createGiftCard(db, fields, {
+        status: 'active', source: 'admin', balance_cents: rw.cents(fields.amount), activatedAt: now, issued_by: actor.email,
+      });
+      const emailed = card.recipient_email ? await deliverGiftCard(db, card) : null;
+      return { giftCard: rw.publicGiftCard(card, true), emailed };
+    }
+
+    // Turn a card off or on, or set its remaining balance.
+    case 'giftcards.update': {
+      const _id = rw.giftCardId(rw.normalizeCode(body.code));
+      const card = await promos.findOne({ _id });
+      if (!card) throw new rw.RewardsError('Gift card not found.', 404);
+      const set = { updatedAt: now };
+      if (body.status) {
+        if (!['active', 'disabled'].includes(body.status)) throw new rw.RewardsError('Status must be active or disabled.');
+        if (card.status === 'pending') throw new rw.RewardsError("This card hasn't been paid for yet.", 409);
+        set.status = body.status;
+      }
+      if (body.balance !== undefined) {
+        const balance = Number(body.balance);
+        if (!(balance >= 0 && balance <= 5000)) throw new rw.RewardsError('Balance must be $0 to $5,000.');
+        set.balance_cents = rw.cents(balance);
+      }
+      await promos.updateOne({ _id }, { $set: set });
+      return { giftCard: rw.publicGiftCard({ ...card, ...set }, true) };
+    }
+
+    // Approve (with an optional custom service fee), reject, or reopen a business application.
+    case 'business.review': {
+      const account = await db.collection('accounts').findOne({ _id: String(body.sub ?? '') });
+      if (!account?.business) throw new rw.RewardsError("This account hasn't applied for a business account.", 404);
+      if (!['approved', 'rejected', 'pending'].includes(body.status)) throw new rw.RewardsError('Choose approve or reject.');
+      const business = { ...account.business, status: body.status, note: String(body.note ?? '').trim().slice(0, 300), reviewedAt: now, reviewedBy: actor.email };
+      if (body.feePercent === '' || body.feePercent == null) delete business.fee_percent;
+      else {
+        const fee = Number(body.feePercent);
+        if (!(fee >= 0 && fee <= 12)) throw new rw.RewardsError('The business service fee must be 0 to 12%.');
+        business.fee_percent = fee;
+      }
+      await db.collection('accounts').updateOne({ _id: account._id }, { $set: { business } });
+      if (body.status !== account.business.status && body.status !== 'pending' && account.email) {
+        const approved = body.status === 'approved';
+        await sendEmail({
+          to: account.email,
+          subject: approved ? `Your Lyrtrip business account is approved` : `Your Lyrtrip business account application`,
+          html: hotelEmailHtml(approved ? 'Business account approved' : 'Business account not approved', [
+            ['Company', business.company],
+            approved ? ['Pricing', 'Business rates now apply to your flight and hotel bookings when you are signed in.'] : ['Status', 'We could not approve this application.'],
+            ...(business.note ? [['Note', business.note]] : []),
+          ], { url: `${SITE_URL}/rewards`, label: 'Open your account' }),
+          text: approved ? `${business.company} is approved for Lyrtrip business rates.` : `We could not approve the business account for ${business.company}.`,
+        });
+      }
+      return { account: rw.adminAccountRow({ ...account, business }) };
+    }
+  }
+  throw new rw.RewardsError('Unknown admin action');
+}
+
 async function handleAdmin(event) {
   const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
   let actor;
@@ -3037,6 +3249,9 @@ async function handleAdmin(event) {
         await cognito.send(new AdminDeleteUserCommand({ UserPoolId, Username: target.username }));
         // Otherwise a new account with this email would inherit admin access.
         if (target.role === 'admin') await setAdminRole(target.email, 'user');
+        // Their points, business account and referral link go with them.
+        await db.collection('accounts').deleteOne({ _id: target.sub });
+        await db.collection('promos').deleteMany({ kind: 'referral', sub: target.sub });
         return json(200, { deleted: target.username });
       }
 
@@ -3065,19 +3280,235 @@ async function handleAdmin(event) {
             to:            b.flightSummary?.to ?? null,
             depart:        b.flightSummary?.depart ?? null,
             markedUpPrice: b.markedUpPrice ?? null,
+            amountPaid:    b.credits?.amountDue ?? null,
+            buyerType:     b.credits?.buyerType ?? null,
             currency:      b.currency ?? null,
             createdAt:     b.createdAt ?? null,
           })),
         });
       }
 
+      // ── Rewards: admins see everything; only the super admin changes it ──
+
+      case 'rewards.list': {
+        await releaseExpiredHolds(db).catch(err => console.error('Release sweep failed:', err.message));
+        const accounts = await db.collection('accounts').find().sort({ points_lifetime: -1 }).limit(2000).toArray();
+        return json(200, { accounts: accounts.map(rw.adminAccountRow), settings: await rw.getSettings(db), tiers: rw.TIERS.map(([name, points]) => ({ name, points })) });
+      }
+
+      case 'coupons.list': {
+        const coupons = await db.collection('promos').find({ kind: 'coupon' }).sort({ createdAt: -1 }).toArray();
+        return json(200, { coupons: coupons.map(({ _id, used_by, ...c }) => ({ ...c, usedBy: (used_by ?? []).length })) });
+      }
+
+      case 'giftcards.list': {
+        const cards = await db.collection('promos').find({ kind: 'giftcard' }).sort({ createdAt: -1 }).limit(1000).toArray();
+        return json(200, { giftCards: cards.map(c => ({ ...rw.publicGiftCard(c, actor.role === 'superadmin'), buyerEmail: c.buyer_email ?? null, issuedBy: c.issued_by ?? null, deliveryError: c.deliveryError ?? null })) });
+      }
+
+      case 'rewards.adjust':
+      case 'settings.save':
+      case 'coupons.save':
+      case 'coupons.delete':
+      case 'giftcards.issue':
+      case 'giftcards.update':
+      case 'business.review':
+        if (actor.role !== 'superadmin') return json(403, { error: 'Only the super admin can change points, coupons, gift cards, business accounts and program settings.' });
+        return json(200, await superAdminRewardsAction(db, actor, body));
+
       default:
         return json(400, { error: 'Unknown admin action' });
     }
   } catch (err) {
+    if (err instanceof rw.RewardsError) return json(err.status, { error: err.message });
     console.error('Admin action failed:', body.action, err);
     const status = err.name === 'UserNotFoundException' ? 404 : err.name === 'UsernameExistsException' ? 409 : 400;
     return json(status, { error: err.message || 'Admin action failed' });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rewards (/rewards and checkout), as on Lyrshop: points, tiers, badges, gift
+// cards, coupons, affiliate links and business accounts. Logic in rewards.mjs.
+// ---------------------------------------------------------------------------
+
+const mainStripe = () => (process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' }) : null);
+const BOOKING_STRIPE = { flight: () => duffelStripe().stripe ?? null, hotel: mainStripe };
+const BOOKING_COLLECTION = { flight: 'flight_bookings', hotel: 'hotel_bookings' };
+const HELD = { $or: [{ 'credits.points': { $gt: 0 } }, { 'credits.giftCardCents': { $gt: 0 } }, { 'credits.couponCode': { $type: 'string' } }] };
+
+// Ends an unpaid checkout and gives back its coupon, gift card and points. Returns true if it did.
+async function releaseUnpaid(db, type, booking, stripe) {
+  const coll = db.collection(BOOKING_COLLECTION[type]);
+  if (booking.stripeSessionId && stripe) {
+    let session = await stripe.checkout.sessions.retrieve(booking.stripeSessionId).catch(() => null);
+    if (session?.status === 'open') session = await stripe.checkout.sessions.expire(session.id).catch(() => null);
+    if (session?.status !== 'expired') return false;  // paid (or Stripe unreachable): leave it to the confirm step
+  }
+  const r = await coll.updateOne({ _id: booking._id, status: 'pending_stripe' }, { $set: { status: 'expired', updatedAt: new Date().toISOString() } });
+  if (!r.modifiedCount) return false;
+  return rw.releaseCredits(db, coll, booking._id, 'the payment was not completed');
+}
+
+// Stripe sessions last 30 minutes; bookings never paid give back what they held.
+async function releaseExpiredHolds(db) {
+  const cutoff = new Date(Date.now() - 35 * 60 * 1000).toISOString();
+  for (const type of ['flight', 'hotel']) {
+    const rows = await db.collection(BOOKING_COLLECTION[type])
+      .find({ status: 'pending_stripe', createdAt: { $lt: cutoff }, 'credits.released': { $ne: true }, ...HELD }).limit(10).toArray();
+    for (const b of rows) await releaseUnpaid(db, type, b, BOOKING_STRIPE[type]()).catch(err => console.error('Release failed:', err.message));
+  }
+}
+
+async function activateGiftCard(db, card) {
+  const now = new Date().toISOString();
+  const r = await db.collection('promos').findOneAndUpdate(
+    { _id: card._id, status: 'pending' },
+    { $set: { status: 'active', balance_cents: rw.cents(card.amount), activatedAt: now } },
+    { returnDocument: 'after' },
+  );
+  const active = r?.value !== undefined ? r.value : r;
+  if (active?.recipient_email) await deliverGiftCard(db, active);
+  return active;
+}
+
+// Emails a card to its recipient; the first send counts toward the buyer's Gift giver badge.
+async function deliverGiftCard(db, card) {
+  const { subject, text } = rw.giftCardEmail(card, SITE_URL);
+  const html = hotelEmailHtml(subject, [
+    ['From', card.sender_name || '—'], ['Amount', usd(card.amount)], ['Gift card code', card.code], ...(card.message ? [['Message', card.message]] : []),
+    ['How to use it', 'Enter the code in the Gift card box when you book a flight or hotel. The balance carries over until it is used up.'],
+  ], { url: SITE_URL, label: 'Plan a trip' });
+  const sent = await sendEmail({ to: card.recipient_email, subject, html, text });
+  const now = new Date().toISOString();
+  await db.collection('promos').updateOne({ _id: card._id }, sent ? { $set: { sentAt: now }, $unset: { deliveryError: '' } } : { $set: { deliveryError: "We couldn't email this card. Share the code yourself, or send it again." } });
+  if (sent && !card.sentAt && card.buyer) await rw.creditAccount(db, card.buyer, 0, { gift_cards_sent: 1 }, `Sent a ${usd(card.amount)} gift card`);
+  return sent;
+}
+
+async function handleRewards(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const db = await getDb();
+  const user = await optionalUser(body.idToken);
+  const account = user ? await rw.getAccount(db, user) : null;
+  const signedIn = () => {
+    if (!account) throw new rw.RewardsError('Please sign in first.', 401);
+    return account;
+  };
+
+  try {
+    switch (body.action) {
+      // What a booking will cost with the guest's coupon, gift card, points and business pricing (display only;
+      // checkout prices it again from the airline or hotel).
+      case 'quote': {
+        const kind = body.kind === 'hotel' ? 'hotel' : 'flight';
+        const retailRate = kind === 'hotel' ? HOTEL_MARKUP : FLIGHT_MARKUP;
+        const listed = Number(body.listedTotal);
+        if (!(listed > 0)) return json(400, { error: 'listedTotal is required' });
+        const settings = await rw.getSettings(db);
+        const feeRate = rw.feeRate(account, settings, retailRate);
+        const total = withMarkup(listed / retailRate, feeRate);
+        const currency = String(body.currency ?? 'USD').toUpperCase();
+        const q = await rw.quoteCredits(db, { account, kind, totalCents: rw.cents(total), currency, body });
+        return json(200, {
+          ...rw.quoteReply(q, { settings, account }),
+          listedTotal: listed, businessSavings: Math.max(0, Math.round((listed - total) * 100) / 100), ...rw.buyerFields(account),
+        });
+      }
+
+      case 'summary': {
+        await releaseExpiredHolds(db).catch(err => console.error('Release sweep failed:', err.message));
+        return json(200, await rw.rewardsSummary(db, signedIn(), SITE_URL));
+      }
+
+      // The cancel page: end the Stripe session now and give back what the booking held.
+      case 'release': {
+        const type = body.type === 'hotel' ? 'hotel' : 'flight';
+        const booking = await db.collection(BOOKING_COLLECTION[type]).findOne({ stripeSessionId: String(body.sessionId ?? ''), status: 'pending_stripe' });
+        const released = booking ? await releaseUnpaid(db, type, booking, BOOKING_STRIPE[type]()) : false;
+        return json(200, { released });
+      }
+
+      case 'giftcard.buy': {
+        const me = signedIn();
+        const stripe = mainStripe();
+        if (!stripe) return json(500, { error: 'Payments are not configured' });
+        const fields = rw.cleanGiftCard(body);
+        if (!fields.sender_name) fields.sender_name = me.name || '';
+        const card = await rw.createGiftCard(db, fields, { status: 'pending', source: 'purchase', buyer: me._id, buyer_email: me.email });
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          payment_method_types: ['card'],
+          line_items: [{ price_data: { currency: 'usd', unit_amount: rw.cents(fields.amount), product_data: {
+            name: `Lyrtrip gift card ${usd(fields.amount)}`,
+            description: fields.recipient_email ? `Emailed to ${fields.recipient_email} once paid` : 'For your own account',
+          } }, quantity: 1 }],
+          metadata: { type: 'giftcard', giftCardId: card._id },
+          customer_email: me.email || undefined,
+          expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+          success_url: `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=giftcard`,
+          cancel_url: `${SITE_URL}/rewards`,
+        });
+        await db.collection('promos').updateOne({ _id: card._id }, { $set: { stripeSessionId: session.id } });
+        return json(200, { url: session.url });
+      }
+
+      // The receipt page after paying for a gift card
+      case 'giftcard.confirm': {
+        const stripe = mainStripe();
+        if (!stripe) return json(500, { error: 'Payments are not configured' });
+        let session;
+        try { session = await stripe.checkout.sessions.retrieve(String(body.sessionId ?? '')); } catch { return json(400, { error: 'Invalid session ID' }); }
+        if (session.metadata?.type !== 'giftcard') return json(400, { error: 'Not a gift card payment' });
+        if (session.payment_status !== 'paid') return json(402, { error: 'Payment not completed' });
+        const card = await db.collection('promos').findOne({ _id: session.metadata.giftCardId, stripeSessionId: session.id });
+        if (!card) return json(404, { error: 'Gift card not found' });
+        const active = card.status === 'pending' ? (await activateGiftCard(db, card)) ?? await db.collection('promos').findOne({ _id: card._id }) : card;
+        return json(200, { success: true, giftCard: rw.publicGiftCard(active, true) });
+      }
+
+      // Send (or re-send) one of your active cards to someone
+      case 'giftcard.send': {
+        const me = signedIn();
+        const card = await db.collection('promos').findOne({ _id: rw.giftCardId(rw.normalizeCode(body.code)), buyer: me._id });
+        if (!card) return json(404, { error: 'Gift card not found.' });
+        if (card.status !== 'active') return json(409, { error: "This gift card isn't active yet. It activates once the payment clears." });
+        const recipient = String(body.recipient_email ?? card.recipient_email ?? '').trim().toLowerCase();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(recipient)) return json(400, { error: "Enter the recipient's email." });
+        const set = { recipient_email: recipient };
+        if ('recipient_name' in body) set.recipient_name = String(body.recipient_name ?? '').trim().slice(0, 60);
+        if ('message' in body) set.message = String(body.message ?? '').trim().slice(0, 300);
+        await db.collection('promos').updateOne({ _id: card._id }, { $set: set });
+        if (!await deliverGiftCard(db, { ...card, ...set })) return json(502, { error: "We couldn't email this card. Share the code with them yourself." });
+        return json(200, { giftCard: rw.publicGiftCard({ ...card, ...set, sentAt: new Date().toISOString() }, true) });
+      }
+
+      // Apply for a business account. Changing an approved business's details sends it back for review.
+      case 'business.apply': {
+        const me = signedIn();
+        const fields = rw.cleanBusinessApplication(body);
+        const current = me.business ?? {};
+        const unchanged = Object.entries(fields).every(([k, v]) => current[k] === v);
+        if (current.status === 'approved' && unchanged) return json(200, { business: current });
+        const business = { ...fields, status: 'pending', appliedAt: new Date().toISOString() };
+        await db.collection('accounts').updateOne({ _id: me._id }, { $set: { business } });
+        await sendEmail({
+          to: superAdminEmail(),
+          subject: `Business account application: ${fields.company}`,
+          html: hotelEmailHtml('New business account application', [
+            ['Company', fields.company], ['Tax ID', fields.tax_id], ['Country', fields.country], ['Applicant', me.email],
+          ], { url: `${SITE_URL}/admin`, label: 'Review in the admin console' }),
+          text: `${me.email} applied for a business account for ${fields.company}. Review it at ${SITE_URL}/admin`,
+        });
+        return json(200, { business });
+      }
+
+      default:
+        return json(400, { error: 'Unknown rewards action' });
+    }
+  } catch (err) {
+    if (err instanceof rw.RewardsError) return json(err.status, { error: err.message });
+    throw err;
   }
 }
 
@@ -3098,6 +3529,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/hotel/confirm')          && method === 'POST')         return handleHotelConfirm(event);
     if (path.endsWith('/api/hotel/admin')            && method === 'POST')         return handleHotelAdmin(event);
     if (path.endsWith('/api/admin')                  && method === 'POST')         return handleAdmin(event);
+    if (path.endsWith('/api/rewards')                && method === 'POST')         return handleRewards(event);
     if (path.endsWith('/api/assistant/chat')         && method === 'POST')         return handleLyrbotChat(event);
     if (path.endsWith('/api/rates')                  && method === 'GET')          return handleRates();
     if (path.endsWith('/api/i18n')                   && method === 'POST')         return handleI18n(event);

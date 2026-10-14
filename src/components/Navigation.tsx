@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import InteractiveLogo from '@/components/InteractiveLogo';
 import { useAuth } from '@/context/AuthContext';
 import LocalePicker from '@/components/LocalePicker';
 import { useLocale } from '@/i18n/LocaleContext';
+import { captureReferral } from '@/lib/rewards';
 
 function initialsFor(name?: string, email?: string) {
   if (name) {
@@ -28,6 +29,9 @@ export default function Navigation() {
   const { t } = useLocale();
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Every page can be an affiliate's landing page (?ref=CODE)
+  useEffect(() => { captureReferral(); }, []);
 
   const handleSignOut = async () => {
     setMenuOpen(false);
@@ -74,6 +78,13 @@ export default function Navigation() {
                       className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
                     >
                       {t('Dashboard')}
+                    </Link>
+                    <Link
+                      href="/rewards"
+                      onClick={() => setMenuOpen(false)}
+                      className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      {t('Rewards & gift cards')}
                     </Link>
                     <button
                       onClick={handleSignOut}

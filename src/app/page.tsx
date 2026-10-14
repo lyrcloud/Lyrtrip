@@ -10,6 +10,8 @@ import { calcNights } from '@/lib/bookings';
 import { useAuth } from '@/context/AuthContext';
 import { Price, useLocale } from '@/i18n/LocaleContext';
 import HotelPriceCompare from '@/components/HotelPriceCompare';
+import CheckoutExtras from '@/components/CheckoutExtras';
+import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
   airline: string;
@@ -579,6 +581,9 @@ export default function Home() {
   const [hotelForm, setHotelForm] = useState({ givenName: '', familyName: '', email: '', phone: '', adults: 1, roomPreference: '', specialRequests: '' });
   // Price the server quoted for a given dates/guests combination, when it differs from search
   const [hotelServerQuote, setHotelServerQuote] = useState<{ key: string; totalPrice: number } | null>(null);
+  // Coupon, gift card and points for whichever booking modal is open
+  const [extras, setExtras] = useState<CheckoutExtrasValue>({ couponCode: '', giftCardCode: '', usePoints: false });
+  const [extrasQuote, setExtrasQuote] = useState<RewardsQuote | null>(null);
   const [hotelSubmitting, setHotelSubmitting] = useState(false);
   const [hotelError, setHotelError] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState(false);
@@ -1199,6 +1204,9 @@ export default function Home() {
           roomPreference:  hotelForm.roomPreference,
           specialRequests: hotelForm.specialRequests,
           quotedTotal,
+          ...extras,
+          ref:             getReferral(),
+          idToken:         await idTokenOrNull(),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1243,6 +1251,9 @@ export default function Home() {
               to:            flightDraft.to,
               depart:        flightDraft.depart,
             },
+            ...extras,
+            ref:     getReferral(),
+            idToken: await idTokenOrNull(),
           }),
         });
         const data = await res.json();
@@ -2938,6 +2949,9 @@ export default function Home() {
                   />
                 )}
 
+                <CheckoutExtras kind="hotel" listedTotal={total} currency="USD" signedIn={!!user}
+                  value={extras} onChange={v => { setExtras(v); setHotelError(null); }} onQuote={setExtrasQuote} />
+
                 <div className="space-y-3 mb-4">
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -2992,7 +3006,7 @@ export default function Home() {
                     disabled={hotelSubmitting}
                     className="flex-1 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover disabled:bg-gray-300 transition"
                   >
-                    {hotelSubmitting ? t('Checking price…') : total != null ? `${t('Pay {amount}', { amount: original(total) })} →` : t('Continue')}
+                    {hotelSubmitting ? t('Checking price…') : total != null ? `${t('Pay {amount}', { amount: original(extrasQuote?.listedTotal === total ? extrasQuote.amountDue : total) })} →` : t('Continue')}
                   </button>
                 </div>
               </div>
@@ -3122,6 +3136,9 @@ export default function Home() {
                     ))}
                   </div>
 
+                  <CheckoutExtras kind="flight" listedTotal={total} currency={f.currency ?? 'USD'} signedIn={!!user}
+                    value={extras} onChange={v => { setExtras(v); setFlightBookingError(null); }} onQuote={setExtrasQuote} />
+
                   {f.testBooking && (
                     <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2 mb-4">
                       <span className="font-semibold">Test mode:</span> this books a test ticket, not a real one. Pay with Stripe test card{' '}
@@ -3148,7 +3165,7 @@ export default function Home() {
                       {flightBookingLoading ? (
                         <><span className="animate-spin">⟳</span> Processing…</>
                       ) : user ? (
-                        `${t('Pay {amount}', { amount: original(total, f.currency ?? 'USD') })} →`
+                        `${t('Pay {amount}', { amount: original(extrasQuote?.listedTotal === total ? extrasQuote.amountDue : total, f.currency ?? 'USD') })} →`
                       ) : t('Sign in to Book')}
                     </button>
                   </div>

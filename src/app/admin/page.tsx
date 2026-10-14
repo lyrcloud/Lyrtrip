@@ -3,6 +3,10 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { getSession } from '@/lib/auth';
+import {
+  AffiliatesPanel, BusinessPanel, CouponsPanel, GiftCardsPanel, RewardsPanel, SettingsPanel, TIER_STYLE,
+  type RewardsAccount, type RewardsSettings,
+} from '@/components/admin/RewardsAdmin';
 
 type Role = 'superadmin' | 'admin' | 'user';
 
@@ -40,11 +44,13 @@ interface AdminFlight {
   to: string | null;
   depart: string | null;
   markedUpPrice: number | null;
+  amountPaid: number | null;
+  buyerType: 'consumer' | 'business' | null;
   currency: string | null;
   createdAt: string | null;
 }
 
-type Tab = 'users' | 'tours' | 'flights';
+type Tab = 'users' | 'rewards' | 'business' | 'affiliates' | 'coupons' | 'giftcards' | 'settings' | 'tours' | 'flights';
 
 const ROLE_STYLE: Record<Role, string> = {
   superadmin: 'bg-purple-100 text-purple-800',
@@ -60,6 +66,7 @@ export default function AdminPage() {
   const [users, setUsers]     = useState<AdminUser[] | null>(null);
   const [tours, setTours]     = useState<AdminTour[] | null>(null);
   const [flights, setFlights] = useState<AdminFlight[] | null>(null);
+  const [rewards, setRewards] = useState<{ accounts: RewardsAccount[]; settings: RewardsSettings; tiers: { name: string; points: number }[] } | null>(null);
   const [error, setError]     = useState<string | null>(null);
   const [busy, setBusy]       = useState<string | null>(null);
   const [query, setQuery]     = useState('');
@@ -84,16 +91,18 @@ export default function AdminPage() {
 
   const load = useCallback(async () => {
     try {
-      const [meData, userData, tourData, flightData] = await Promise.all([
+      const [meData, userData, tourData, flightData, rewardsData] = await Promise.all([
         call({ action: 'me' }),
         call({ action: 'users.list' }),
         call({ action: 'tours.list' }),
         call({ action: 'flights.list' }),
+        call({ action: 'rewards.list' }),
       ]);
       setMe(meData);
       setUsers(userData.users);
       setTours(tourData.tours);
       setFlights(flightData.bookings);
+      setRewards(rewardsData);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load the admin console');
@@ -123,6 +132,9 @@ export default function AdminPage() {
     const u = sub ? users?.find(x => x.sub === sub) : undefined;
     return u ? u.email || u.name || u.username : sub ? 'Deleted account' : 'Guest';
   };
+
+  const accountOf = (sub: string) => rewards?.accounts.find(a => a.sub === sub);
+  const pendingBusiness = rewards?.accounts.filter(a => a.business?.status === 'pending').length ?? 0;
 
   const q = query.trim().toLowerCase();
   const shownUsers = (users ?? []).filter(u => !q || `${u.email} ${u.name} ${u.provider}`.toLowerCase().includes(q));
@@ -174,9 +186,15 @@ export default function AdminPage() {
 
         {me && (
           <>
-            <div className="flex gap-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-4">
               {([
                 ['users', `Users (${users?.length ?? 0})`],
+                ['rewards', 'Points & tiers'],
+                ['business', `Business (B2B)${pendingBusiness ? ` · ${pendingBusiness} pending` : ''}`],
+                ['affiliates', 'Affiliates'],
+                ['coupons', 'Coupons'],
+                ['giftcards', 'Gift cards'],
+                ['settings', 'Settings'],
                 ['tours', `Tours (${tours?.length ?? 0})`],
                 ['flights', `Flight bookings (${flights?.length ?? 0})`],
               ] as const).map(([key, label]) => (
@@ -228,6 +246,16 @@ export default function AdminPage() {
                           <p className="text-sm text-gray-600">{u.name || '—'}</p>
                           <div className="flex flex-wrap gap-1.5 mt-1.5 text-xs">
                             <span className={`px-2 py-0.5 rounded-full font-bold ${ROLE_STYLE[u.role]}`}>{ROLE_LABEL[u.role]}</span>
+                            {(() => {
+                              const a = accountOf(u.sub);
+                              return (
+                                <>
+                                  <span className={`px-2 py-0.5 rounded-full font-bold ${TIER_STYLE[a?.tier ?? 'Member']}`}>{a?.tier ?? 'Member'}</span>
+                                  <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">{(a?.points_balance ?? 0).toLocaleString()} pts</span>
+                                  {a?.business?.status === 'approved' && <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">B2B · {a.business.company}</span>}
+                                </>
+                              );
+                            })()}
                             <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">{u.provider}</span>
                             {u.status === 'UNCONFIRMED' && <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Email not verified</span>}
                             {!u.enabled && <span className="px-2 py-0.5 rounded-full bg-red-100 text-red-800">Disabled</span>}
@@ -281,6 +309,19 @@ export default function AdminPage() {
               </div>
             )}
 
+            {tab === 'rewards' && (
+              <RewardsPanel call={call} isSuper={isSuper} users={users ?? []} accounts={rewards?.accounts ?? []} reload={load} />
+            )}
+            {tab === 'business' && (
+              <BusinessPanel call={call} isSuper={isSuper} accounts={rewards?.accounts ?? []} settings={rewards?.settings ?? null} reload={load} />
+            )}
+            {tab === 'affiliates' && <AffiliatesPanel accounts={rewards?.accounts ?? []} settings={rewards?.settings ?? null} />}
+            {tab === 'coupons' && <CouponsPanel call={call} isSuper={isSuper} />}
+            {tab === 'giftcards' && <GiftCardsPanel call={call} isSuper={isSuper} />}
+            {tab === 'settings' && (
+              <SettingsPanel call={call} isSuper={isSuper} settings={rewards?.settings ?? null} tiers={rewards?.tiers ?? []} reload={load} />
+            )}
+
             {tab === 'tours' && (
               <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
                 {(tours ?? []).length === 0 && <p className="p-4 text-sm text-gray-500">No tours yet.</p>}
@@ -317,6 +358,8 @@ export default function AdminPage() {
                     </div>
                     <div className="text-right">
                       <p className="font-bold text-gray-900">{f.markedUpPrice != null ? `${Number(f.markedUpPrice).toFixed(2)} ${f.currency ?? ''}` : '—'}</p>
+                      {f.amountPaid != null && f.amountPaid !== f.markedUpPrice && <p className="text-xs text-gray-500">{Number(f.amountPaid).toFixed(2)} by card</p>}
+                      {f.buyerType === 'business' && <p className="text-xs text-emerald-700">B2B</p>}
                       <p className="text-xs text-gray-500">{f.status}</p>
                     </div>
                   </div>

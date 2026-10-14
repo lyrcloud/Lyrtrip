@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { getBookings, updateBookingStatus } from '@/lib/bookings';
+import { rewardsCall, type BookingCredits } from '@/lib/rewards';
 
 interface FlightLeg {
   airline: string;
@@ -42,6 +43,7 @@ interface FlightConfirmation {
   totalPrice: number;
   basePrice?: number;
   currency: string;
+  credits?: BookingCredits | null;
   testBooking?: boolean;
   contact?: { email?: string; phone?: string };
   payment?: { brand?: string | null; last4?: string | null; paidAt?: string; receiptUrl?: string | null; reference?: string } | null;
@@ -63,12 +65,36 @@ interface HotelReceipt {
   hotelTotal: number;
   serviceFee: number;
   totalPrice: number;
+  amountPaid?: number;
+  credits?: BookingCredits | null;
   currency: string;
   payment?: { brand?: string | null; last4?: string | null; paidAt?: string; receiptUrl?: string | null; reference?: string } | null;
   requestedAt?: string;
   hotelConfirmation?: string | null;
   declineReason?: string | null;
   refunded?: boolean;
+}
+
+// Business pricing, coupon, gift card and points under a receipt's total
+function CreditRows({ c, money }: { c: BookingCredits; money: (n: number) => string }) {
+  const rows: [string, number][] = [];
+  if (c.coupon) rows.push([`Coupon ${c.couponCode ?? ''}`, c.coupon]);
+  if (c.giftCard) rows.push(['Gift card', c.giftCard]);
+  if (c.points) rows.push([`${c.points.toLocaleString()} points`, c.pointsValue]);
+  return (
+    <>
+      {c.buyerType === 'business' && (
+        <tr><td colSpan={2} className="pt-1 text-xs text-emerald-700">Business rate{c.company ? ` for ${c.company}` : ''} (retail price {money(c.retailTotal)})</td></tr>
+      )}
+      {rows.map(([label, amount]) => (
+        <tr key={label}><td className="py-0.5 text-gray-600">{label}</td><td className="py-0.5 text-right font-mono">−{money(amount)}</td></tr>
+      ))}
+      {rows.length > 0 && (
+        <tr><td className="pt-1 font-semibold text-gray-900">Paid by card</td><td className="pt-1 text-right font-mono font-semibold">{money(c.amountPaid)}</td></tr>
+      )}
+      {c.pointsEarned ? <tr><td colSpan={2} className="pt-1 text-xs text-emerald-700">+{c.pointsEarned.toLocaleString()} points earned</td></tr> : null}
+    </>
+  );
 }
 
 function fmtDate(d: string): string {
@@ -99,6 +125,7 @@ export default function BookingSuccessPage() {
   const [flightLoading, setFlightLoading]   = useState(false);
   const [flightError, setFlightError]       = useState<string | null>(null);
   const [hotelReceipt, setHotelReceipt]     = useState<HotelReceipt | null>(null);
+  const [giftCard, setGiftCard]             = useState<{ code: string; amount: number; recipient_email: string | null } | null>(null);
 
   useEffect(() => {
     const params    = new URLSearchParams(window.location.search);
@@ -155,6 +182,16 @@ export default function BookingSuccessPage() {
           : data?.error ?? data?.message ?? 'Booking confirmation failed.');
       };
       confirm(0).finally(() => setFlightLoading(false));
+      return;
+    }
+
+    // Gift card bought on /rewards
+    if (type === 'giftcard' && sessionId) {
+      setFlightLoading(true);
+      rewardsCall<{ giftCard: { code: string; amount: number; recipient_email: string | null } }>({ action: 'giftcard.confirm', sessionId })
+        .then(data => setGiftCard(data.giftCard))
+        .catch(err => setFlightError(err instanceof Error ? err.message : 'Could not load your gift card.'))
+        .finally(() => setFlightLoading(false));
       return;
     }
 
@@ -243,6 +280,22 @@ export default function BookingSuccessPage() {
   }
 
   // ── Flight — e-ticket & itinerary (printable) ─────────────────────────────
+  if (giftCard) {
+    return (
+      <div className="flex-1 bg-gray-50 flex items-center justify-center px-4 py-10">
+        <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
+          <div className="text-5xl mb-3">🎁</div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Your ${giftCard.amount.toFixed(2)} gift card is ready</h1>
+          <p className="font-mono text-xl font-bold text-brand-700 bg-brand-50 rounded-lg py-3 my-4">{giftCard.code}</p>
+          <p className="text-gray-600 mb-6">
+            {giftCard.recipient_email ? `We've emailed it to ${giftCard.recipient_email}.` : 'Use this code at checkout, or send it to someone from your Rewards page.'}
+          </p>
+          <Link href="/rewards" className="w-full inline-block py-3 bg-btn text-white font-semibold rounded-xl hover:bg-btn-hover transition">Go to Rewards</Link>
+        </div>
+      </div>
+    );
+  }
+
   if (flightConfirm) {
     const segments: ItinerarySegment[] = flightConfirm.itinerary?.length
       ? flightConfirm.itinerary
@@ -369,6 +422,7 @@ export default function BookingSuccessPage() {
                   <td className="pt-2 font-bold text-gray-900">Total paid</td>
                   <td className="pt-2 text-right text-xl font-black text-gray-900">{flightConfirm.currency} {money(flightConfirm.totalPrice)}</td>
                 </tr>
+                {flightConfirm.credits && <CreditRows c={flightConfirm.credits} money={money} />}
               </tbody>
             </table>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4 text-xs">
@@ -419,7 +473,7 @@ export default function BookingSuccessPage() {
     const badge = {
       requested: { text: 'Booking in progress', cls: 'bg-amber-100 text-amber-800', note: 'We are reserving your room directly with the hotel. You will get your hotel confirmation number by email, usually within 24 hours. If the hotel can’t confirm, we refund you in full.' },
       confirmed: { text: 'Confirmed', cls: 'bg-green-100 text-green-800', note: 'Your room is booked. Show the hotel confirmation number and a photo ID at check-in.' },
-      declined:  { text: 'Not booked — refunded', cls: 'bg-red-100 text-red-800', note: `${h.declineReason ?? 'The hotel could not confirm this room.'} ${h.refunded ? `Your payment of ${h.currency} ${money(h.totalPrice)} has been refunded to your card (allow 5–10 business days).` : ''}` },
+      declined:  { text: 'Not booked — refunded', cls: 'bg-red-100 text-red-800', note: `${h.declineReason ?? 'The hotel could not confirm this room.'} ${h.refunded ? `Your payment of ${h.currency} ${money(h.amountPaid ?? h.totalPrice)} has been refunded to your card (allow 5–10 business days).` : ''}` },
     }[h.status];
     const field = (label: string, value: React.ReactNode) => (
       <div>
@@ -488,7 +542,8 @@ export default function BookingSuccessPage() {
                   <td className="pt-2 font-bold text-gray-900">Total paid</td>
                   <td className="pt-2 text-right text-xl font-black text-gray-900">{h.currency} {money(h.totalPrice)}</td>
                 </tr>
-                {h.refunded && <tr><td className="pt-1 font-semibold text-red-700">Refunded</td><td className="pt-1 text-right font-mono text-red-700">−{money(h.totalPrice)}</td></tr>}
+                {h.credits && <CreditRows c={h.credits} money={money} />}
+                {h.refunded && <tr><td className="pt-1 font-semibold text-red-700">Refunded</td><td className="pt-1 text-right font-mono text-red-700">−{money(h.amountPaid ?? h.totalPrice)}</td></tr>}
               </tbody>
             </table>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4 text-xs">
