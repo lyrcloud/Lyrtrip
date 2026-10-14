@@ -595,9 +595,6 @@ export default function Home() {
   const [flightBookingLoading, setFlightBookingLoading] = useState(false);
   const [flightBookingError, setFlightBookingError] = useState<string | null>(null);
 
-  const [uberToken, setUberToken]     = useState<string | null>(null);
-  const [uberProfile, setUberProfile] = useState<{ first_name?: string; last_name?: string; email?: string; picture?: string } | null>(null);
-  const [uberProfileLoading, setUberProfileLoading] = useState(false);
 
   const [uberDropoff, setUberDropoff] = useState<LocationData | null>(null);
   const [uberPickupText, setUberPickupText] = useState('');
@@ -606,10 +603,6 @@ export default function Home() {
   const [uberPriceLoading, setUberPriceLoading] = useState(false);
   const [uberPriceError, setUberPriceError] = useState<string | null>(null);
   const [rideDraft, setRideDraft] = useState<RideDraft | null>(null);
-  const [riderName, setRiderName] = useState('');
-  const [riderEmail, setRiderEmail] = useState('');
-  const [rideBookingLoading, setRideBookingLoading] = useState(false);
-  const [rideBookingError, setRideBookingError] = useState<string | null>(null);
   const [trainResults, setTrainResults] = useState<TrainData[]>([]);
   const [busJourneys, setBusJourneys] = useState<FlixbusJourney[]>([]);
 
@@ -720,43 +713,6 @@ export default function Home() {
       window.history.replaceState({}, '', '/');
     }
   }, []);
-
-  // Load Uber OAuth token from localStorage on mount
-  useEffect(() => {
-    const token   = localStorage.getItem('uber_access_token');
-    const expires = localStorage.getItem('uber_token_expires');
-    if (!token || (expires && Date.now() >= Number(expires))) {
-      localStorage.removeItem('uber_access_token');
-      localStorage.removeItem('uber_token_expires');
-      return;
-    }
-    setUberToken(token);
-    const lambdaBase = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-    if (!lambdaBase) return;
-    setUberProfileLoading(true);
-    fetch(`${lambdaBase}/api/uber/me`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json())
-      .then(data => { if (!data.error) setUberProfile(data); })
-      .catch(() => {})
-      .finally(() => setUberProfileLoading(false));
-  }, []);
-
-  const connectUber = () => {
-    const clientId    = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
-    const redirectUri = `${window.location.origin}/auth/uber/callback`;
-    const scope       = 'profile eats.deliveries';
-    window.location.href =
-      `https://auth.uber.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${encodeURIComponent(scope)}&response_type=code`;
-  };
-
-  const disconnectUber = () => {
-    localStorage.removeItem('uber_access_token');
-    localStorage.removeItem('uber_token_expires');
-    setUberToken(null);
-    setUberProfile(null);
-  };
 
   // Flight form: trip type, From/To swap, travellers stepper
   const [tripType, setTripType] = useState<'round' | 'oneway'>('round');
@@ -1268,80 +1224,18 @@ export default function Home() {
       return;
     }
 
-    // Legacy SerpAPI path (no real PNR — keeps old Stripe flow)
-    if (!flightPassengerName.trim()) return;
-    if (!user) {
-      sessionStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify({ type: 'flight', ...flightDraft }));
-      router.push('/login');
-      return;
-    }
-    const first = f.legs?.[0];
-    const last  = f.legs?.[f.legs.length - 1];
-    const totalPrice = (f.price ?? 0) * flightPassengers;
-    const routeLabel = `${first?.departure.airport ?? flightDraft.from} → ${last?.arrival.airport ?? flightDraft.to}`;
-    const stops      = (f.legs?.length ?? 1) - 1;
-    const stopLabel  = stops === 0 ? 'Nonstop' : `${stops} stop${stops > 1 ? 's' : ''}`;
-    try {
-      const res = await fetch(process.env.NEXT_PUBLIC_STRIPE_LAMBDA_URL!, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hotelName:  `${[...new Set(f.legs?.map(l => l.airline))].join(' + ')} · ${routeLabel}`,
-          address:    `${stopLabel} · ${fmtDuration(f.totalDuration ?? 0)} · ${first?.travelClass ?? 'Economy'}`,
-          checkin:    flightDraft.depart,
-          checkout:   flightDraft.depart,
-          guests:     flightPassengers,
-          guestName:  flightPassengerName.trim(),
-          nights:     1,
-          totalPrice,
-        }),
-      });
-      const data = await res.json();
-      if (data.url) { window.location.href = data.url; return; }
-    } catch (err) {
-      console.error('Stripe fetch failed:', err);
-    }
-    setFlightDraft(null);
-    setFlightPassengerName('');
-    setFlightPassengers(1);
-    router.push('/dashboard');
+    // Other flights (from Google Flights search) can't be ticketed on Lyrtrip; the modal links out instead
   };
 
-  const confirmRideBooking = async () => {
-    if (!rideDraft || !riderName.trim()) return;
-    if (!user) { router.push('/login'); return; }
-
-    const lambdaBase = (process.env.NEXT_PUBLIC_UBER_LAMBDA_URL ?? '').replace(/\/$/, '');
-    if (!lambdaBase) return;
-
-    setRideBookingLoading(true);
-    setRideBookingError(null);
-    try {
-      const { ride, pickupLat, pickupLng, dropoffLat, dropoffLng, pickupLabel, dropoffLabel } = rideDraft;
-      const baseFare   = Math.round((ride.lowEstimate + ride.highEstimate) / 2);
-      const serviceFee = Math.max(2, Math.round(baseFare * 0.1));
-      const res = await fetch(`${lambdaBase}/checkout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          rideName: ride.name, productId: ride.productId,
-          lowEstimate: ride.lowEstimate, highEstimate: ride.highEstimate,
-          serviceFee,
-          currencyCode: ride.currencyCode,
-          pickupLabel, dropoffLabel,
-          pickupLat, pickupLng, dropoffLat, dropoffLng,
-          riderName: riderName.trim(),
-          riderEmail: riderEmail.trim() || undefined,
-        }),
-      });
-      const data = await res.json();
-      if (data.url) { window.location.href = data.url; return; }
-      setRideBookingError(data.error ?? 'Booking failed. Please try again.');
-    } catch {
-      setRideBookingError('Could not connect to booking service.');
-    } finally {
-      setRideBookingLoading(false);
-    }
+  // Rides are booked and paid in the Uber app until Lyrtrip has Uber's Guest Rides API
+  const uberRideLink = (d: RideDraft) => {
+    const clientId = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
+    const q = new URLSearchParams({
+      action: 'setPickup', client_id: clientId,
+      'pickup[latitude]': String(d.pickupLat), 'pickup[longitude]': String(d.pickupLng), 'pickup[formatted_address]': d.pickupLabel,
+      'dropoff[latitude]': String(d.dropoffLat), 'dropoff[longitude]': String(d.dropoffLng), 'dropoff[formatted_address]': d.dropoffLabel,
+    });
+    return `https://m.uber.com/ul/?${q}`;
   };
 
   const tabs = [
@@ -1366,7 +1260,6 @@ export default function Home() {
   const fieldLabel = "block truncate whitespace-nowrap text-[11px] font-bold uppercase tracking-wider text-gray-500";
   const fieldInput = "w-full min-w-0 truncate bg-transparent p-0 text-base font-semibold text-gray-900 outline-none placeholder:font-normal placeholder:text-gray-400";
   const stepBtn = "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-lg font-bold leading-none text-brand-600 ring-1 ring-gray-200 transition-all hover:bg-brand-50 hover:ring-brand-300 active:scale-90 disabled:cursor-not-allowed disabled:text-gray-300 disabled:ring-gray-100 disabled:hover:bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300";
-  const uberClientId = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
   const searchBtn = (service: string, disabled = false, tall = false) => (
     <div className={tall ? 'flex' : 'flex items-end'}>
       <button
@@ -2445,7 +2338,7 @@ export default function Home() {
                               <button
                                 onClick={() => {
                                   setRideDraft({ ride, pickupLat: userLocation.lat, pickupLng: userLocation.lng, dropoffLat: uberDropoff!.lat, dropoffLng: uberDropoff!.lng, pickupLabel: uberPickupText || 'Current location', dropoffLabel: uberDropoff!.address });
-                                  setRiderName(''); setRiderEmail(''); setRideBookingError(null);
+                                  
                                 }}
                                 className="mt-1 px-4 py-1.5 bg-black text-white text-sm font-semibold rounded-lg hover:bg-gray-800 transition"
                               >
@@ -2569,52 +2462,12 @@ export default function Home() {
                     <span>📍</span>
                     <span>{uberCity || 'Detecting location…'}</span>
                   </div>
-                  {uberToken ? (
-                    <div className="flex items-center gap-2">
-                      {uberProfileLoading ? (
-                        <div className="w-4 h-4 border-2 border-[#06C167] border-t-transparent rounded-full animate-spin" />
-                      ) : uberProfile?.picture ? (
-                        <img src={uberProfile.picture} alt="" className="w-7 h-7 rounded-full object-cover" />
-                      ) : (
-                        <span className="w-7 h-7 bg-[#06C167] rounded-full flex items-center justify-center text-white text-xs font-bold">
-                          {uberProfile?.first_name?.[0] ?? 'U'}
-                        </span>
-                      )}
-                      <span className="text-sm text-gray-700 font-medium">
-                        {uberProfile ? `${uberProfile.first_name ?? ''} ${uberProfile.last_name ?? ''}`.trim() : 'Connected'}
-                      </span>
-                      <button onClick={disconnectUber} className="text-xs text-gray-400 hover:text-red-500 underline ml-1">Disconnect</button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={connectUber}
-                      className="flex items-center gap-2 px-4 py-1.5 bg-black text-white text-sm font-semibold rounded-full hover:bg-gray-800 transition"
-                    >
-                      <span className="w-5 h-5 bg-[#06C167] rounded-full flex items-center justify-center text-white text-xs font-bold">U</span>
-                      Connect Uber
-                    </button>
-                  )}
+                  <span className="text-xs text-gray-400">Orders are placed and paid on Uber Eats</span>
                 </div>
-
-                {!uberToken && (
-                  <div className="bg-gray-50 border border-gray-200 rounded-2xl p-5 mb-6 flex items-start gap-4">
-                    <span className="text-3xl shrink-0">🚀</span>
-                    <div>
-                      <p className="font-semibold text-gray-900 mb-1">Connect your Uber account</p>
-                      <p className="text-sm text-gray-500 mb-3">Sign in with Uber to order food and track deliveries in real time through Uber Eats.</p>
-                      <button
-                        onClick={connectUber}
-                        className="px-5 py-2 bg-black text-white text-sm font-semibold rounded-lg hover:bg-gray-800 transition"
-                      >
-                        Sign in with Uber
-                      </button>
-                    </div>
-                  </div>
-                )}
 
                 <h3 className="text-xl font-bold text-gray-900 mb-5">What are you craving?</h3>
 
-                {/* Category cards — link to live Uber Eats when connected, internal pages otherwise */}
+                {/* Category cards open Uber Eats near the visitor; no Uber sign-in on Lyrtrip */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                   {[
                     {
@@ -2622,36 +2475,30 @@ export default function Home() {
                       desc: 'Food from thousands of local restaurants',
                       emoji: '🍽️',
                       liveHref: `https://www.ubereats.com/feed?pl=${userLocation.lat},${userLocation.lng}`,
-                      localHref: '/dash/restaurants',
                     },
                     {
                       name: 'Grocery',
                       desc: 'Fresh groceries & everyday essentials',
                       emoji: '🛒',
                       liveHref: `https://www.ubereats.com/category/grocery?pl=${userLocation.lat},${userLocation.lng}`,
-                      localHref: '/dash/grocery',
                     },
                     {
                       name: 'Pickup',
                       desc: 'Order ahead and skip the wait',
                       emoji: '🍱',
                       liveHref: `https://www.ubereats.com/category/pickup?pl=${userLocation.lat},${userLocation.lng}`,
-                      localHref: '/dash/pickup',
                     },
                   ].map(opt => (
                     <div
                       key={opt.name}
-                      onClick={() => {
-                        if (uberToken) window.open(opt.liveHref, '_blank', 'noopener');
-                        else router.push(opt.localHref);
-                      }}
+                      onClick={() => window.open(opt.liveHref, '_blank', 'noopener')}
                       className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md hover:border-[#06C167] transition flex flex-col cursor-pointer"
                     >
                       <span className="text-3xl">{opt.emoji}</span>
                       <p className="font-bold text-gray-900 mt-3 text-lg">{opt.name}</p>
                       <p className="text-sm text-gray-500 mt-1 flex-1">{opt.desc}</p>
                       <div className="mt-4 py-2 rounded-lg bg-[#06C167] text-white text-sm font-semibold text-center">
-                        {uberToken ? `Open Uber Eats →` : `Browse ${opt.name}`}
+                        Open Uber Eats →
                       </div>
                     </div>
                   ))}
@@ -2668,18 +2515,11 @@ export default function Home() {
                       if (e.key === 'Enter') {
                         const q = (e.target as HTMLInputElement).value.trim();
                         if (!q) return;
-                        if (uberToken) window.open(`https://www.ubereats.com/search?q=${encodeURIComponent(q)}&pl=${userLocation.lat},${userLocation.lng}`, '_blank', 'noopener');
-                        else router.push(`/dash/restaurants?q=${encodeURIComponent(q)}`);
+                        window.open(`https://www.ubereats.com/search?q=${encodeURIComponent(q)}&pl=${userLocation.lat},${userLocation.lng}`, '_blank', 'noopener');
                       }
                     }}
                   />
                 </div>
-
-                {uberToken && (
-                  <p className="text-xs text-gray-400 text-center mt-4">
-                    Ordering via Uber Eats · {uberProfile?.email ?? ''}
-                  </p>
-                )}
               </div>
             )}
 
@@ -3192,29 +3032,19 @@ export default function Home() {
                   </div>
                   <p>{fmtDuration(f.totalDuration ?? 0)} · {stopLabel} · {first?.travelClass ?? 'Economy'}</p>
                 </div>
-                <div className="space-y-3 mb-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
-                    <input type="text" value={flightPassengerName} onChange={e => setFlightPassengerName(e.target.value)}
-                      placeholder="Passenger name" className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Passengers</label>
-                    <input type="number" value={flightPassengers} onChange={e => setFlightPassengers(Math.max(1, +e.target.value))}
-                      min={1} className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500" />
-                  </div>
-                </div>
-                <div className="bg-brand-50 rounded-lg p-3 mb-5 text-sm">
+                <div className="bg-brand-50 rounded-lg p-3 mb-3 text-sm">
                   <div className="flex justify-between font-bold text-brand-700">
                     <span>{t('Total')}</span><span className="text-end"><Price amount={total} currency={f.currency ?? 'USD'} /></span>
                   </div>
                 </div>
+                <p className="text-xs text-gray-500 mb-4">This fare can&apos;t be ticketed on Lyrtrip. Book it with the airline or a travel agent through Google Flights.</p>
                 <div className="flex gap-3">
                   <button onClick={() => setFlightDraft(null)} className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">Cancel</button>
-                  <button onClick={confirmFlightBooking} disabled={!flightPassengerName.trim()}
-                    className="flex-1 py-2 bg-btn text-white rounded-lg font-semibold hover:bg-btn-hover disabled:bg-gray-300 transition">
-                    {user ? 'Confirm Booking →' : 'Sign in to Book'}
-                  </button>
+                  <a href={`https://www.google.com/travel/flights?q=${encodeURIComponent(`Flights from ${first?.departure.airport ?? flightDraft.from} to ${last?.arrival.airport ?? flightDraft.to} on ${flightDraft.depart}`)}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="flex-1 py-2 text-center bg-btn text-white rounded-lg font-semibold hover:bg-btn-hover transition">
+                    Book on Google Flights →
+                  </a>
                 </div>
               </div>
             </div>
@@ -3243,52 +3073,23 @@ export default function Home() {
                 )}
               </div>
 
-              <div className="space-y-3 mb-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Full name</label>
-                  <input type="text" value={riderName} onChange={e => setRiderName(e.target.value)} placeholder="Your name"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black" />
+              <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm space-y-1">
+                <div className="flex justify-between text-gray-600">
+                  <span>{t('Uber fare (est.)')}</span>
+                  <span>{money(rideDraft.ride.lowEstimate, rideDraft.ride.currencyCode || 'USD')}–{money(rideDraft.ride.highEstimate, rideDraft.ride.currencyCode || 'USD')}</span>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Email <span className="text-gray-400 font-normal">(for receipt)</span></label>
-                  <input type="email" value={riderEmail} onChange={e => setRiderEmail(e.target.value)} placeholder="you@email.com"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-black" />
-                </div>
+                <p className="text-xs text-gray-500">An estimate. You confirm the ride and pay Uber directly in the Uber app; Lyrtrip doesn&apos;t charge you.</p>
               </div>
-
-              {(() => {
-                const baseFare   = Math.round((rideDraft.ride.lowEstimate + rideDraft.ride.highEstimate) / 2);
-                const serviceFee = Math.max(2, Math.round(baseFare * 0.1));
-                const total      = baseFare + serviceFee;
-                return (
-                  <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm space-y-1">
-                    <div className="flex justify-between text-gray-600">
-                      <span>{t('Uber fare (est.)')}</span>
-                      <span>{money(rideDraft.ride.lowEstimate, rideDraft.ride.currencyCode || 'USD')}–{money(rideDraft.ride.highEstimate, rideDraft.ride.currencyCode || 'USD')}</span>
-                    </div>
-                    <div className="flex justify-between text-gray-600">
-                      <span>{t('Lyrtrip service fee')}</span>
-                      <span>{money(serviceFee)}</span>
-                    </div>
-                    <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-2 mt-1">
-                      <span>{t('Total charged now')}</span>
-                      <span>~{original(total)}</span>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {rideBookingError && <p className="text-red-500 text-sm mb-3">{rideBookingError}</p>}
 
               <div className="flex gap-3">
                 <button onClick={() => setRideDraft(null)}
                   className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">
                   Cancel
                 </button>
-                <button onClick={confirmRideBooking} disabled={!riderName.trim() || rideBookingLoading}
-                  className="flex-1 py-2 bg-black text-white rounded-lg font-semibold hover:bg-gray-800 disabled:bg-gray-300 transition">
-                  {rideBookingLoading ? 'Processing…' : user ? 'Pay via Stripe →' : 'Sign in to Book'}
-                </button>
+                <a href={uberRideLink(rideDraft)} target="_blank" rel="noopener noreferrer"
+                  className="flex-1 py-2 text-center bg-black text-white rounded-lg font-semibold hover:bg-gray-800 transition">
+                  Open in Uber →
+                </a>
               </div>
             </div>
           </div>

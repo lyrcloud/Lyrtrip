@@ -2525,47 +2525,9 @@ function nightsBetween(checkin, checkout) {
   return nights > 0 ? nights : 1;
 }
 
-const STRIPE_BASE_PRICE = {
-  'Free':  0,
-  '$':     8900,
-  '$$':    16000,
-  '$$$':   30000,
-  '$$$$':  50000,
-};
-
-async function handleStripeCheckout(event) {
-  const secretKey = process.env.STRIPE_SECRET_KEY;
-  if (!secretKey) return json(500, { error: 'Stripe is not configured' });
-
-  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-  const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const { hotelName, address, checkin, checkout, guests, guestName, priceLevel, nights: bodyNights, totalPrice } = body;
-
-  const nights       = bodyNights ?? nightsBetween(checkin, checkout);
-  const unitCents    = STRIPE_BASE_PRICE[priceLevel] ?? STRIPE_BASE_PRICE['$$'];
-  const amountCents  = totalPrice ? Math.round(totalPrice * 100) : unitCents * nights;
-
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    payment_method_types: ['card'],
-    line_items: [{
-      price_data: {
-        currency: 'usd',
-        unit_amount: amountCents,
-        product_data: {
-          name: hotelName,
-          description: `${address} · ${nights} night${nights !== 1 ? 's' : ''} · ${guests} guest${guests !== 1 ? 's' : ''}`,
-        },
-      },
-      quantity: 1,
-    }],
-    metadata: { hotelName, address, checkin, checkout, guests: String(guests), guestName, priceLevel: priceLevel ?? '' },
-    customer_email: guestName?.includes('@') ? guestName : undefined,
-    success_url: 'https://www.lyrtrip.com/booking/success?session_id={CHECKOUT_SESSION_ID}',
-    cancel_url:  'https://www.lyrtrip.com/booking/cancel',
-  });
-
-  return json(200, { url: session.url, sessionId: session.id });
+// Retired: this generic checkout charged cards for food, legacy hotel and legacy flight orders without booking anything
+function handleStripeCheckout() {
+  return json(410, { error: 'This payment page has been retired. Book flights, hotels and shipping from the Lyrtrip home page.' });
 }
 
 // ---------------------------------------------------------------------------
@@ -2658,59 +2620,10 @@ async function handleUberEstimates(event) {
   return json(200, { rides });
 }
 
-async function handleUberCheckout(event) {
-  const secretKey = process.env.STRIPE_SECRET_KEY;
-  if (!secretKey) return json(500, { error: 'Stripe is not configured' });
-
-  const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
-  const body   = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
-  const {
-    rideName, productId, lowEstimate, highEstimate, serviceFee, currencyCode,
-    pickupLabel, dropoffLabel,
-    pickupLat, pickupLng, dropoffLat, dropoffLng,
-    riderEmail,
-  } = body;
-
-  const baseFare   = Math.round(((Number(lowEstimate) + Number(highEstimate)) / 2) * 100);
-  const feeCents   = serviceFee ? Math.round(Number(serviceFee) * 100) : Math.max(200, Math.round(baseFare * 0.1));
-  const fareAmount = baseFare + feeCents;
-  const clientId   = process.env.UBER_CLIENT_ID ?? UBER_CLIENT_ID_DEFAULT;
-
-  const uberDeepLink =
-    `https://m.uber.com/ul/?action=setPickup&client_id=${clientId}` +
-    `&pickup[latitude]=${pickupLat}&pickup[longitude]=${pickupLng}` +
-    `&dropoff[latitude]=${dropoffLat}&dropoff[longitude]=${dropoffLng}` +
-    (productId ? `&product_id=${encodeURIComponent(productId)}` : '');
-
-  const successUrl =
-    `https://www.lyrtrip.com/booking/success?session_id={CHECKOUT_SESSION_ID}` +
-    `&type=uber` +
-    `&rid=${encodeURIComponent(rideName ?? '')}` +
-    `&pickup=${encodeURIComponent(pickupLabel ?? '')}` +
-    `&dropoff=${encodeURIComponent(dropoffLabel ?? '')}` +
-    `&plat=${pickupLat}&plng=${pickupLng}&dlat=${dropoffLat}&dlng=${dropoffLng}`;
-
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    payment_method_types: ['card'],
-    line_items: [{
-      price_data: {
-        currency:     (currencyCode ?? 'usd').toLowerCase(),
-        unit_amount:  fareAmount,
-        product_data: {
-          name:        `${rideName} — Uber Ride`,
-          description: `${pickupLabel} → ${dropoffLabel}`,
-        },
-      },
-      quantity: 1,
-    }],
-    metadata: { type: 'uber_ride', rideName: rideName ?? '', pickupLabel: pickupLabel ?? '', dropoffLabel: dropoffLabel ?? '', uberDeepLink },
-    customer_email: riderEmail || undefined,
-    success_url: successUrl,
-    cancel_url:  'https://www.lyrtrip.com/booking/cancel',
-  });
-
-  return json(200, { url: session.url });
+// Retired: it charged an estimated fare while the rider also paid Uber in the app. Rides are booked in the Uber app
+// until Lyrtrip has Uber's Guest Rides API.
+function handleUberCheckout() {
+  return json(410, { error: 'Uber rides are booked and paid in the Uber app. Lyrtrip no longer charges for rides.' });
 }
 
 // Main handler

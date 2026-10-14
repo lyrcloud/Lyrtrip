@@ -113,8 +113,6 @@ export default function DashboardPage() {
   const [trips, setTrips] = useState<Trip[] | null>(null);
   const [rewards, setRewards] = useState<RewardsSnapshot | null>(null);
   const [tripFilter, setTripFilter] = useState<'upcoming' | 'past' | 'all'>('upcoming');
-  const [payingId, setPayingId] = useState<string | null>(null);
-  const [payError, setPayError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [now] = useState(() => Date.now());
   const [uberPickup, setUberPickup] = useState('');
@@ -138,48 +136,14 @@ export default function DashboardPage() {
     listTours().then(res => setTours(res.tours)).catch(() => setTours([]));
     rewardsCall<{ trips: Trip[] }>({ action: 'trips' }).then(res => setTrips(res.trips)).catch(() => setTrips([]));
     rewardsCall<RewardsSnapshot>({ action: 'summary' }).then(setRewards).catch(() => setRewards(null));
-    setBookings(getBookings());
+    // Saved on this device (localStorage), so read after mount
+    Promise.resolve().then(() => setBookings(getBookings()));
     getAdminRole().then(setAdminRole);
   }, [user]);
 
   const handleCancelBooking = (id: string) => {
     cancelBooking(id);
     setBookings(getBookings());
-  };
-
-  const handlePayNow = async (booking: Booking) => {
-    const lambdaUrl = process.env.NEXT_PUBLIC_STRIPE_LAMBDA_URL;
-    if (!lambdaUrl) return;
-    setPayingId(booking.id);
-    setPayError(null);
-    try {
-      const res = await fetch(lambdaUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hotelName:  booking.hotelName,
-          address:    booking.address,
-          checkin:    booking.checkin,
-          checkout:   booking.checkout,
-          guests:     booking.guests,
-          guestName:  booking.guestName,
-          priceLevel: booking.priceLevel,
-          nights:     booking.nights,
-          totalPrice: booking.totalPrice,
-        }),
-      });
-      const data = await res.json();
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        setPayError(data.error || 'Payment failed. Please try again.');
-        setPayingId(null);
-      }
-    } catch (err) {
-      console.error('Stripe error:', err);
-      setPayError('Could not connect to payment service. Please try again.');
-      setPayingId(null);
-    }
   };
 
   if (loading || !user) {
@@ -350,8 +314,8 @@ export default function DashboardPage() {
             {/* Saved hotel bookings from the older checkout, still waiting for payment */}
             {pendingLocal.length > 0 && (
               <div className={`${card} p-5 sm:p-6`}>
-                <h2 className="text-lg font-semibold text-slate-900 mb-1">Waiting for payment</h2>
-                <p className="text-sm text-slate-500 mb-4">Saved on this device. Pay to confirm, or remove them.</p>
+                <h2 className="text-lg font-semibold text-slate-900 mb-1">Unfinished hotel bookings</h2>
+                <p className="text-sm text-slate-500 mb-4">Saved on this device from an older version of Lyrtrip. Search the hotel again to book it.</p>
                 <ul className="space-y-3">
                   {pendingLocal.map(b => (
                     <li key={b.id} className="flex flex-wrap items-center gap-4 rounded-xl border border-amber-100 bg-amber-50/40 p-4">
@@ -361,10 +325,7 @@ export default function DashboardPage() {
                         <p className="text-sm font-bold text-slate-900">{fmtMoney(b.totalPrice)}</p>
                       </div>
                       <div className="flex gap-2">
-                        <button onClick={() => handlePayNow(b)} disabled={payingId === b.id}
-                          className="rounded-xl bg-btn px-4 py-2 text-sm font-semibold text-white hover:bg-btn-hover disabled:opacity-60">
-                          {payingId === b.id ? 'Redirecting…' : 'Pay now'}
-                        </button>
+                        <Link href="/?tab=hotels" className="rounded-xl bg-btn px-4 py-2 text-sm font-semibold text-white hover:bg-btn-hover">Book again</Link>
                         <button onClick={() => handleCancelBooking(b.id)}
                           className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">
                           Remove
@@ -373,7 +334,6 @@ export default function DashboardPage() {
                     </li>
                   ))}
                 </ul>
-                {payError && <p className="mt-3 text-sm text-rose-600">{payError}</p>}
               </div>
             )}
 
