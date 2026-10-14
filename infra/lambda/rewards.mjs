@@ -145,7 +145,7 @@ export function cleanCoupon(body) {
   if (minTotal < 0 || maxUses < 0) throw new RewardsError("The minimum spend and usage limit can't be negative.");
   const expires = String(body?.expires ?? '').trim();
   if (expires && !/^\d{4}-\d{2}-\d{2}$/.test(expires)) throw new RewardsError('Choose a valid expiry date.');
-  const appliesTo = ['all', 'flight', 'hotel', 'shipping'].includes(body?.applies_to) ? body.applies_to : 'all';
+  const appliesTo = ['all', 'flight', 'hotel', 'shipping', 'delivery'].includes(body?.applies_to) ? body.applies_to : 'all';
   return {
     code, type, value: Math.round(value * 100) / 100, min_total: Math.round(minTotal * 100) / 100,
     max_uses: Math.trunc(maxUses), once_per_customer: !!body?.once_per_customer, expires, applies_to: appliesTo,
@@ -155,7 +155,7 @@ export function cleanCoupon(body) {
 
 export function couponProblem(coupon, totalCents, sub, kind, today) {
   if (!coupon || !coupon.active) return "That coupon code isn't valid.";
-  if (coupon.applies_to && coupon.applies_to !== 'all' && coupon.applies_to !== kind) return `That coupon is for ${{ flight: 'flights', hotel: 'hotels', shipping: 'shipping' }[coupon.applies_to]} only.`;
+  if (coupon.applies_to && coupon.applies_to !== 'all' && coupon.applies_to !== kind) return `That coupon is for ${{ flight: 'flights', hotel: 'hotels', shipping: 'shipping', delivery: 'courier deliveries' }[coupon.applies_to]} only.`;
   if (coupon.expires && coupon.expires < today) return 'That coupon has expired.';
   if (coupon.max_uses && (coupon.uses ?? 0) >= coupon.max_uses) return 'That coupon has been fully used.';
   if (coupon.once_per_customer && !sub) return 'Sign in to use that coupon.';

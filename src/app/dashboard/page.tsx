@@ -48,7 +48,7 @@ const QUICK_ACTIONS = [
 
 interface Trip {
   id: string;
-  kind: 'flight' | 'hotel' | 'shipment';
+  kind: 'flight' | 'hotel' | 'shipment' | 'delivery';
   status: string;
   title: string;
   subtitle: string;
@@ -83,9 +83,13 @@ const TRIP_STATUS: Record<string, [string, string]> = {
   booking_failed: ['Needs support', 'bg-rose-50 text-rose-700 ring-rose-200'],
   needs_review:   ['Finishing up', 'bg-amber-50 text-amber-700 ring-amber-200'],
   label_failed:   ['Needs support', 'bg-rose-50 text-rose-700 ring-rose-200'],
+  active:         ['On the way', 'bg-sky-50 text-sky-700 ring-sky-200'],
+  delivered:      ['Delivered', 'bg-emerald-50 text-emerald-700 ring-emerald-200'],
+  canceled:       ['Canceled', 'bg-gray-50 text-gray-600 ring-gray-200'],
+  returned:       ['Returned', 'bg-amber-50 text-amber-700 ring-amber-200'],
 };
-const CLOSED = new Set(['declined', 'refunded', 'booking_failed', 'declining', 'label_failed']);
-const TRIP_ICON = { flight: ['✈️', 'bg-sky-50'], hotel: ['🏨', 'bg-violet-50'], shipment: ['📦', 'bg-amber-50'] } as const;
+const CLOSED = new Set(['declined', 'refunded', 'booking_failed', 'declining', 'label_failed', 'delivered', 'canceled', 'returned']);
+const TRIP_ICON = { flight: ['✈️', 'bg-sky-50'], hotel: ['🏨', 'bg-violet-50'], shipment: ['📦', 'bg-amber-50'], delivery: ['🛵', 'bg-emerald-50'] } as const;
 
 const TIER_TINT: Record<string, string> = {
   Member: 'bg-gray-100 text-gray-700', Bronze: 'bg-amber-100 text-amber-800', Silver: 'bg-slate-100 text-slate-700',
@@ -157,7 +161,7 @@ export default function DashboardPage() {
   const today = new Date(now).toISOString().slice(0, 10);
   // A shipment stays "upcoming" for two weeks after its label, while it's on the way
   const isUpcoming = (t: Trip) => !CLOSED.has(t.status)
-    && (t.kind === 'shipment' ? now - new Date(t.createdAt).getTime() < 14 * 864e5 : (t.end ?? t.start ?? today) >= today);
+    && (t.kind === 'shipment' || t.kind === 'delivery' ? now - new Date(t.createdAt).getTime() < 14 * 864e5 : (t.end ?? t.start ?? today) >= today);
   const upcomingTrips = (trips ?? []).filter(isUpcoming).sort((a, b) => String(a.start).localeCompare(String(b.start)));
   const shownTrips = tripFilter === 'upcoming' ? upcomingTrips
     : tripFilter === 'past' ? (trips ?? []).filter(t => !isUpcoming(t))
@@ -276,7 +280,7 @@ export default function DashboardPage() {
                 <div className="rounded-xl border-2 border-dashed border-slate-200 px-6 py-10 text-center">
                   <p className="text-3xl mb-2">🌍</p>
                   <p className="font-medium text-slate-800">{tripFilter === 'upcoming' ? 'No upcoming trips' : 'No trips here yet'}</p>
-                  <p className="text-sm text-slate-500 mt-1">Flights, hotels and parcels you book while signed in show up here.</p>
+                  <p className="text-sm text-slate-500 mt-1">Flights, hotels, parcels and courier deliveries you book while signed in show up here.</p>
                   <div className="flex justify-center gap-2 mt-4">
                     <Link href="/?tab=flights" className="rounded-xl bg-sky-50 text-sky-700 px-4 py-2 text-sm font-semibold hover:bg-sky-100">✈️ Find a flight</Link>
                     <Link href="/?tab=hotels" className="rounded-xl bg-violet-50 text-violet-700 px-4 py-2 text-sm font-semibold hover:bg-violet-100">🏨 Find a hotel</Link>

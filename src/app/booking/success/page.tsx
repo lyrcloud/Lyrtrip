@@ -118,6 +118,28 @@ interface ShipmentReceipt {
   message: string | null;
 }
 
+interface DeliveryReceipt {
+  status: 'processing' | 'active' | 'delivered' | 'canceled' | 'returned' | 'refunded' | 'booking_failed';
+  uberStatus: string | null;
+  orderId: string;
+  pickup: { name: string; label: string };
+  dropoff: { name: string; label: string };
+  item: { description: string; size: string };
+  totalPrice: number;
+  amountPaid: number;
+  credits?: BookingCredits | null;
+  currency: string;
+  trackingUrl: string | null;
+  courier: { name: string | null; phone: string | null; vehicle: string | null; rating: number | null; photo: string | null } | null;
+  dropoffEta: string | null;
+  message: string | null;
+}
+
+const UBER_STEP: Record<string, string> = {
+  pending: 'Finding a courier', pickup: 'Courier heading to pickup', pickup_complete: 'Picked up',
+  dropoff: 'On the way to drop-off', delivered: 'Delivered', canceled: 'Canceled', returned: 'Returned to sender',
+};
+
 const DOC_LABEL: Record<string, string> = { label: 'Shipping label', commercial_invoice: 'Commercial invoice (customs)', packing_slip: 'Packing slip' };
 
 function fmtDate(d: string): string {
@@ -149,6 +171,7 @@ export default function BookingSuccessPage() {
   const [flightError, setFlightError]       = useState<string | null>(null);
   const [hotelReceipt, setHotelReceipt]     = useState<HotelReceipt | null>(null);
   const [shipment, setShipment]             = useState<ShipmentReceipt | null>(null);
+  const [delivery, setDelivery]             = useState<DeliveryReceipt | null>(null);
   const [giftCard, setGiftCard]             = useState<{ code: string; amount: number; recipient_email: string | null } | null>(null);
 
   useEffect(() => {
@@ -225,6 +248,31 @@ export default function BookingSuccessPage() {
         setFlightError(data?.error ?? 'Could not load your shipment. Please contact support@lyrtrip.com.');
       };
       load(0).finally(() => setFlightLoading(false));
+      return;
+    }
+
+    // Uber courier delivery: book after payment, then keep the status fresh while it's on the way
+    if (type === 'delivery' && sessionId) {
+      setFlightLoading(true);
+      const load = async (attempt: number): Promise<void> => {
+        const res = await fetch(`${baseUrl}/api/delivery/confirm`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }),
+        }).catch(() => null);
+        const data = res ? await res.json().catch(() => null) : null;
+        if (data?.success) {
+          setDelivery(data as DeliveryReceipt);
+          setFlightLoading(false);
+          if (data.status === 'active' && attempt < 240) setTimeout(() => void load(attempt + 1), 30000);
+          return;
+        }
+        if ((!res || res.status >= 502 || data?.pending) && attempt < 40) {
+          await new Promise(r => setTimeout(r, 4000));
+          return load(attempt + 1);
+        }
+        setFlightError(data?.error ?? 'Could not load your delivery. Please contact support@lyrtrip.com.');
+        setFlightLoading(false);
+      };
+      void load(0);
       return;
     }
 
@@ -323,6 +371,63 @@ export default function BookingSuccessPage() {
   }
 
   // ── Flight — e-ticket & itinerary (printable) ─────────────────────────────
+  if (delivery) {
+    const d = delivery;
+    const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const live = d.status === 'active';
+    const badge = d.status === 'delivered' ? 'bg-emerald-100 text-emerald-800' : live ? 'bg-sky-100 text-sky-800'
+      : d.status === 'returned' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700';
+    return (
+      <div className="flex-1 bg-gray-50 py-10 px-4">
+        <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden">
+          <div className="px-8 py-6 border-b border-gray-200 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-widest text-gray-500">Uber courier delivery</p>
+              <h1 className="text-2xl font-bold text-gray-900">🛵 {d.item.description}</h1>
+              {d.dropoffEta && live && <p className="text-sm text-gray-600">Arriving around {new Date(d.dropoffEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>}
+            </div>
+            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badge}`}>{UBER_STEP[d.uberStatus ?? ''] ?? d.status.replace('_', ' ')}</span>
+          </div>
+          {d.message && <p className="px-8 pt-5 text-sm text-gray-700">{d.message}</p>}
+          {d.trackingUrl && (
+            <div className="px-8 pt-5">
+              <a href={d.trackingUrl} target="_blank" rel="noopener noreferrer" className="inline-block px-5 py-2.5 rounded-xl bg-[#06C167] text-white font-semibold hover:opacity-90">Track live on Uber →</a>
+              {live && <p className="text-xs text-gray-400 mt-2">This page refreshes every 30 seconds.</p>}
+            </div>
+          )}
+          {d.courier?.name && (
+            <div className="mx-8 mt-5 flex items-center gap-3 rounded-xl border border-gray-200 p-3">
+              {d.courier.photo
+                // eslint-disable-next-line @next/next/no-img-element
+                ? <img src={d.courier.photo} alt="" className="w-12 h-12 rounded-full object-cover" />
+                : <span className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center text-xl">🧑</span>}
+              <div className="text-sm">
+                <p className="font-semibold text-gray-900">{d.courier.name}{d.courier.rating ? ` · ★ ${d.courier.rating}` : ''}</p>
+                {d.courier.vehicle && <p className="text-gray-600">{d.courier.vehicle}</p>}
+                {d.courier.phone && <a href={`tel:${d.courier.phone}`} className="text-brand-600 font-medium">Call courier</a>}
+              </div>
+            </div>
+          )}
+          <div className="px-8 py-5 grid sm:grid-cols-2 gap-4 text-sm">
+            <div><p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Pickup</p><p className="font-medium">{d.pickup.name}</p><p className="text-gray-600">{d.pickup.label}</p></div>
+            <div><p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Drop-off</p><p className="font-medium">{d.dropoff.name}</p><p className="text-gray-600">{d.dropoff.label}</p></div>
+          </div>
+          <div className="px-8 py-5 border-t border-gray-200">
+            <table className="w-full text-sm"><tbody>
+              <tr><td className="font-bold text-gray-900">Total</td><td className="text-right text-xl font-black">{d.currency} {money(d.totalPrice)}</td></tr>
+              {d.credits && <CreditRows c={d.credits} money={money} />}
+            </tbody></table>
+            <p className="text-xs text-gray-400 mt-2">Order {d.orderId}</p>
+          </div>
+          <div className="px-8 py-5 bg-gray-50 flex gap-3">
+            <Link href="/?tab=dash" className="px-4 py-2 rounded-xl border border-gray-300 text-sm font-medium text-gray-700 bg-white">Send another</Link>
+            <Link href="/dashboard" className="px-4 py-2 rounded-xl bg-btn text-white text-sm font-semibold">Dashboard</Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (shipment) {
     const sh = shipment;
     const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

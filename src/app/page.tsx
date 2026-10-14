@@ -12,6 +12,7 @@ import { Price, useLocale } from '@/i18n/LocaleContext';
 import HotelPriceCompare from '@/components/HotelPriceCompare';
 import CheckoutExtras from '@/components/CheckoutExtras';
 import ShippingTab from '@/components/ShippingTab';
+import CourierDelivery from '@/components/CourierDelivery';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -2464,6 +2465,8 @@ export default function Home() {
                   </div>
                   <span className="text-xs text-gray-400">Orders are placed and paid on Uber Eats</span>
                 </div>
+
+                <CourierDelivery user={user} />
 
                 <h3 className="text-xl font-bold text-gray-900 mb-5">What are you craving?</h3>
 

@@ -43,7 +43,7 @@ for f in search.mjs rewards.mjs package.json package-lock.json i18n-strings.json
 aws lambda update-function-code --function-name $FUNCTION $R --zip-file "fileb://$T.zip" --query LastUpdateStatus --output text
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
-echo "3/5 settings (Duffel, Anthropic and Easyship in, TRAVELPORT_* out, existing keys kept)"
+echo "3/5 settings (Duffel, Anthropic, Easyship and Uber Direct in, TRAVELPORT_* out, existing keys kept)"
 ENV_FILE=$(mktemp); chmod 600 "$ENV_FILE"
 aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Environment.Variables' --output json |
   node -e '
@@ -59,6 +59,8 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       if (process.env.ANTHROPIC_API_KEY) cur.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
       // Shipping tab: courier rates and labels from Easyship
       if (process.env.EASYSHIP_API_KEY) cur.EASYSHIP_API_KEY = process.env.EASYSHIP_API_KEY;
+      // Dash courier delivery: Uber Direct
+      for (const k of ["UBER_DIRECT_CUSTOMER_ID", "UBER_DIRECT_CLIENT_ID", "UBER_DIRECT_CLIENT_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
       if (process.env.DUFFEL_STRIPE_SECRET_KEY) cur.DUFFEL_STRIPE_SECRET_KEY = process.env.DUFFEL_STRIPE_SECRET_KEY;
       else delete cur.DUFFEL_STRIPE_SECRET_KEY;   // live Duffel pays with the main STRIPE_SECRET_KEY
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
@@ -86,7 +88,7 @@ aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admi
 }"
 echo "admin policy on ${ROLE_ARN##*/}"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n"; do
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/delivery/{proxy+}" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
     echo "exists: $ROUTE"
   else

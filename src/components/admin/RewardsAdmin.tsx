@@ -33,7 +33,7 @@ export interface RewardsSettings { pointsPerDollarSpent: number; affiliatePercen
 
 interface Coupon {
   code: string; type: 'percent' | 'fixed'; value: number; min_total: number; max_uses: number; uses?: number; usedBy?: number;
-  once_per_customer: boolean; expires: string; applies_to: 'all' | 'flight' | 'hotel' | 'shipping'; active: boolean; description: string;
+  once_per_customer: boolean; expires: string; applies_to: 'all' | 'flight' | 'hotel' | 'shipping' | 'delivery'; active: boolean; description: string;
 }
 
 interface GiftCard {
@@ -317,7 +317,7 @@ export function CouponsPanel({ call, isSuper }: { call: Call; isSuper: boolean }
             <input className={input} type="date" value={draft.expires} onChange={e => setDraft({ ...draft, expires: e.target.value })} /></label>
           <label className="space-y-1"><span className="text-xs text-gray-600">Works on</span>
             <select className={input} value={draft.applies_to} onChange={e => setDraft({ ...draft, applies_to: e.target.value as Coupon['applies_to'] })}>
-              <option value="all">Everything</option><option value="flight">Flights only</option><option value="hotel">Hotels only</option><option value="shipping">Shipping only</option>
+              <option value="all">Everything</option><option value="flight">Flights only</option><option value="hotel">Hotels only</option><option value="shipping">Shipping only</option><option value="delivery">Courier deliveries only</option>
             </select></label>
           <label className="space-y-1 sm:col-span-2"><span className="text-xs text-gray-600">Description (internal)</span>
             <input className={input} maxLength={120} value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>
@@ -343,7 +343,7 @@ export function CouponsPanel({ call, isSuper }: { call: Call; isSuper: boolean }
                 <td className="p-3"><span className="font-semibold font-mono">{c.code}</span>{c.description && <p className="text-xs text-gray-500">{c.description}</p>}</td>
                 <td className="p-3">{c.type === 'percent' ? `${c.value}% off` : `${usd(c.value)} off`}</td>
                 <td className="p-3 text-xs text-gray-600">
-                  {[c.applies_to !== 'all' && `${c.applies_to === 'shipping' ? 'shipping' : `${c.applies_to}s`} only`, c.min_total > 0 && `min ${usd(c.min_total)}`, c.once_per_customer && 'once per customer', c.expires && `until ${c.expires}`].filter(Boolean).join(' · ') || '—'}
+                  {[c.applies_to !== 'all' && `${{ flight: 'flights', hotel: 'hotels', shipping: 'shipping', delivery: 'courier deliveries' }[c.applies_to]} only`, c.min_total > 0 && `min ${usd(c.min_total)}`, c.once_per_customer && 'once per customer', c.expires && `until ${c.expires}`].filter(Boolean).join(' · ') || '—'}
                 </td>
                 <td className="p-3">{c.uses ?? 0}{c.max_uses ? ` / ${c.max_uses}` : ''}</td>
                 <td className="p-3"><span className={`px-2 py-0.5 rounded-full text-xs ${state(c) === 'Active' ? STATUS_STYLE.active : STATUS_STYLE.disabled}`}>{state(c)}</span></td>
@@ -552,6 +552,61 @@ export function ShipmentsPanel({ call }: { call: Call }) {
             <div className="text-right">
               <p className="font-bold text-gray-900">{usd(r.totalPrice)}</p>
               <p className="text-xs text-gray-500">cost {usd(r.baseCost)} · {r.amountPaid !== r.totalPrice ? `${usd(r.amountPaid)} by card` : 'card'}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Courier deliveries (Uber Direct) ─────────────────────────────────────────
+
+interface AdminDelivery {
+  orderId: string; status: string; uberStatus: string | null; email: string; totalPrice: number; amountPaid: number; baseFee: number;
+  currency: string; pickup: { label: string }; dropoff: { label: string }; item: { description: string };
+  trackingUrl: string | null; uberDeliveryId: string | null; error: string | null; createdAt: string;
+}
+
+const DELIVERY_STATUS: Record<string, string> = {
+  active: 'bg-sky-100 text-sky-800', delivered: 'bg-emerald-100 text-emerald-800', processing: 'bg-sky-100 text-sky-800',
+  canceled: 'bg-gray-200 text-gray-700', returned: 'bg-amber-100 text-amber-800', refunded: 'bg-gray-200 text-gray-700', booking_failed: 'bg-red-100 text-red-800',
+};
+
+export function DeliveriesPanel({ call }: { call: Call }) {
+  const [rows, setRows] = useState<AdminDelivery[] | null>(null);
+  useEffect(() => {
+    call({ action: 'deliveries.list' }).then(d => setRows(d.deliveries as AdminDelivery[])).catch(() => setRows([]));
+  }, [call]);
+  const booked = (rows ?? []).filter(r => ['active', 'delivered', 'returned'].includes(r.status));
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['Couriers booked', String(booked.length)],
+          ['In progress', String((rows ?? []).filter(r => r.status === 'active').length)],
+          ['Sales', usd(booked.reduce((s, r) => s + r.totalPrice, 0))],
+          ['Lyrtrip margin', usd(booked.reduce((s, r) => s + r.totalPrice - r.baseFee, 0))],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No courier deliveries yet.</p>}
+        {rows?.map(r => (
+          <div key={r.orderId} className="p-4 flex flex-wrap items-start justify-between gap-3 text-sm">
+            <div className="min-w-0">
+              <p className="font-semibold text-gray-900">
+                {r.item.description}
+                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${DELIVERY_STATUS[r.status] ?? 'bg-gray-100 text-gray-700'}`}>{r.uberStatus ?? r.status}</span>
+              </p>
+              <p className="text-gray-600 truncate">{r.pickup.label} → {r.dropoff.label}</p>
+              <p className="text-xs text-gray-400">{r.email} · Order {r.orderId}{r.uberDeliveryId ? ` · ${r.uberDeliveryId}` : ''} · {new Date(r.createdAt).toLocaleString()}</p>
+              {r.error && <p className="text-xs text-red-600 mt-1">{r.error}</p>}
+              {r.trackingUrl && <a href={r.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-600 font-semibold">Tracking</a>}
+            </div>
+            <div className="text-right">
+              <p className="font-bold text-gray-900">{usd(r.totalPrice)}</p>
+              <p className="text-xs text-gray-500">Uber fee {usd(r.baseFee)}</p>
             </div>
           </div>
         ))}

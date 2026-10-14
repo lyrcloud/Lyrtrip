@@ -3211,6 +3211,13 @@ async function handleAdmin(event) {
         });
       }
 
+      case 'deliveries.list': {
+        const rows = await db.collection('deliveries').find({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] } }).sort({ createdAt: -1 }).limit(200).toArray();
+        return json(200, {
+          deliveries: rows.map(b => ({ ...deliveryReceipt(b), email: b.email, baseFee: b.baseFeeCents / 100, uberDeliveryId: b.uberDeliveryId ?? null, error: b.bookingError ?? null, createdAt: b.createdAt })),
+        });
+      }
+
       // ── Rewards: admins see everything; only the super admin changes it ──
 
       case 'rewards.list': {
@@ -3256,8 +3263,8 @@ async function handleAdmin(event) {
 // ---------------------------------------------------------------------------
 
 const mainStripe = () => (process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' }) : null);
-const BOOKING_STRIPE = { flight: () => duffelStripe().stripe ?? null, hotel: mainStripe, shipping: mainStripe };
-const BOOKING_COLLECTION = { flight: 'flight_bookings', hotel: 'hotel_bookings', shipping: 'shipments' };
+const BOOKING_STRIPE = { flight: () => duffelStripe().stripe ?? null, hotel: mainStripe, shipping: mainStripe, delivery: mainStripe };
+const BOOKING_COLLECTION = { flight: 'flight_bookings', hotel: 'hotel_bookings', shipping: 'shipments', delivery: 'deliveries' };
 const HELD = { $or: [{ 'credits.points': { $gt: 0 } }, { 'credits.giftCardCents': { $gt: 0 } }, { 'credits.couponCode': { $type: 'string' } }] };
 
 // Ends an unpaid checkout and gives back its coupon, gift card and points. Returns true if it did.
@@ -3276,7 +3283,7 @@ async function releaseUnpaid(db, type, booking, stripe) {
 // Stripe sessions last 30 minutes; bookings never paid give back what they held.
 async function releaseExpiredHolds(db) {
   const cutoff = new Date(Date.now() - 35 * 60 * 1000).toISOString();
-  for (const type of ['flight', 'hotel', 'shipping']) {
+  for (const type of ['flight', 'hotel', 'shipping', 'delivery']) {
     const rows = await db.collection(BOOKING_COLLECTION[type])
       .find({ status: 'pending_stripe', createdAt: { $lt: cutoff }, 'credits.released': { $ne: true }, ...HELD }).limit(10).toArray();
     for (const b of rows) await releaseUnpaid(db, type, b, BOOKING_STRIPE[type]()).catch(err => console.error('Release failed:', err.message));
@@ -3324,8 +3331,8 @@ async function handleRewards(event) {
       // What a booking will cost with the guest's coupon, gift card, points and business pricing (display only;
       // checkout prices it again from the airline or hotel).
       case 'quote': {
-        const kind = ['hotel', 'shipping'].includes(body.kind) ? body.kind : 'flight';
-        const retailRate = { flight: FLIGHT_MARKUP, hotel: HOTEL_MARKUP, shipping: SHIP_MARKUP }[kind];
+        const kind = ['hotel', 'shipping', 'delivery'].includes(body.kind) ? body.kind : 'flight';
+        const retailRate = { flight: FLIGHT_MARKUP, hotel: HOTEL_MARKUP, shipping: SHIP_MARKUP, delivery: DELIVERY_MARKUP }[kind];
         const listed = Number(body.listedTotal);
         if (!(listed > 0)) return json(400, { error: 'listedTotal is required' });
         const settings = await rw.getSettings(db);
@@ -3348,10 +3355,11 @@ async function handleRewards(event) {
       case 'trips': {
         const me = signedIn();
         const mine = field => ({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] }, $or: [{ userSub: me._id }, ...(me.email ? [{ [field]: me.email }] : [])] });
-        const [flights, hotels, parcels] = await Promise.all([
+        const [flights, hotels, parcels, couriers] = await Promise.all([
           db.collection('flight_bookings').find(mine('passengers.0.email')).sort({ createdAt: -1 }).limit(50).toArray(),
           db.collection('hotel_bookings').find(mine('guest.email')).sort({ createdAt: -1 }).limit(50).toArray(),
           db.collection('shipments').find(mine('from.contact_email')).sort({ createdAt: -1 }).limit(50).toArray(),
+          db.collection('deliveries').find(mine('email')).sort({ createdAt: -1 }).limit(50).toArray(),
         ]);
         const legs = b => b.itinerary ?? [];
         return json(200, {
@@ -3381,13 +3389,21 @@ async function handleRewards(event) {
               receiptUrl: b.stripeSessionId ? `/booking/success?session_id=${b.stripeSessionId}&type=shipping` : null,
               testBooking: false, createdAt: b.createdAt,
             })),
+            ...couriers.map(b => ({
+              id: String(b._id), kind: 'delivery', status: b.status, title: `${b.item.description} → ${b.dropoff.label.split(',')[0]}`,
+              subtitle: `Uber courier · from ${b.pickup.label.split(',')[0]}`,
+              start: (b.confirmedAt ?? b.createdAt).slice(0, 10), end: null,
+              total: b.totalPrice, paid: b.credits?.amountDue ?? b.totalPrice, currency: b.currency,
+              receiptUrl: b.stripeSessionId ? `/booking/success?session_id=${b.stripeSessionId}&type=delivery` : null,
+              testBooking: false, createdAt: b.createdAt,
+            })),
           ],
         });
       }
 
       // The cancel page: end the Stripe session now and give back what the booking held.
       case 'release': {
-        const type = ['hotel', 'shipping'].includes(body.type) ? body.type : 'flight';
+        const type = ['hotel', 'shipping', 'delivery'].includes(body.type) ? body.type : 'flight';
         const booking = await db.collection(BOOKING_COLLECTION[type]).findOne({ stripeSessionId: String(body.sessionId ?? ''), status: 'pending_stripe' });
         const released = booking ? await releaseUnpaid(db, type, booking, BOOKING_STRIPE[type]()) : false;
         return json(200, { released });
@@ -3855,6 +3871,340 @@ async function alertShipmentReview(order, reason) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Courier delivery (Uber Direct): an Uber courier takes a parcel from A to B
+// the same day. The sender pays Uber's fee + 10% on Stripe; Lyrtrip then
+// creates the delivery on its Uber Direct account and shows live tracking.
+// ---------------------------------------------------------------------------
+
+const DELIVERY_MARKUP = 1.10;  // 10% Lyrtrip margin on Uber's delivery fee
+const UBER_DIRECT_API = 'https://api.uber.com/v1';
+const DELIVERY_SIZES = new Set(['small', 'medium', 'large', 'xlarge']);
+let uberDirectToken;  // { token, expiresAt }
+
+class UberDirectError extends Error {
+  constructor(message, status, code) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function uberDirectAuth() {
+  if (uberDirectToken && uberDirectToken.expiresAt > Date.now() + 60_000) return uberDirectToken.token;
+  const { UBER_DIRECT_CLIENT_ID: id, UBER_DIRECT_CLIENT_SECRET: secret } = process.env;
+  if (!id || !secret || !process.env.UBER_DIRECT_CUSTOMER_ID) throw new UberDirectError('Courier delivery is not configured', 500);
+  const res = await fetch('https://auth.uber.com/oauth/v2/token', {
+    method: 'POST',
+    body: new URLSearchParams({ client_id: id, client_secret: secret, grant_type: 'client_credentials', scope: 'eats.deliveries' }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) throw new UberDirectError(`Uber sign-in failed: ${data.error ?? res.status}`, 502);
+  uberDirectToken = { token: data.access_token, expiresAt: Date.now() + Number(data.expires_in ?? 3600) * 1000 };
+  return uberDirectToken.token;
+}
+
+async function uberDirectFetch(path, { method = 'GET', body, timeoutMs = 20_000 } = {}) {
+  const res = await fetch(`${UBER_DIRECT_API}/customers/${process.env.UBER_DIRECT_CUSTOMER_ID}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${await uberDirectAuth()}`, 'content-type': 'application/json' },
+    body: body && JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new UberDirectError(data.message || `Uber error ${res.status}`, res.status, data.code);
+  return data;
+}
+
+// Returns { name, phone, address (Uber's JSON string), label, notes, country } or an error string
+function cleanDeliveryStop(p, side) {
+  const s = v => String(v ?? '').trim();
+  const country = s(p?.country).toUpperCase() || 'US';
+  const street = s(p?.line1).slice(0, 100), unit = s(p?.line2).slice(0, 50), city = s(p?.city).slice(0, 50);
+  const state = s(p?.state).slice(0, 50), zip = s(p?.postalCode).slice(0, 12);
+  if (!/^[A-Z]{2}$/.test(country)) return `Choose the ${side} country`;
+  if (!street) return `Enter the ${side} street address`;
+  if (!city) return `Enter the ${side} city`;
+  const name = s(p?.name).slice(0, 60);
+  if (name.length < 2) return `Enter the ${side} contact's name`;
+  const phone = parsePhoneNumberFromString(s(p?.phone), country);
+  if (!phone?.isValid()) return `The ${side} phone number isn't valid. Include the country code, e.g. +1 415 555 2671`;
+  return {
+    name, phone: phone.number, country, notes: s(p?.notes).slice(0, 280),
+    address: JSON.stringify({ street_address: [street, unit].filter(Boolean), city, state, zip_code: zip, country }),
+    label: [street, unit, city, state, zip].filter(Boolean).join(', '),
+  };
+}
+
+function cleanDeliveryItem(i) {
+  const description = String(i?.description ?? '').trim().slice(0, 100);
+  if (description.length < 2) return "Describe what the courier is carrying";
+  const size = DELIVERY_SIZES.has(i?.size) ? i.size : 'small';
+  const value = Number(i?.value ?? 0);
+  if (!(value >= 0 && value <= 1000)) return 'The item value must be $0 to $1,000';
+  return { description, size, valueCents: Math.round(value * 100) };
+}
+
+async function uberDeliveryQuote(pickup, dropoff, item) {
+  return uberDirectFetch('/delivery_quotes', {
+    method: 'POST',
+    body: {
+      pickup_address: pickup.address, dropoff_address: dropoff.address,
+      pickup_phone_number: pickup.phone, dropoff_phone_number: dropoff.phone,
+      manifest_total_value: item.valueCents,
+    },
+  });
+}
+
+const uberDeliveryError = err =>
+  err.status === 400 || err.status === 422 || err.code === 'address_undeliverable' || err.code === 'invalid_params'
+    ? `Uber can't deliver between these addresses: ${err.message}`
+    : err.message;
+
+async function handleDeliveryQuote(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const pickup = cleanDeliveryStop(body.pickup, 'pickup');
+  const dropoff = cleanDeliveryStop(body.dropoff, 'drop-off');
+  const item = cleanDeliveryItem(body.item);
+  const problem = [pickup, dropoff, item].find(v => typeof v === 'string');
+  if (problem) return json(400, { error: problem });
+  try {
+    const q = await uberDeliveryQuote(pickup, dropoff, item);
+    return json(200, {
+      price: withMarkup(q.fee / 100, DELIVERY_MARKUP), currency: String(q.currency ?? 'usd').toUpperCase(),
+      pickupMinutes: q.pickup_duration ?? null, totalMinutes: q.duration ?? null, dropoffEta: q.dropoff_eta ?? null,
+    });
+  } catch (err) {
+    return json(err.status >= 500 ? 502 : 200, { error: uberDeliveryError(err) });
+  }
+}
+
+function deliveryReceipt(b) {
+  return {
+    success:      true,
+    status:       b.status,         // processing | active | delivered | canceled | returned | needs_review | refunded
+    uberStatus:   b.uberStatus ?? null,
+    orderId:      String(b._id),
+    pickup:       { name: b.pickup.name, label: b.pickup.label },
+    dropoff:      { name: b.dropoff.name, label: b.dropoff.label },
+    item:         b.item,
+    totalPrice:   b.totalPrice,
+    amountPaid:   b.credits?.amountDue ?? b.totalPrice,
+    credits:      publicCredits(b.credits),
+    currency:     b.currency,
+    trackingUrl:  b.trackingUrl ?? null,
+    courier:      b.courier ?? null,
+    dropoffEta:   b.dropoffEta ?? null,
+    message:      b.customerMessage ?? null,
+  };
+}
+
+async function handleDeliveryCheckout(event) {
+  const stripe = mainStripe();
+  if (!stripe) return json(500, { error: 'Payments are not configured' });
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const pickup = cleanDeliveryStop(body.pickup, 'pickup');
+  const dropoff = cleanDeliveryStop(body.dropoff, 'drop-off');
+  const item = cleanDeliveryItem(body.item);
+  const problem = [pickup, dropoff, item].find(v => typeof v === 'string');
+  if (problem) return json(400, { error: problem });
+  if (!body.agreeProhibited) return json(400, { error: 'Please confirm the item is allowed (no alcohol, weapons, cash or illegal goods)' });
+  const email = String(body.email ?? '').trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return json(400, { error: 'Enter your email for the receipt and tracking link' });
+
+  let q;
+  try {
+    q = await uberDeliveryQuote(pickup, dropoff, item);
+  } catch (err) {
+    return json(err.status >= 500 ? 502 : 400, { error: uberDeliveryError(err) });
+  }
+  const currency = String(q.currency ?? 'usd').toUpperCase();
+  const retailTotal = withMarkup(q.fee / 100, DELIVERY_MARKUP);
+  const agreed = Number(body.quotedTotal);
+  if (!(agreed > 0) || retailTotal > agreed + 0.5) {
+    return json(409, { priceChanged: true, totalPrice: retailTotal, error: `Uber's price is now ${currency} ${retailTotal.toFixed(2)}. Please review and continue.` });
+  }
+
+  const db = await getDb();
+  const user = await optionalUser(body.idToken);
+  const account = user ? await rw.getAccount(db, user) : null;
+  const feeRate = rw.feeRate(account, await rw.getSettings(db), DELIVERY_MARKUP);
+  const totalPrice = withMarkup(q.fee / 100, feeRate);
+  const coll = db.collection('deliveries');
+  const _id = new ObjectId();
+  const orderId = _id.toString();
+  let credits;
+  try {
+    const cq = await rw.quoteCredits(db, { account, kind: 'delivery', totalCents: rw.cents(totalPrice), currency, body, strict: true });
+    const held = await rw.holdCredits(db, cq, { sub: account?._id, ref: orderId, note: `delivery ${orderId.slice(-8)}` });
+    credits = await rw.bookingCredits(db, { q: cq, held, account, feeRate, retailTotal, affiliateCode: body.ref, currency });
+  } catch (err) {
+    if (err instanceof rw.RewardsError) return json(err.status, { error: err.message });
+    throw err;
+  }
+
+  const now = new Date().toISOString();
+  await coll.insertOne({
+    _id, status: 'pending_stripe', userSub: account?._id ?? null, email,
+    pickup, dropoff, item, leaveAtDoor: !!body.leaveAtDoor,
+    baseFeeCents: q.fee, totalPrice, currency, credits, createdAt: now, updatedAt: now,
+  });
+
+  let session;
+  try {
+    session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [{ price_data: { currency: currency.toLowerCase(), unit_amount: rw.cents(credits.amountDue), product_data: {
+        name: `Uber courier delivery: ${item.description}`,
+        description: `${pickup.label} → ${dropoff.label} · incl. Lyrtrip service fee${creditsNote(credits)}`.slice(0, 500),
+      } }, quantity: 1 }],
+      metadata: { type: 'delivery', deliveryId: orderId },
+      customer_email: email,
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+      success_url: `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=delivery`,
+      cancel_url: `${SITE_URL}/booking/cancel?session_id={CHECKOUT_SESSION_ID}&type=delivery`,
+    });
+  } catch (err) {
+    await coll.updateOne({ _id }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
+    await rw.releaseCredits(db, coll, _id, 'checkout could not start');
+    throw err;
+  }
+  await coll.updateOne({ _id }, { $set: { stripeSessionId: session.id } });
+  return json(200, { url: session.url, orderId });
+}
+
+// Uber's delivery states mapped to what the receipt shows
+const DELIVERY_STATE = { pending: 'active', pickup: 'active', pickup_complete: 'active', dropoff: 'active', delivered: 'delivered', canceled: 'canceled', returned: 'returned' };
+
+function deliveryResult(d) {
+  return {
+    uberDeliveryId: d.id,
+    uberStatus: d.status,
+    status: DELIVERY_STATE[d.status] ?? 'active',
+    trackingUrl: d.tracking_url ?? null,
+    dropoffEta: d.dropoff_eta ?? null,
+    courier: d.courier ? { name: d.courier.name ?? null, phone: d.courier.phone_number ?? null, vehicle: [d.courier.vehicle_color, d.courier.vehicle_make, d.courier.vehicle_model].filter(Boolean).join(' ') || null, rating: d.courier.rating ?? null, photo: d.courier.img_href ?? null } : null,
+    uberFeeCents: d.fee ?? null,
+  };
+}
+
+// Asks Uber for the latest status of a live delivery (receipt refreshes)
+async function refreshDelivery(coll, b) {
+  if (!b.uberDeliveryId || !['active'].includes(b.status)) return b;
+  try {
+    const set = { ...deliveryResult(await uberDirectFetch(`/deliveries/${b.uberDeliveryId}`, { timeoutMs: 8000 })), updatedAt: new Date().toISOString() };
+    await coll.updateOne({ _id: b._id }, { $set: set });
+    return { ...b, ...set };
+  } catch {
+    return b;
+  }
+}
+
+async function handleDeliveryConfirm(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const stripe = mainStripe();
+  if (!stripe) return json(500, { error: 'Payments are not configured' });
+  let session;
+  try { session = await stripe.checkout.sessions.retrieve(String(body.sessionId ?? '')); } catch { return json(400, { error: 'Invalid session ID' }); }
+  if (session.metadata?.type !== 'delivery') return json(400, { error: 'Not a delivery payment' });
+  if (session.payment_status !== 'paid') return json(402, { error: 'Payment not completed' });
+  const id = session.metadata.deliveryId;
+  if (!ObjectId.isValid(id)) return json(400, { error: 'Invalid delivery' });
+
+  const db = await getDb();
+  const coll = db.collection('deliveries');
+  const _id = new ObjectId(id);
+  const claimed = await coll.findOneAndUpdate(
+    { _id, status: 'pending_stripe', stripeSessionId: session.id },
+    { $set: { status: 'processing', paymentIntent: session.payment_intent, updatedAt: new Date().toISOString() } },
+    { returnDocument: 'after' },
+  );
+  let order = claimed?.value !== undefined ? claimed.value : claimed;
+  if (!order) {
+    const existing = await coll.findOne({ _id });
+    if (!existing) return json(404, { error: 'Delivery not found' });
+    if (existing.status !== 'processing') return json(200, deliveryReceipt(await refreshDelivery(coll, existing)));
+    if (Date.now() - new Date(existing.updatedAt).getTime() < STALE_PROCESSING_MS) return json(202, { pending: true, message: 'Booking your courier' });
+    // The run that was booking died; creating again with the same idempotency key returns the same delivery
+    const retaken = await coll.findOneAndUpdate({ _id, status: 'processing', updatedAt: existing.updatedAt }, { $set: { updatedAt: new Date().toISOString() } }, { returnDocument: 'after' });
+    order = retaken?.value !== undefined ? retaken.value : retaken;
+    if (!order) return json(202, { pending: true, message: 'Booking your courier' });
+  }
+
+  const payment = await stripePaymentDetails(stripe, session);
+  await coll.updateOne({ _id }, { $set: { payment } });
+
+  const fail = async (reason) => {
+    console.error('Courier delivery failed:', reason);
+    let refunded = false;
+    try {
+      await stripe.refunds.create({ payment_intent: session.payment_intent });
+      refunded = true;
+    } catch (err) {
+      console.error('Stripe refund failed:', err.message);
+    }
+    const customerMessage = refunded
+      ? `We couldn't book an Uber courier for this delivery, so your payment has been refunded in full. Order ID: ${id}`
+      : `We couldn't book an Uber courier. Please contact support@lyrtrip.com with order ID ${id} for a refund.`;
+    await coll.updateOne({ _id }, { $set: { status: refunded ? 'refunded' : 'booking_failed', bookingError: String(reason), customerMessage, updatedAt: new Date().toISOString() } });
+    await rw.releaseCredits(db, coll, _id, `delivery ${id.slice(-8)} wasn't booked`);
+    return json(500, { error: customerMessage });
+  };
+
+  // Quotes last 15 minutes, so price again now; Uber's fee must not have risen (2% or 50 cents of slack)
+  let quote;
+  try {
+    quote = await uberDeliveryQuote(order.pickup, order.dropoff, order.item);
+  } catch (err) {
+    if (err.status >= 500 || !err.status) return json(503, { pending: true, message: 'Uber is busy; retrying' });
+    return fail(`re-quote failed: ${err.message}`);
+  }
+  if (quote.fee > order.baseFeeCents * 1.02 + 50) return fail(`Uber's fee rose from ${order.baseFeeCents} to ${quote.fee} cents`);
+
+  let delivery;
+  try {
+    delivery = await uberDirectFetch('/deliveries', {
+      method: 'POST',
+      timeoutMs: 25_000,
+      body: {
+        quote_id: quote.id,
+        idempotency_key: id,
+        external_id: id,
+        pickup_name: order.pickup.name, pickup_address: order.pickup.address, pickup_phone_number: order.pickup.phone,
+        pickup_notes: order.pickup.notes || undefined,
+        dropoff_name: order.dropoff.name, dropoff_address: order.dropoff.address, dropoff_phone_number: order.dropoff.phone,
+        dropoff_notes: order.dropoff.notes || undefined,
+        manifest_items: [{ name: order.item.description, quantity: 1, size: order.item.size }],
+        manifest_total_value: order.item.valueCents,
+        deliverable_action: order.leaveAtDoor ? 'deliverable_action_leave_at_door' : 'deliverable_action_meet_at_door',
+        undeliverable_action: order.leaveAtDoor ? 'leave_at_door' : 'return',
+      },
+    });
+  } catch (err) {
+    if (err.status >= 400 && err.status < 500) return fail(err.message);
+    // Timeout or Uber error: the idempotency key makes the next poll's retry safe
+    await coll.updateOne({ _id }, { $set: { updatedAt: new Date(0).toISOString() } });
+    return json(503, { pending: true, message: 'Booking your courier' });
+  }
+
+  const set = { ...deliveryResult(delivery), confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await coll.updateOne({ _id }, { $set: set });
+  await rw.earnRewards(db, coll, _id, `Courier delivery to ${order.dropoff.label.split(',')[0]}`).catch(err => console.error('Rewards failed:', err));
+  const done = { ...order, ...set };
+  await sendEmail({
+    to: order.email,
+    subject: `Your Uber courier is booked: ${order.item.description}`,
+    html: hotelEmailHtml('Your courier is on the way', [
+      ['Item', order.item.description], ['Pickup', `${order.pickup.name}, ${order.pickup.label}`], ['Drop-off', `${order.dropoff.name}, ${order.dropoff.label}`],
+      ['Total paid', paidLabel(done)],
+    ], set.trackingUrl ? { url: set.trackingUrl, label: 'Track the courier' } : null),
+    text: `Your Uber courier is booked for ${order.item.description}. Track: ${set.trackingUrl ?? ''}`,
+  });
+  return json(200, deliveryReceipt(done));
+}
+
 async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
@@ -3876,6 +4226,9 @@ async function routeRequest(event) {
     if (path.endsWith('/api/ship/rates')             && method === 'POST')         return handleShipRates(event);
     if (path.endsWith('/api/ship/checkout')          && method === 'POST')         return handleShipCheckout(event);
     if (path.endsWith('/api/ship/confirm')           && method === 'POST')         return handleShipConfirm(event);
+    if (path.endsWith('/api/delivery/quote')         && method === 'POST')         return handleDeliveryQuote(event);
+    if (path.endsWith('/api/delivery/checkout')      && method === 'POST')         return handleDeliveryCheckout(event);
+    if (path.endsWith('/api/delivery/confirm')       && method === 'POST')         return handleDeliveryConfirm(event);
     if (path.endsWith('/api/assistant/chat')         && method === 'POST')         return handleLyrbotChat(event);
     if (path.endsWith('/api/rates')                  && method === 'GET')          return handleRates();
     if (path.endsWith('/api/i18n')                   && method === 'POST')         return handleI18n(event);

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { getSession } from '@/lib/auth';
 import {
-  AffiliatesPanel, BusinessPanel, CouponsPanel, GiftCardsPanel, RewardsPanel, SettingsPanel, ShipmentsPanel, TIER_STYLE,
+  AffiliatesPanel, BusinessPanel, CouponsPanel, GiftCardsPanel, RewardsPanel, SettingsPanel, ShipmentsPanel, DeliveriesPanel, TIER_STYLE,
   type RewardsAccount, type RewardsSettings,
 } from '@/components/admin/RewardsAdmin';
 
@@ -50,7 +50,7 @@ interface AdminFlight {
   createdAt: string | null;
 }
 
-type Tab = 'users' | 'shipments' | 'rewards' | 'business' | 'affiliates' | 'coupons' | 'giftcards' | 'settings' | 'tours' | 'flights';
+type Tab = 'users' | 'shipments' | 'deliveries' | 'rewards' | 'business' | 'affiliates' | 'coupons' | 'giftcards' | 'settings' | 'tours' | 'flights';
 
 const ROLE_STYLE: Record<Role, string> = {
   superadmin: 'bg-purple-100 text-purple-800',
@@ -198,6 +198,7 @@ export default function AdminPage() {
                 ['tours', `Tours (${tours?.length ?? 0})`],
                 ['flights', `Flight bookings (${flights?.length ?? 0})`],
                 ['shipments', 'Shipments'],
+                ['deliveries', 'Courier deliveries'],
               ] as const).map(([key, label]) => (
                 <button key={key} onClick={() => setTab(key)}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium ${tab === key ? 'bg-btn text-white' : 'bg-white border border-gray-300 text-gray-700'}`}>
@@ -318,6 +319,7 @@ export default function AdminPage() {
             )}
             {tab === 'affiliates' && <AffiliatesPanel accounts={rewards?.accounts ?? []} settings={rewards?.settings ?? null} />}
             {tab === 'shipments' && <ShipmentsPanel call={call} />}
+            {tab === 'deliveries' && <DeliveriesPanel call={call} />}
             {tab === 'coupons' && <CouponsPanel call={call} isSuper={isSuper} />}
             {tab === 'giftcards' && <GiftCardsPanel call={call} isSuper={isSuper} />}
             {tab === 'settings' && (
