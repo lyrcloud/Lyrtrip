@@ -1492,11 +1492,13 @@ export default function Home() {
       <div className="mt-6 space-y-3">
         {results.map(r => r.kind === 'place' ? (
           <div key={r.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition animate-[panelIn_250ms_ease-out]">
-            {r.imageUrl ? (
-              <img src={r.imageUrl} alt="" className="w-24 sm:w-36 object-cover shrink-0 bg-gray-100" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-            ) : (
-              <div className="w-24 sm:w-36 bg-brand-50 flex items-center justify-center shrink-0 text-4xl" aria-hidden>🏫</div>
-            )}
+            {/* Placeholder sits under the photo, so a missing, slow or broken image still shows something */}
+            <div className="relative w-24 sm:w-36 shrink-0 bg-brand-50 flex items-center justify-center text-4xl" aria-hidden>
+              🏫
+              {r.imageUrl && (
+                <img src={r.imageUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              )}
+            </div>
             <div className="flex-1 min-w-0 p-4">
               <h3 className="font-bold text-gray-900 leading-tight">{r.name}</h3>
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
