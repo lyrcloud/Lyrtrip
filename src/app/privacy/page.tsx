@@ -17,7 +17,7 @@ export default function PrivacyPolicyPage() {
               Lyrtrip (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;) provides music trip
               planning, travel search, and booking tools at www.lyrtrip.com (the
               &quot;Service&quot;), including hotel and flight search and booking, ride
-              booking via Uber, and restaurant, grocery, and pickup ordering. This Privacy
+              fare estimates, same-day courier delivery, and parcel shipping. This Privacy
               Policy explains what information we collect, how we use and share it, and
               the choices you have.
             </p>
@@ -103,9 +103,10 @@ export default function PrivacyPolicyPage() {
                 and refunds.
               </li>
               <li>
-                <span className="font-semibold">Uber</span> &mdash; if you connect your
-                Uber account or book a ride, your pickup and drop-off details are shared
-                with Uber.
+                <span className="font-semibold">Courier and shipping partners</span> &mdash; when
+                you book a courier delivery or buy a shipping label, the pickup and delivery
+                names, addresses, phone numbers and item details are shared with the courier
+                or carrier that carries it.
               </li>
               <li>
                 <span className="font-semibold">Amazon Web Services (AWS)</span> &mdash;
@@ -139,7 +140,7 @@ export default function PrivacyPolicyPage() {
             <p>
               We do not use advertising or third-party tracking cookies. We use your
               browser&apos;s local and session storage to keep you signed in, protect
-              the sign-in process, remember a connected Uber account, and keep a record
+              the sign-in process, remember a referral link you opened, and keep a record
               of bookings made on that device. You can clear this data at any time
               through your browser settings; doing so will sign you out. Third-party
               services such as Google Maps and Stripe checkout may set their own cookies
@@ -186,9 +187,8 @@ export default function PrivacyPolicyPage() {
             <ul className="list-disc pl-6 space-y-2">
               <li>You can disable location permissions in your browser or device at any time.</li>
               <li>
-                You can disconnect your Uber account from Lyrtrip at any time, and revoke
-                Google, Facebook, or WeChat access from that provider&apos;s account
-                settings.
+                You can revoke Google, Facebook, or WeChat access from that provider&apos;s
+                account settings.
               </li>
               <li>
                 Depending on where you live, you may have the right to access, correct,

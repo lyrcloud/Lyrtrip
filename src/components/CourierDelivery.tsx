@@ -10,10 +10,10 @@ interface Quote { price: number; currency: string; pickupMinutes: number | null;
 const EMPTY: Stop = { name: '', phone: '', line1: '', line2: '', city: '', state: '', postalCode: '', country: 'US', notes: '' };
 const SIZES: [string, string][] = [['small', 'Small (fits in a bag)'], ['medium', 'Medium (a box)'], ['large', 'Large (needs a car)'], ['xlarge', 'Extra large']];
 
-const input = 'w-full px-3 py-2.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-[#06C167] focus:ring-4 focus:ring-emerald-100';
+const input = 'w-full px-3 py-2.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100';
 const label = 'block text-xs font-medium text-gray-600 mb-1';
 
-// Same-day courier delivery with Uber Direct, booked and paid on Lyrtrip (Uber's fee + 10%)
+// Same-day courier delivery, booked and paid on Lyrtrip (the courier partner's fee + 10%)
 export default function CourierDelivery({ user }: { user: { email?: string; name?: string } | null }) {
   const [pickup, setPickup] = useState<Stop>({ ...EMPTY, name: user?.name ?? '' });
   const [dropoff, setDropoff] = useState<Stop>(EMPTY);
@@ -42,9 +42,9 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
       const res = await fetch(`${baseUrl}/api/delivery/quote`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload()) });
       const data = await res.json().catch(() => ({}));
       if (data.price) setQuote(data);
-      else setError(data.error ?? 'Uber has no courier for this delivery right now.');
+      else setError(data.error ?? 'No courier is available for this delivery right now.');
     } catch {
-      setError('Could not reach Uber. Please try again.');
+      setError('Could not get a price right now. Please try again.');
     } finally {
       setLoading(null);
     }
@@ -98,10 +98,10 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
   return (
     <div className="rounded-2xl border-2 border-emerald-100 bg-emerald-50/30 p-4 sm:p-5 mb-8 space-y-4">
       <div className="flex items-center gap-3">
-        <span className="w-10 h-10 rounded-xl bg-[#06C167] text-white flex items-center justify-center text-xl">🛵</span>
+        <span className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-xl">🛵</span>
         <div>
           <h3 className="text-lg font-bold text-gray-900">Send anything across town</h3>
-          <p className="text-sm text-gray-600">An Uber courier picks it up and delivers it today. Book and pay here, with no Uber account.</p>
+          <p className="text-sm text-gray-600">A courier picks it up and delivers it today, usually within the hour. Book, pay and track it all here.</p>
         </div>
       </div>
 
@@ -122,8 +122,8 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
       </div>
 
       <button onClick={getQuote} disabled={loading !== null}
-        className="w-full sm:w-auto px-6 py-3 rounded-xl bg-[#06C167] text-white font-semibold hover:opacity-90 disabled:opacity-60">
-        {loading === 'quote' ? 'Asking Uber…' : 'Get a price →'}
+        className="w-full sm:w-auto px-6 py-3 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-60">
+        {loading === 'quote' ? 'Finding a courier…' : 'Get a price →'}
       </button>
 
       {error && <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">{error}</div>}
@@ -132,7 +132,7 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
         <div className="rounded-2xl border border-gray-200 bg-white p-4 space-y-3">
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div>
-              <p className="text-sm text-gray-500">Uber courier, incl. Lyrtrip service fee</p>
+              <p className="text-sm text-gray-500">Lyrtrip courier, all fees included</p>
               <p className="text-3xl font-bold text-gray-900">{fmt(quote.price)}</p>
             </div>
             <p className="text-sm text-gray-600">
@@ -150,7 +150,7 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
           </label>
           <label className="flex items-start gap-2 text-sm text-gray-700">
             <input type="checkbox" className="mt-1" checked={agree} onChange={e => setAgree(e.target.checked)} />
-            <span>The item is legal and allowed by Uber (no alcohol, tobacco, weapons, cash, medicines or hazardous goods), and is ready for pickup now.</span>
+            <span>The item is legal and allowed (no alcohol, tobacco, weapons, cash, medicines or hazardous goods), and is ready for pickup now.</span>
           </label>
           <button onClick={pay} disabled={loading !== null}
             className="w-full py-3 rounded-xl bg-black text-white font-semibold hover:bg-gray-800 disabled:opacity-60">

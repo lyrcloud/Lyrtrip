@@ -28,18 +28,12 @@ const providerLabel: Record<string, string> = {
   cognito: 'Signed in with email',
 };
 
-const UBER_RIDES = [
-  { name: 'UberX',        desc: 'Everyday rides',  emoji: '🚗', from: 8  },
-  { name: 'Uber Comfort', desc: 'Extra legroom',   emoji: '🛋️', from: 12 },
-  { name: 'Uber Black',   desc: 'Premium service', emoji: '🖤', from: 25 },
-];
-
 // Shortcuts into the home page's search tabs and the account pages
 const QUICK_ACTIONS = [
   { href: '/?tab=flights', icon: '✈️', label: 'Flights',     tint: 'bg-sky-50 text-sky-700 ring-sky-100' },
   { href: '/?tab=hotels',  icon: '🏨', label: 'Hotels',      tint: 'bg-violet-50 text-violet-700 ring-violet-100' },
   { href: '/?tab=car',     icon: '🚗', label: 'Rides',       tint: 'bg-emerald-50 text-emerald-700 ring-emerald-100' },
-  { href: '/?tab=dash',    icon: '🍔', label: 'Food',        tint: 'bg-amber-50 text-amber-700 ring-amber-100' },
+  { href: '/?tab=dash',    icon: '🛵', label: 'Courier',     tint: 'bg-amber-50 text-amber-700 ring-amber-100' },
   { href: '/?tab=tourism', icon: '🎒', label: 'Tours',       tint: 'bg-teal-50 text-teal-700 ring-teal-100' },
   { href: '/?tab=events',  icon: '🎟️', label: 'Events',      tint: 'bg-rose-50 text-rose-700 ring-rose-100' },
   { href: '/rewards',      icon: '⭐', label: 'Rewards',     tint: 'bg-yellow-50 text-yellow-700 ring-yellow-100' },
@@ -119,15 +113,6 @@ export default function DashboardPage() {
   const [tripFilter, setTripFilter] = useState<'upcoming' | 'past' | 'all'>('upcoming');
   const [copied, setCopied] = useState(false);
   const [now] = useState(() => Date.now());
-  const [uberPickup, setUberPickup] = useState('');
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
-
-  useEffect(() => {
-    navigator.geolocation?.getCurrentPosition(
-      pos => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => {},
-    );
-  }, []);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -183,11 +168,6 @@ export default function DashboardPage() {
     { label: 'Trips booked', value: trips ? String(trips.length) : '—', hint: 'Flights and hotels', tint: 'text-violet-600 bg-violet-50', icon: '🗺️' },
     { label: 'Gift card balance', value: rewards ? fmtMoney(rewards.giftCardBalance) : '—', hint: 'Use it at checkout', tint: 'text-pink-600 bg-pink-50', icon: '🎁' },
   ];
-
-  const pickupParam = uberPickup
-    ? `&pickup[formatted_address]=${encodeURIComponent(uberPickup)}`
-    : userLocation ? `&pickup[latitude]=${userLocation.lat}&pickup[longitude]=${userLocation.lng}` : '';
-  const uberHref = `https://m.uber.com/ul/?action=setPickup&client_id=${process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? ''}${pickupParam}`;
 
   const copyReferral = () => {
     if (!rewards) return;
@@ -398,35 +378,19 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {/* Ride */}
-            <div className={`${card} p-5 sm:p-6`}>
-              <div className="flex items-center gap-2 mb-3">
-                <span className="w-7 h-7 rounded-lg bg-slate-900 text-white text-sm font-bold flex items-center justify-center">U</span>
-                <h2 className="text-lg font-semibold text-slate-900">Need a ride?</h2>
+            {/* Courier */}
+            <div className={`${card} p-5 sm:p-6 bg-linear-to-br from-white to-emerald-50/60`}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-8 h-8 rounded-lg bg-emerald-100 text-lg flex items-center justify-center">🛵</span>
+                <h2 className="text-lg font-semibold text-slate-900">Send something today</h2>
               </div>
-              <input
-                type="text"
-                value={uberPickup}
-                onChange={e => setUberPickup(e.target.value)}
-                placeholder={userLocation ? '📍 Using your current location' : 'Pickup address'}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-200 focus:bg-white"
-              />
-              <ul className="mt-3 space-y-2">
-                {UBER_RIDES.map(r => (
-                  <li key={r.name}>
-                    <a href={uberHref} target="_blank" rel="noopener noreferrer"
-                      className="flex items-center gap-3 rounded-xl border border-slate-100 px-3 py-2.5 hover:border-slate-200 hover:bg-slate-50 transition">
-                      <span className="text-xl">{r.emoji}</span>
-                      <span className="flex-1">
-                        <span className="block text-sm font-semibold text-slate-900">{r.name}</span>
-                        <span className="block text-xs text-slate-500">{r.desc}</span>
-                      </span>
-                      <span className="text-sm font-semibold text-emerald-600">from ${r.from}</span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
-              <p className="text-xs text-slate-400 mt-2">Opens Uber · prices are estimates</p>
+              <p className="text-sm text-slate-500 mb-4">A courier picks it up and delivers it across town, usually within the hour.</p>
+              <Link href="/?tab=dash" className="block w-full text-center rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">
+                Book a courier →
+              </Link>
+              <Link href="/?tab=shipping" className="block w-full text-center mt-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                📦 Ship a parcel further
+              </Link>
             </div>
 
             {/* Help */}

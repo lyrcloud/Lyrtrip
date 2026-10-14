@@ -640,7 +640,7 @@ export default function Home() {
     setShowLocationMap(v => !v);
   };
 
-  // Reverse-geocode GPS to get a city label for the Uber header
+  // Reverse-geocode GPS to get a city label for the ride and courier headers
   useEffect(() => {
     if (locationLoading || locationError) return;
     const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -705,7 +705,7 @@ export default function Home() {
     } catch { /* ignore */ }
   }, [user]);
 
-  // Read ?tab= URL param on mount (e.g. after Uber OAuth redirect)
+  // Read ?tab= URL param on mount (links from the dashboard and receipts)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
@@ -1228,22 +1228,11 @@ export default function Home() {
     // Other flights (from Google Flights search) can't be ticketed on Lyrtrip; the modal links out instead
   };
 
-  // Rides are booked and paid in the Uber app until Lyrtrip has Uber's Guest Rides API
-  const uberRideLink = (d: RideDraft) => {
-    const clientId = process.env.NEXT_PUBLIC_UBER_CLIENT_ID ?? '';
-    const q = new URLSearchParams({
-      action: 'setPickup', client_id: clientId,
-      'pickup[latitude]': String(d.pickupLat), 'pickup[longitude]': String(d.pickupLng), 'pickup[formatted_address]': d.pickupLabel,
-      'dropoff[latitude]': String(d.dropoffLat), 'dropoff[longitude]': String(d.dropoffLng), 'dropoff[formatted_address]': d.dropoffLabel,
-    });
-    return `https://m.uber.com/ul/?${q}`;
-  };
-
   const tabs = [
     { id: 'flights', icon: '✈️', label: t('Flights'), sub: t('Fly anywhere') },
     { id: 'hotels', icon: '🏨', label: t('Hotels'), sub: t('Places to stay') },
     { id: 'car', icon: '🚗', label: t('Car'), sub: t('Book a ride') },
-    { id: 'dash', icon: '🍔', label: t('Dash'), sub: t('Food & groceries') },
+    { id: 'dash', icon: '🛵', label: t('Dash'), sub: t('Same-day courier') },
     { id: 'bus', icon: '🚌', label: t('Bus'), sub: t('Intercity routes') },
     { id: 'train', icon: '🚂', label: t('Train'), sub: t('Rail journeys') },
     { id: 'cruise', icon: '🚢', label: t('Cruise'), sub: t('Sail away') },
@@ -2269,10 +2258,6 @@ export default function Home() {
                         </button>
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="w-6 h-6 bg-black rounded-full flex items-center justify-center text-white text-xs font-bold">U</span>
-                      <span className="text-xs text-gray-400">Powered by Uber</span>
-                    </div>
                   </div>
 
                   <h3 className="text-xl font-bold text-gray-900 mb-3">Request a ride</h3>
@@ -2463,66 +2448,10 @@ export default function Home() {
                     <span>📍</span>
                     <span>{uberCity || 'Detecting location…'}</span>
                   </div>
-                  <span className="text-xs text-gray-400">Orders are placed and paid on Uber Eats</span>
                 </div>
 
                 <CourierDelivery user={user} />
 
-                <h3 className="text-xl font-bold text-gray-900 mb-5">What are you craving?</h3>
-
-                {/* Category cards open Uber Eats near the visitor; no Uber sign-in on Lyrtrip */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                  {[
-                    {
-                      name: 'Restaurants',
-                      desc: 'Food from thousands of local restaurants',
-                      emoji: '🍽️',
-                      liveHref: `https://www.ubereats.com/feed?pl=${userLocation.lat},${userLocation.lng}`,
-                    },
-                    {
-                      name: 'Grocery',
-                      desc: 'Fresh groceries & everyday essentials',
-                      emoji: '🛒',
-                      liveHref: `https://www.ubereats.com/category/grocery?pl=${userLocation.lat},${userLocation.lng}`,
-                    },
-                    {
-                      name: 'Pickup',
-                      desc: 'Order ahead and skip the wait',
-                      emoji: '🍱',
-                      liveHref: `https://www.ubereats.com/category/pickup?pl=${userLocation.lat},${userLocation.lng}`,
-                    },
-                  ].map(opt => (
-                    <div
-                      key={opt.name}
-                      onClick={() => window.open(opt.liveHref, '_blank', 'noopener')}
-                      className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-md hover:border-[#06C167] transition flex flex-col cursor-pointer"
-                    >
-                      <span className="text-3xl">{opt.emoji}</span>
-                      <p className="font-bold text-gray-900 mt-3 text-lg">{opt.name}</p>
-                      <p className="text-sm text-gray-500 mt-1 flex-1">{opt.desc}</p>
-                      <div className="mt-4 py-2 rounded-lg bg-[#06C167] text-white text-sm font-semibold text-center">
-                        Open Uber Eats →
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Search box */}
-                <div className="flex items-center gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50">
-                  <span className="text-gray-400">🔍</span>
-                  <input
-                    type="text"
-                    placeholder="Search for food or restaurants…"
-                    className="flex-1 bg-transparent text-sm text-gray-800 outline-none placeholder-gray-400"
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        const q = (e.target as HTMLInputElement).value.trim();
-                        if (!q) return;
-                        window.open(`https://www.ubereats.com/search?q=${encodeURIComponent(q)}&pl=${userLocation.lat},${userLocation.lng}`, '_blank', 'noopener');
-                      }
-                    }}
-                  />
-                </div>
               </div>
             )}
 
@@ -3054,13 +2983,12 @@ export default function Home() {
           );
         })()}
 
-        {/* Uber ride booking modal */}
+        {/* Ride modal: estimates only until ride booking opens */}
         {rideDraft && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
               <div className="flex items-center gap-2 mb-4">
-                <span className="w-7 h-7 bg-black rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0">U</span>
-                <h2 className="text-xl font-bold text-gray-900">Book Uber Ride</h2>
+                <h2 className="text-xl font-bold text-gray-900">Book a ride</h2>
                 <span className="ml-auto text-2xl">{rideDraft.ride.emoji}</span>
               </div>
 
@@ -3078,10 +3006,10 @@ export default function Home() {
 
               <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm space-y-1">
                 <div className="flex justify-between text-gray-600">
-                  <span>{t('Uber fare (est.)')}</span>
+                  <span>{t('Fare (est.)')}</span>
                   <span>{money(rideDraft.ride.lowEstimate, rideDraft.ride.currencyCode || 'USD')}–{money(rideDraft.ride.highEstimate, rideDraft.ride.currencyCode || 'USD')}</span>
                 </div>
-                <p className="text-xs text-gray-500">An estimate. You confirm the ride and pay Uber directly in the Uber app; Lyrtrip doesn&apos;t charge you.</p>
+                <p className="text-xs text-gray-500">An estimate. Booking rides on Lyrtrip opens soon; you won&apos;t be charged.</p>
               </div>
 
               <div className="flex gap-3">
@@ -3089,10 +3017,10 @@ export default function Home() {
                   className="flex-1 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition">
                   Cancel
                 </button>
-                <a href={uberRideLink(rideDraft)} target="_blank" rel="noopener noreferrer"
-                  className="flex-1 py-2 text-center bg-black text-white rounded-lg font-semibold hover:bg-gray-800 transition">
-                  Open in Uber →
-                </a>
+                <button disabled
+                  className="flex-1 py-2 text-center bg-gray-200 text-gray-500 rounded-lg font-semibold cursor-not-allowed">
+                  Booking opens soon
+                </button>
               </div>
             </div>
           </div>

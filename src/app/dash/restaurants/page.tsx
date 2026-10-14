@@ -1,5 +1,9 @@
-import UberEatsRedirect from '@/components/UberEatsRedirect';
+'use client';
 
+import { useEffect } from 'react';
+
+// Old link: the Dash tab is now same-day courier delivery
 export default function DashRestaurantsPage() {
-  return <UberEatsRedirect title="Restaurants" emoji="🍽️" path="feed" />;
+  useEffect(() => { window.location.replace('/?tab=dash'); }, []);
+  return null;
 }

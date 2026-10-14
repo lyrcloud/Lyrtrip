@@ -129,13 +129,12 @@ interface DeliveryReceipt {
   amountPaid: number;
   credits?: BookingCredits | null;
   currency: string;
-  trackingUrl: string | null;
   courier: { name: string | null; phone: string | null; vehicle: string | null; rating: number | null; photo: string | null } | null;
   dropoffEta: string | null;
   message: string | null;
 }
 
-const UBER_STEP: Record<string, string> = {
+const COURIER_STEP: Record<string, string> = {
   pending: 'Finding a courier', pickup: 'Courier heading to pickup', pickup_complete: 'Picked up',
   dropoff: 'On the way to drop-off', delivered: 'Delivered', canceled: 'Canceled', returned: 'Returned to sender',
 };
@@ -162,10 +161,6 @@ function fmtDateTime(dt: string): string {
 }
 
 export default function BookingSuccessPage() {
-  const [uberInfo, setUberInfo] = useState<{
-    rideName: string; pickup: string; dropoff: string; deepLink: string;
-  } | null>(null);
-
   const [flightConfirm, setFlightConfirm]   = useState<FlightConfirmation | null>(null);
   const [flightLoading, setFlightLoading]   = useState(false);
   const [flightError, setFlightError]       = useState<string | null>(null);
@@ -179,25 +174,6 @@ export default function BookingSuccessPage() {
     const sessionId = params.get('session_id');
     const type      = params.get('type');
     const baseUrl   = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-
-    if (type === 'uber') {
-      const plat = params.get('plat');
-      const plng = params.get('plng');
-      const dlat = params.get('dlat');
-      const dlng = params.get('dlng');
-      const clientId = 'xuJjFMaEj4AfL-2TP-ql-6bKkA8sMPAB';
-      const deepLink =
-        `https://m.uber.com/ul/?action=setPickup&client_id=${clientId}` +
-        `&pickup[latitude]=${plat}&pickup[longitude]=${plng}` +
-        `&dropoff[latitude]=${dlat}&dropoff[longitude]=${dlng}`;
-      setUberInfo({
-        rideName: params.get('rid') ?? 'Uber Ride',
-        pickup:   params.get('pickup') ?? '',
-        dropoff:  params.get('dropoff') ?? '',
-        deepLink,
-      });
-      return;
-    }
 
     // Duffel flight confirm
     if (type === 'flight' && sessionId) {
@@ -251,7 +227,7 @@ export default function BookingSuccessPage() {
       return;
     }
 
-    // Uber courier delivery: book after payment, then keep the status fresh while it's on the way
+    // Courier delivery: book after payment, then keep the status fresh while it's on the way
     if (type === 'delivery' && sessionId) {
       setFlightLoading(true);
       const load = async (attempt: number): Promise<void> => {
@@ -312,30 +288,6 @@ export default function BookingSuccessPage() {
     if (pending) updateBookingStatus(pending.id, 'paid');
   }, []);
 
-  // ── Uber ──────────────────────────────────────────────────────────────────
-  if (uberInfo) {
-    return (
-      <div className="flex-1 bg-gray-50 flex items-center justify-center px-4">
-        <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
-          <div className="w-16 h-16 bg-black rounded-full flex items-center justify-center mx-auto mb-4 text-white text-3xl font-bold">U</div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">Ride Booked!</h1>
-          <p className="text-gray-600 mb-2">Payment confirmed for <span className="font-semibold">{uberInfo.rideName}</span>.</p>
-          {uberInfo.pickup && (
-            <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-700 text-left mb-6 space-y-1">
-              <p>📍 <span className="font-medium">From:</span> {uberInfo.pickup}</p>
-              <p>🏁 <span className="font-medium">To:</span> {uberInfo.dropoff}</p>
-            </div>
-          )}
-          <div className="flex flex-col gap-3">
-            <a href={uberInfo.deepLink} className="w-full py-3 bg-black text-white font-semibold rounded-xl hover:bg-gray-800 transition text-center">Open Uber App →</a>
-            <Link href="/" className="w-full py-3 border border-gray-300 text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to Search</Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Flight — loading ───────────────────────────────────────────────────────
   if (flightLoading) {
     return (
       <div className="flex-1 bg-gray-50 flex items-center justify-center px-4">
@@ -382,19 +334,14 @@ export default function BookingSuccessPage() {
         <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden">
           <div className="px-8 py-6 border-b border-gray-200 flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-widest text-gray-500">Uber courier delivery</p>
+              <p className="text-xs uppercase tracking-widest text-gray-500">Lyrtrip courier</p>
               <h1 className="text-2xl font-bold text-gray-900">🛵 {d.item.description}</h1>
               {d.dropoffEta && live && <p className="text-sm text-gray-600">Arriving around {new Date(d.dropoffEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>}
             </div>
-            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badge}`}>{UBER_STEP[d.uberStatus ?? ''] ?? d.status.replace('_', ' ')}</span>
+            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badge}`}>{COURIER_STEP[d.uberStatus ?? ''] ?? d.status.replace('_', ' ')}</span>
           </div>
           {d.message && <p className="px-8 pt-5 text-sm text-gray-700">{d.message}</p>}
-          {d.trackingUrl && (
-            <div className="px-8 pt-5">
-              <a href={d.trackingUrl} target="_blank" rel="noopener noreferrer" className="inline-block px-5 py-2.5 rounded-xl bg-[#06C167] text-white font-semibold hover:opacity-90">Track live on Uber →</a>
-              {live && <p className="text-xs text-gray-400 mt-2">This page refreshes every 30 seconds.</p>}
-            </div>
-          )}
+          {live && <p className="px-8 pt-5 text-xs text-gray-400">Live status: this page refreshes every 30 seconds.</p>}
           {d.courier?.name && (
             <div className="mx-8 mt-5 flex items-center gap-3 rounded-xl border border-gray-200 p-3">
               {d.courier.photo

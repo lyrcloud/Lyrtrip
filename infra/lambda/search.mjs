@@ -2570,11 +2570,11 @@ const UBER_CLIENT_ID_DEFAULT = 'xuJjFMaEj4AfL-2TP-ql-6bKkA8sMPAB';
 
 // Typical US average rates per ride tier (base + per-mile + per-min)
 const RIDE_TIERS = [
-  { name: 'UberX',        emoji: '🚗', seats: '1–4', base: 2.50, mile: 1.25, min: 0.25, minFare:  6, spread: 0.18 },
-  { name: 'Uber Comfort', emoji: '🛋️', seats: '1–4', base: 3.50, mile: 1.75, min: 0.35, minFare:  9, spread: 0.18 },
-  { name: 'UberXL',       emoji: '🚐', seats: '1–6', base: 4.50, mile: 2.00, min: 0.40, minFare: 12, spread: 0.18 },
-  { name: 'Uber Black',   emoji: '🖤', seats: '1–4', base: 8.00, mile: 3.50, min: 0.65, minFare: 20, spread: 0.18 },
-  { name: 'UberSUV',      emoji: '🚙', seats: '1–6', base: 10.0, mile: 4.50, min: 0.80, minFare: 25, spread: 0.18 },
+  { name: 'Standard',     emoji: '🚗', seats: '1–4', base: 2.50, mile: 1.25, min: 0.25, minFare:  6, spread: 0.18 },
+  { name: 'Comfort',      emoji: '🛋️', seats: '1–4', base: 3.50, mile: 1.75, min: 0.35, minFare:  9, spread: 0.18 },
+  { name: 'XL',           emoji: '🚐', seats: '1–6', base: 4.50, mile: 2.00, min: 0.40, minFare: 12, spread: 0.18 },
+  { name: 'Premium',      emoji: '🖤', seats: '1–4', base: 8.00, mile: 3.50, min: 0.65, minFare: 20, spread: 0.18 },
+  { name: 'Premium SUV',  emoji: '🚙', seats: '1–6', base: 10.0, mile: 4.50, min: 0.80, minFare: 25, spread: 0.18 },
 ];
 
 async function handleUberEstimates(event) {
@@ -2623,7 +2623,7 @@ async function handleUberEstimates(event) {
 // Retired: it charged an estimated fare while the rider also paid Uber in the app. Rides are booked in the Uber app
 // until Lyrtrip has Uber's Guest Rides API.
 function handleUberCheckout() {
-  return json(410, { error: 'Uber rides are booked and paid in the Uber app. Lyrtrip no longer charges for rides.' });
+  return json(410, { error: 'Ride booking on Lyrtrip opens soon. You have not been charged.' });
 }
 
 // Main handler
@@ -2806,11 +2806,14 @@ const SUPPORT_EMAIL = 'support@lyrtrip.com';
 const LYRBOT_SYSTEM_PROMPT = `You are Lyrbot, the help assistant on Lyrtrip (lyrtrip.com), a travel booking site. You chat with travellers in a small window on the site.
 
 What you know about Lyrtrip:
-- Search: the home page searches flights, hotels, car rides, Dash (food and groceries), bus, train, cruise, tourism (tour packages, visas, passports, insurance and destination ideas), events, study abroad and careers.
+- Search: the home page searches flights, hotels, car rides, Dash (same-day courier delivery), shipping, bus, train, cruise, tourism (tour packages, visas, passports, insurance and destination ideas), events, study abroad and careers.
 - Accounts: sign in or create an account at lyrtrip.com/login with email, Google, Facebook or WeChat. New email accounts confirm a 6-digit code sent by email; "Forgot password?" on the sign-in form emails a reset code. The dashboard (lyrtrip.com/dashboard) shows the traveller's tours and bookings.
 - Flights: booked and ticketed directly on Lyrtrip, paid securely by card through Stripe. After payment the e-ticket and booking reference arrive by email and on the receipt page. Baggage allowance and change or refund rules depend on the fare and are set by the airline.
 - Hotels: the guest pays the hotel's total plus a 12% Lyrtrip service fee, and Lyrtrip books the room directly with the property, then emails the hotel's confirmation number. If the hotel can't confirm, the guest is refunded in full (allow 5-10 business days for the card refund). Check-in times, deposits and cancellation rules are set by the hotel.
-- Rides: car rides are booked through Uber from the Car search and the dashboard.
+- Rides: the Car tab shows fare estimates; booking rides on Lyrtrip opens soon.
+- Courier: the Dash tab books a same-day courier that picks up an item and delivers it across town, usually within the hour, paid on Lyrtrip with live status on the receipt page.
+- Shipping: the Shipping tab compares courier rates (USPS, FedEx, UPS, DHL and more) for parcels worldwide and sells a printable label.
+- Never mention which company provides Lyrtrip's courier deliveries.
 - Payment: card payments are processed by Stripe; Lyrtrip never sees card numbers.
 - Human support: WhatsApp ${WHATSAPP_NUMBER} (${WHATSAPP_URL}) or email ${SUPPORT_EMAIL}.
 
@@ -3214,7 +3217,7 @@ async function handleAdmin(event) {
       case 'deliveries.list': {
         const rows = await db.collection('deliveries').find({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] } }).sort({ createdAt: -1 }).limit(200).toArray();
         return json(200, {
-          deliveries: rows.map(b => ({ ...deliveryReceipt(b), email: b.email, baseFee: b.baseFeeCents / 100, uberDeliveryId: b.uberDeliveryId ?? null, error: b.bookingError ?? null, createdAt: b.createdAt })),
+          deliveries: rows.map(b => ({ ...deliveryReceipt(b), trackingUrl: b.trackingUrl ?? null, email: b.email, baseFee: b.baseFeeCents / 100, uberDeliveryId: b.uberDeliveryId ?? null, error: b.bookingError ?? null, createdAt: b.createdAt })),
         });
       }
 
@@ -3391,7 +3394,7 @@ async function handleRewards(event) {
             })),
             ...couriers.map(b => ({
               id: String(b._id), kind: 'delivery', status: b.status, title: `${b.item.description} → ${b.dropoff.label.split(',')[0]}`,
-              subtitle: `Uber courier · from ${b.pickup.label.split(',')[0]}`,
+              subtitle: `Courier · from ${b.pickup.label.split(',')[0]}`,
               start: (b.confirmedAt ?? b.createdAt).slice(0, 10), end: null,
               total: b.totalPrice, paid: b.credits?.amountDue ?? b.totalPrice, currency: b.currency,
               receiptUrl: b.stripeSessionId ? `/booking/success?session_id=${b.stripeSessionId}&type=delivery` : null,
@@ -3959,7 +3962,7 @@ async function uberDeliveryQuote(pickup, dropoff, item) {
 
 const uberDeliveryError = err =>
   err.status === 400 || err.status === 422 || err.code === 'address_undeliverable' || err.code === 'invalid_params'
-    ? `Uber can't deliver between these addresses: ${err.message}`
+    ? `We can't deliver between these addresses: ${err.message.replace(/uber/gi, 'courier')}`
     : err.message;
 
 async function handleDeliveryQuote(event) {
@@ -3993,7 +3996,6 @@ function deliveryReceipt(b) {
     amountPaid:   b.credits?.amountDue ?? b.totalPrice,
     credits:      publicCredits(b.credits),
     currency:     b.currency,
-    trackingUrl:  b.trackingUrl ?? null,
     courier:      b.courier ?? null,
     dropoffEta:   b.dropoffEta ?? null,
     message:      b.customerMessage ?? null,
@@ -4023,7 +4025,7 @@ async function handleDeliveryCheckout(event) {
   const retailTotal = withMarkup(q.fee / 100, DELIVERY_MARKUP);
   const agreed = Number(body.quotedTotal);
   if (!(agreed > 0) || retailTotal > agreed + 0.5) {
-    return json(409, { priceChanged: true, totalPrice: retailTotal, error: `Uber's price is now ${currency} ${retailTotal.toFixed(2)}. Please review and continue.` });
+    return json(409, { priceChanged: true, totalPrice: retailTotal, error: `The price is now ${currency} ${retailTotal.toFixed(2)}. Please review and continue.` });
   }
 
   const db = await getDb();
@@ -4057,7 +4059,7 @@ async function handleDeliveryCheckout(event) {
       mode: 'payment',
       payment_method_types: ['card'],
       line_items: [{ price_data: { currency: currency.toLowerCase(), unit_amount: rw.cents(credits.amountDue), product_data: {
-        name: `Uber courier delivery: ${item.description}`,
+        name: `Lyrtrip courier: ${item.description}`,
         description: `${pickup.label} → ${dropoff.label} · incl. Lyrtrip service fee${creditsNote(credits)}`.slice(0, 500),
       } }, quantity: 1 }],
       metadata: { type: 'delivery', deliveryId: orderId },
@@ -4146,8 +4148,8 @@ async function handleDeliveryConfirm(event) {
       console.error('Stripe refund failed:', err.message);
     }
     const customerMessage = refunded
-      ? `We couldn't book an Uber courier for this delivery, so your payment has been refunded in full. Order ID: ${id}`
-      : `We couldn't book an Uber courier. Please contact support@lyrtrip.com with order ID ${id} for a refund.`;
+      ? `We couldn't book a courier for this delivery, so your payment has been refunded in full. Order ID: ${id}`
+      : `We couldn't book a courier. Please contact support@lyrtrip.com with order ID ${id} for a refund.`;
     await coll.updateOne({ _id }, { $set: { status: refunded ? 'refunded' : 'booking_failed', bookingError: String(reason), customerMessage, updatedAt: new Date().toISOString() } });
     await rw.releaseCredits(db, coll, _id, `delivery ${id.slice(-8)} wasn't booked`);
     return json(500, { error: customerMessage });
@@ -4158,7 +4160,7 @@ async function handleDeliveryConfirm(event) {
   try {
     quote = await uberDeliveryQuote(order.pickup, order.dropoff, order.item);
   } catch (err) {
-    if (err.status >= 500 || !err.status) return json(503, { pending: true, message: 'Uber is busy; retrying' });
+    if (err.status >= 500 || !err.status) return json(503, { pending: true, message: 'Booking your courier' });
     return fail(`re-quote failed: ${err.message}`);
   }
   if (quote.fee > order.baseFeeCents * 1.02 + 50) return fail(`Uber's fee rose from ${order.baseFeeCents} to ${quote.fee} cents`);
@@ -4195,12 +4197,12 @@ async function handleDeliveryConfirm(event) {
   const done = { ...order, ...set };
   await sendEmail({
     to: order.email,
-    subject: `Your Uber courier is booked: ${order.item.description}`,
+    subject: `Your Lyrtrip courier is booked: ${order.item.description}`,
     html: hotelEmailHtml('Your courier is on the way', [
       ['Item', order.item.description], ['Pickup', `${order.pickup.name}, ${order.pickup.label}`], ['Drop-off', `${order.dropoff.name}, ${order.dropoff.label}`],
       ['Total paid', paidLabel(done)],
-    ], set.trackingUrl ? { url: set.trackingUrl, label: 'Track the courier' } : null),
-    text: `Your Uber courier is booked for ${order.item.description}. Track: ${set.trackingUrl ?? ''}`,
+    ], { url: `${SITE_URL}/booking/success?session_id=${session.id}&type=delivery`, label: 'Track your delivery' }),
+    text: `Your Lyrtrip courier is booked for ${order.item.description}. Track it: ${SITE_URL}/booking/success?session_id=${session.id}&type=delivery`,
   });
   return json(200, deliveryReceipt(done));
 }
