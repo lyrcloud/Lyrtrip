@@ -3421,6 +3421,38 @@ async function handleRewards(event) {
         return json(200, await rw.rewardsSummary(db, signedIn(), SITE_URL));
       }
 
+      // The dashboard's trips: flights and hotels booked while signed in, or for this account's email.
+      case 'trips': {
+        const me = signedIn();
+        const mine = field => ({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] }, $or: [{ userSub: me._id }, ...(me.email ? [{ [field]: me.email }] : [])] });
+        const [flights, hotels] = await Promise.all([
+          db.collection('flight_bookings').find(mine('passengers.0.email')).sort({ createdAt: -1 }).limit(50).toArray(),
+          db.collection('hotel_bookings').find(mine('guest.email')).sort({ createdAt: -1 }).limit(50).toArray(),
+        ]);
+        const legs = b => b.itinerary ?? [];
+        return json(200, {
+          trips: [
+            ...flights.map(b => ({
+              id: String(b._id), kind: 'flight', status: b.status,
+              title: `${b.flightSummary?.from ?? legs(b)[0]?.from ?? '?'} → ${b.flightSummary?.to ?? legs(b).at(-1)?.to ?? '?'}`,
+              subtitle: [legs(b)[0]?.carrier, b.pnr && `PNR ${b.pnr}`, `${b.numPassengers ?? b.passengers?.length ?? 1} passenger${(b.numPassengers ?? 1) !== 1 ? 's' : ''}`].filter(Boolean).join(' · '),
+              start: legs(b)[0]?.departureDate ?? b.flightSummary?.depart ?? null, end: null,
+              total: b.markedUpPrice, paid: b.credits?.amountDue ?? b.markedUpPrice, currency: b.currency ?? 'USD',
+              receiptUrl: b.stripeSessionId ? `/booking/success?session_id=${b.stripeSessionId}&type=flight` : null,
+              testBooking: !!b.testBooking, createdAt: b.createdAt,
+            })),
+            ...hotels.map(b => ({
+              id: String(b._id), kind: 'hotel', status: b.status, title: b.hotel?.name ?? 'Hotel',
+              subtitle: [`${b.nights} night${b.nights !== 1 ? 's' : ''}`, `${b.adults} guest${b.adults !== 1 ? 's' : ''}`, b.hotelConfirmation && `Confirmation ${b.hotelConfirmation}`].filter(Boolean).join(' · '),
+              start: b.checkin, end: b.checkout,
+              total: b.totalPrice, paid: b.credits?.amountDue ?? b.totalPrice, currency: b.currency ?? 'USD',
+              receiptUrl: b.stripeSessionId ? `/booking/success?session_id=${b.stripeSessionId}&type=hotel` : null,
+              testBooking: false, createdAt: b.createdAt,
+            })),
+          ],
+        });
+      }
+
       // The cancel page: end the Stripe session now and give back what the booking held.
       case 'release': {
         const type = body.type === 'hotel' ? 'hotel' : 'flight';
