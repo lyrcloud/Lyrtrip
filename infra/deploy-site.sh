@@ -62,15 +62,20 @@ aws lambda update-function-configuration --function-name $FUNCTION $R --timeout 
 rm -f "$ENV_FILE"
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
-echo "4/5 API routes"
+echo "4/5 API routes and CORS"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}"; do
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
     echo "exists: $ROUTE"
   else
     aws apigatewayv2 create-route --api-id $API_ID $R --route-key "$ROUTE" --target "$INTEGRATION" --query RouteKey --output text
   fi
 done
+# Tours send the Cognito access token, so preflight must allow GET and the authorization header.
+# localhost:3000 lets a local build of the site talk to this API.
+aws apigatewayv2 update-api --api-id $API_ID $R --cors-configuration \
+  '{"AllowOrigins":["https://www.lyrtrip.com","https://lyrtrip.com","http://localhost:3000"],"AllowMethods":["GET","POST","OPTIONS"],"AllowHeaders":["authorization","content-type"],"MaxAge":86400}' \
+  --query CorsConfiguration.AllowMethods --output text
 ROUTE_ID=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/travelport/{proxy+}'].RouteId" --output text)
 if [[ -n "$ROUTE_ID" && "$ROUTE_ID" != None ]]; then
   aws apigatewayv2 delete-route --api-id $API_ID $R --route-id "$ROUTE_ID" && echo "removed: POST /api/travelport/{proxy+}"

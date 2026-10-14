@@ -22,8 +22,10 @@ export interface HotelSearchParams {
 }
 
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  // The site is a static export, so /api/* lives on the Lambda API, not this origin.
+  const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
   const token = getAccessToken();
-  const response = await fetch(path, {
+  const response = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
       'content-type': 'application/json',
@@ -32,7 +34,9 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
 
-  const body = await response.json();
+  const body = await response.json().catch(() => {
+    throw new Error(`API request failed (${response.status})`);
+  });
 
   if (!response.ok) {
     throw new Error(body.error || 'API request failed');
@@ -59,3 +63,4 @@ export async function searchHotels(params: HotelSearchParams): Promise<HotelResu
   });
   return res.results;
 }
+
