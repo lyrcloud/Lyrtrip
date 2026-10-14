@@ -1990,7 +1990,7 @@ function eventWindow(when, now = new Date()) {
     case 'weekend':    return dow === 0 ? [today, today] : [add(today, Math.max(0, 6 - dow)), add(today, 7 - dow)];
     case 'week':       return [today, add(today, dow === 0 ? 0 : 7 - dow)];
     case 'next_week':  { const mon = add(today, dow === 0 ? 1 : 8 - dow); return [mon, add(mon, 6)]; }
-    case 'month':      return [today, new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0))];
+    case 'month':      return [today, add(today, 30)]; // "Next 30 days"
     case 'next_month': return [new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1)), new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 2, 0))];
     default:           return null;
   }

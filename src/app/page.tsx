@@ -2625,7 +2625,7 @@ export default function Home() {
                       <option value="weekend">This weekend</option>
                       <option value="week">This week</option>
                       <option value="next_week">Next week</option>
-                      <option value="month">This month</option>
+                      <option value="month">Next 30 days</option>
                       <option value="next_month">Next month</option>
                     </select>
                   </div>
