@@ -20,6 +20,7 @@ import JobApplyDialog, { type ApplyJob } from '@/components/JobApplyDialog';
 import StudyApplyDialog, { type ApplyStudy } from '@/components/StudyApplyDialog';
 import EventTicketDialog, { type TicketEvent } from '@/components/EventTicketDialog';
 import TourRequestDialog, { type TourItem } from '@/components/TourRequestDialog';
+import CharityPanel, { CHARITY_EVENT_TYPES } from '@/components/CharityPanel';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -417,6 +418,13 @@ const ICON_MOTION: Record<string, IconMotion> = {
     { transform: 'rotate(10deg) scale(1.1)', offset: 0.6 },
     { transform: 'rotate(0) scale(1)' },
   ] },
+  charity: { duration: 1000, easing: 'ease-out', puff: '💚', frames: [
+    { transform: 'scale(1)' },
+    { transform: 'scale(1.25)', offset: 0.3 },
+    { transform: 'scale(0.95)', offset: 0.55 },
+    { transform: 'scale(1.1)', offset: 0.75 },
+    { transform: 'scale(1)' },
+  ] },
   career: { duration: 800, easing: 'ease-in-out', frames: [
     { transform: 'rotate(0) scale(1)' },
     { transform: 'rotate(-12deg) scale(1.15)', offset: 0.2 },
@@ -452,9 +460,10 @@ const EVENT_CATEGORIES: { group: string; items: [string, string][] }[] = [
     ['concerts', 'Concerts'], ['festivals', 'Festivals'], ['comedy shows', 'Comedy'], ['theatre', 'Theatre'], ['nightlife', 'Nightlife'],
     ['food and drink events', 'Food & drink'], ['exhibitions', 'Exhibitions & art'], ['film screenings festivals', 'Film'],
   ] },
+  { group: 'Charity & giving', items: CHARITY_EVENT_TYPES },
   { group: 'Local & community', items: [
     ['local community events', 'Community events'], ['cultural festivals', 'Cultural festivals'], ['religious spiritual events', 'Religious & spiritual'],
-    ['workshops classes', 'Workshops & classes'], ['networking events', 'Networking'], ['family events', 'Family & kids'], ['charity fundraising events', 'Charity'],
+    ['workshops classes', 'Workshops & classes'], ['networking events', 'Networking'], ['family events', 'Family & kids'],
   ] },
 ];
 const EVENT_QUICK: [string, string][] = [
@@ -1328,6 +1337,7 @@ export default function Home() {
     { id: 'study', icon: '🎓', label: t('Study'), sub: t('Study abroad') },
     { id: 'career', icon: '💼', label: t('Job'), sub: t('Find work') },
     { id: 'events', icon: '🎟️', label: t('Events'), sub: t('Concerts & shows') },
+    { id: 'charity', icon: '🤲', label: t('Charity'), sub: t('Donate & give') },
     { id: 'shipping', icon: '📦', label: t('Shipping'), sub: t('Send parcels') },
   ];
   const tabById = Object.fromEntries(tabs.map(tab => [tab.id, tab]));
@@ -2807,6 +2817,14 @@ export default function Home() {
                 <EventList />
                 {applyEvent && <EventTicketDialog item={applyEvent} onClose={() => setApplyEvent(null)} />}
               </div>
+            )}
+
+            {/* Charity: donations to established charities, and charity events */}
+            {activeTab === 'charity' && (
+              <CharityPanel onFindEvents={category => {
+                switchTab('events');
+                setEventForm(f => ({ ...f, category, location: f.location.trim() || uberCity }));
+              }} />
             )}
 
             {/* Jobs (Career) */}

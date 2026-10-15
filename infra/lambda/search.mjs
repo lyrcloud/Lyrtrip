@@ -3185,6 +3185,7 @@ async function handleAdmin(event) {
     if (String(body.action ?? '').startsWith('studyapps.')) return (await studyAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('eventtix.')) return (await eventTicketsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('tourreqs.')) return (await tourRequestsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
+    if (String(body.action ?? '').startsWith('donations.')) return (await donationsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     switch (body.action) {
       case 'me':
         return json(200, { email: actor.email, role: actor.role });
@@ -6731,6 +6732,231 @@ async function tourRequestsAdmin(db, body) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Donations (Charity tab): visitors give to established charities through Lyrtrip. The donor pays the
+// gift plus Lyrtrip's 5% service charge, so the charity receives the full gift. Lyrtrip is not the
+// charity: an admin passes collected gifts on to each charity and records the reference, and the donor
+// is emailed when theirs has been passed on. No charity links or contacts are shown to donors.
+// ---------------------------------------------------------------------------
+
+const DONATION_SERVICE_RATE = 0.05;
+const DONATION_MIN = 1;
+const DONATION_MAX = 50_000;
+
+const DONATION_CAUSES = {
+  children:  { label: 'Children', icon: '🧒' },
+  orphans:   { label: 'Orphans', icon: '🤲' },
+  girls:     { label: "Girls' education and empowerment", icon: '👧' },
+  gaza:      { label: 'Gaza children (emergency)', icon: '🕊️' },
+  zakat:     { label: 'Zakat', icon: '🌙' },
+  sadaqah:   { label: 'Sadaqah', icon: '💚' },
+  hunger:    { label: 'Hunger and meals', icon: '🍲' },
+  education: { label: 'Education', icon: '📚' },
+};
+
+// Established charities only. `zakat`: the charity runs a zakat-compliant fund.
+const CHARITIES = {
+  unicef:        { name: 'UNICEF', causes: ['children', 'gaza', 'education'], regions: 'Worldwide', about: "The UN children's agency: emergency relief, health, nutrition, water and schooling for children in over 190 countries and territories, including Gaza." },
+  savechildren:  { name: 'Save the Children', causes: ['children', 'gaza', 'education', 'hunger'], regions: 'Worldwide', about: 'Health, food, education and protection for children, and emergency response in conflicts and disasters, including Gaza.' },
+  sos:           { name: "SOS Children's Villages", causes: ['orphans', 'children'], regions: 'Over 130 countries', about: 'Family-based care for children who have lost parental care, and support that keeps families together.' },
+  cry:           { name: 'CRY – Child Rights and You', causes: ['children', 'education', 'girls'], regions: 'India', about: "Works for children's rights in India: education, health and protection from child labour and child marriage." },
+  akshayapatra:  { name: 'The Akshaya Patra Foundation', causes: ['hunger', 'children', 'education'], regions: 'India', about: 'Runs school mid-day meal kitchens in India so children are fed and stay in school.' },
+  stjude:        { name: "St. Jude Children's Research Hospital", causes: ['children'], regions: 'United States', about: 'Treats and researches childhood cancer and other life-threatening diseases; families never receive a bill for treatment.' },
+  girlsinc:      { name: 'Girls Inc.', causes: ['girls', 'education'], regions: 'United States and Canada', about: 'Mentoring and programmes that help girls become strong, smart and bold: STEM, financial literacy and leadership.' },
+  malala:        { name: 'Malala Fund', causes: ['girls', 'education'], regions: 'Worldwide', about: "Works for every girl's right to 12 years of free, safe, quality education." },
+  plan:          { name: 'Plan International', causes: ['girls', 'children'], regions: 'Over 80 countries', about: "Children's rights and equality for girls: education, ending child marriage, and crisis response." },
+  roomtoread:    { name: 'Room to Read', causes: ['education', 'girls'], regions: 'Asia and Africa', about: "Literacy for children and girls' education through secondary school." },
+  nanhikali:     { name: 'Project Nanhi Kali', causes: ['girls', 'education'], regions: 'India', about: 'Supports underprivileged girls in India to complete their schooling.' },
+  pcrf:          { name: "Palestine Children's Relief Fund (PCRF)", causes: ['gaza', 'children'], regions: 'Gaza, West Bank, Lebanon', about: 'Medical care, surgery and humanitarian relief for injured and sick children in Palestine and the region.' },
+  msf:           { name: 'Médecins Sans Frontières (MSF)', causes: ['gaza', 'children'], regions: 'Worldwide', about: 'Independent emergency medical care in conflicts, epidemics and disasters, including Gaza.' },
+  unrwa:         { name: 'UNRWA', causes: ['gaza', 'children', 'education'], regions: 'Gaza, West Bank, Jordan, Lebanon, Syria', about: 'The UN agency for Palestine refugees: food, shelter, health care and schools, including emergency aid in Gaza.' },
+  anera:         { name: 'Anera', causes: ['gaza', 'hunger'], regions: 'Palestine, Lebanon, Jordan', about: 'Food, medicine and long-term development for refugees and families in the Middle East.' },
+  islamicrelief: { name: 'Islamic Relief', causes: ['zakat', 'sadaqah', 'orphans', 'gaza', 'hunger'], regions: 'Over 40 countries', zakat: true, about: 'Humanitarian and development charity: emergency relief including Gaza, orphan sponsorship, and a zakat fund distributed under Islamic guidelines.' },
+  zakatfoundation: { name: 'Zakat Foundation of America', causes: ['zakat', 'sadaqah', 'orphans', 'gaza'], regions: 'Worldwide', zakat: true, about: 'Collects and distributes zakat and sadaqah for emergency relief, orphan care and development.' },
+  nzf:           { name: 'National Zakat Foundation', causes: ['zakat'], regions: 'United Kingdom', zakat: true, about: 'Collects zakat and distributes it to eligible Muslims in need in the UK.' },
+  pennyappeal:   { name: 'Penny Appeal', causes: ['zakat', 'sadaqah', 'orphans', 'hunger'], regions: 'Over 30 countries', zakat: true, about: 'Orphan care (OrphanKind), water, food and emergency appeals; accepts zakat and sadaqah.' },
+  muslimhands:   { name: 'Muslim Hands', causes: ['zakat', 'sadaqah', 'orphans', 'education'], regions: 'Over 20 countries', zakat: true, about: 'Orphan sponsorship, schools, water and emergency relief; distributes zakat to eligible recipients.' },
+  humanappeal:   { name: 'Human Appeal', causes: ['zakat', 'sadaqah', 'orphans', 'gaza'], regions: 'Over 20 countries', zakat: true, about: 'Emergency aid including Gaza, orphan sponsorship, and zakat distribution.' },
+  wfp:           { name: 'World Food Programme', causes: ['hunger', 'gaza', 'children'], regions: 'Worldwide', about: 'The UN food-assistance agency: emergency food and school meals, including in Gaza.' },
+};
+const GIFT_TYPES = ['General donation', 'Zakat', 'Sadaqah', 'Lillah', 'Fidya / Kaffarah'];
+
+const donationTotals = amount => {
+  const service = Math.round(amount * DONATION_SERVICE_RATE * 100) / 100;
+  return { amount, service, total: Math.round((amount + service) * 100) / 100 };
+};
+const charityView = ([id, c]) => ({ id, name: c.name, causes: c.causes, regions: c.regions, about: c.about, zakat: !!c.zakat });
+
+// What the donor sees
+const donorView = d => ({
+  id: d._id, charity: CHARITIES[d.charityId]?.name ?? d.charityId, cause: DONATION_CAUSES[d.cause]?.label ?? d.cause, giftType: d.giftType,
+  ...donationTotals(d.amount), status: d.status, dedication: d.dedication ?? '', createdAt: d.createdAt, paidAt: d.paidAt ?? null,
+  forwardedAt: d.forward?.at ?? null,
+});
+
+const donationRows = d => [
+  ['Charity', CHARITIES[d.charityId]?.name ?? d.charityId], ['Cause', DONATION_CAUSES[d.cause]?.label ?? d.cause], ['Type', d.giftType],
+  ['Donation', `USD ${d.amount.toFixed(2)}`], [`Lyrtrip service (${DONATION_SERVICE_RATE * 100}%)`, `USD ${donationTotals(d.amount).service.toFixed(2)}`],
+  ...(d.dedication ? [['Dedication', d.dedication]] : []),
+];
+
+// The donor came back from Stripe, or the admin list found a finished payment: mark it paid and send the receipt
+async function settleDonation(db, d) {
+  if (d.status !== 'pending' || !d.sessionId) return d;
+  const session = await mainStripe()?.checkout.sessions.retrieve(d.sessionId).catch(() => null);
+  if (session?.payment_status !== 'paid' || session.metadata?.donationId !== d._id) return d;
+  const now = new Date().toISOString();
+  const set = { status: 'paid', paidAt: now, paymentIntent: session.payment_intent ?? null, charged: (session.amount_total ?? 0) / 100 };
+  const u = await db.collection('donations').updateOne({ _id: d._id, status: 'pending' }, { $set: set });
+  if (u.modifiedCount) {
+    const charity = CHARITIES[d.charityId]?.name ?? d.charityId;
+    await Promise.all([
+      sendEmail({
+        to: d.donor.email, subject: `Thank you for your donation to ${charity}`,
+        html: jobAppEmail('Thank you for your donation', [...donationRows(d), ['Paid', `USD ${set.charged.toFixed(2)}`], ['Reference', d._id]],
+          `Lyrtrip passes your full donation on to ${charity} and emails you when it has. Lyrtrip is not ${charity} and is not affiliated with it, so this email is a payment receipt, not a tax receipt.`),
+        text: `Thank you for donating USD ${d.amount.toFixed(2)} to ${charity} through Lyrtrip (reference ${d._id}). We will email you when it has been passed on.`,
+      }),
+      sendEmail({
+        to: superAdminEmail(), subject: `Donation: USD ${d.amount.toFixed(2)} for ${charity}`,
+        html: jobAppEmail('New donation to pass on', [...donationRows(d), ['Donor', `${d.donor.name} · ${d.donor.email}`]], `Open ${SITE_URL}/admin, Donations.`),
+        text: `USD ${d.amount.toFixed(2)} for ${charity} from ${d.donor.name}. See ${SITE_URL}/admin.`,
+      }),
+    ]);
+  }
+  return { ...d, ...set };
+}
+
+async function handleDonations(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const db = await getDb();
+  const coll = db.collection('donations');
+  const user = await optionalUser(body.idToken);
+
+  try {
+    switch (body.action) {
+      case 'charities':
+        return json(200, {
+          causes: Object.entries(DONATION_CAUSES).map(([id, c]) => ({ id, ...c })),
+          charities: Object.entries(CHARITIES).map(charityView), giftTypes: GIFT_TYPES,
+          serviceRate: DONATION_SERVICE_RATE, min: DONATION_MIN, max: DONATION_MAX,
+        });
+
+      // One-off gift by card; signing in is optional so anyone can give
+      case 'donate': {
+        const stripe = mainStripe();
+        if (!stripe) throw new JobError('Payments are not configured', 500);
+        const s = (v, max) => String(v ?? '').trim().slice(0, max);
+        const charity = CHARITIES[body.charityId];
+        if (!charity) throw new JobError('Choose a charity');
+        const cause = charity.causes.includes(body.cause) ? body.cause : charity.causes[0];
+        const amount = Math.round(Number(body.amount) * 100) / 100;
+        if (!(amount >= DONATION_MIN && amount <= DONATION_MAX)) throw new JobError(`Give between USD ${DONATION_MIN} and USD ${DONATION_MAX.toLocaleString('en-US')}`);
+        const giftType = GIFT_TYPES.includes(body.giftType) ? body.giftType : 'General donation';
+        if (giftType === 'Zakat' && !charity.zakat) throw new JobError(`${charity.name} does not run a zakat fund. Choose a zakat charity, or give this as a general donation.`);
+        const name = s(body.donor?.name, 80), email = s(body.donor?.email, 120).toLowerCase();
+        if (name.length < 2) throw new JobError('Enter your name');
+        if (!/^\S+@\S+\.\S+$/.test(email)) throw new JobError('Enter a valid email for your receipt');
+        if (!body.acceptTerms) throw new JobError('Please confirm you have read how your donation is passed on');
+        const now = new Date().toISOString();
+        const d = {
+          _id: `dn_${randomBytes(9).toString('hex')}`, sub: user?.sub ?? null, charityId: body.charityId, cause, giftType, amount,
+          donor: { name, email, country: s(body.donor?.country, 60), anonymous: !!body.donor?.anonymous },
+          dedication: s(body.dedication, 200), message: s(body.message, 500), status: 'pending', createdAt: now,
+        };
+        const t = donationTotals(amount);
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          line_items: [
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.amount * 100), product_data: { name: `${giftType} for ${charity.name}`.slice(0, 250), description: `${DONATION_CAUSES[cause].label}. Passed on in full by Lyrtrip.` } } },
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.service * 100), product_data: { name: `Lyrtrip service charge (${DONATION_SERVICE_RATE * 100}%)` } } },
+          ].filter(l => l.price_data.unit_amount > 0),
+          customer_email: email,
+          ...(user && { client_reference_id: user.sub }),
+          metadata: { type: 'donation', donationId: d._id, charity: body.charityId },
+          payment_intent_data: { metadata: { type: 'donation', donationId: d._id, charity: body.charityId }, description: `Donation for ${charity.name} via Lyrtrip` },
+          success_url: `${SITE_URL}/donate/thanks?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${SITE_URL}/?tab=charity`,
+        });
+        await coll.insertOne({ ...d, sessionId: session.id });
+        return json(200, { url: session.url });
+      }
+
+      case 'confirm': {
+        const session = await mainStripe().checkout.sessions.retrieve(String(body.sessionId ?? '')).catch(() => null);
+        if (!session || session.metadata?.type !== 'donation') throw new JobError('This payment is not a donation', 403);
+        const d = await coll.findOne({ _id: session.metadata.donationId });
+        if (!d) throw new JobError('Donation not found', 404);
+        if (session.payment_status !== 'paid') throw new JobError('The payment was not completed', 402);
+        return json(200, { donation: donorView(await settleDonation(db, { ...d, sessionId: session.id })) });
+      }
+
+      case 'mine': {
+        if (!user) throw new JobError('Please sign in first.', 401);
+        const rows = await coll.find({ sub: user.sub, status: { $ne: 'pending' } }).sort({ createdAt: -1 }).limit(200).toArray();
+        return json(200, { donations: rows.map(donorView) });
+      }
+
+      default:
+        throw new JobError('Unknown action');
+    }
+  } catch (err) {
+    if (err instanceof JobError) return json(err.status, { error: err.message });
+    console.error('Donation action failed:', body.action, err);
+    return json(500, { error: 'Something went wrong. Please try again.' });
+  }
+}
+
+// Admin side (called from handleAdmin): what each charity is owed, passing gifts on, refunds
+async function donationsAdmin(db, body) {
+  const coll = db.collection('donations');
+  switch (body.action) {
+    case 'donations.list': {
+      // Payments the donor never came back from
+      const stale = await coll.find({ status: 'pending', createdAt: { $gte: new Date(Date.now() - 3 * 864e5).toISOString() } }).limit(50).toArray();
+      await Promise.all(stale.map(d => settleDonation(db, d).catch(() => d)));
+      const rows = await coll.find({ status: { $ne: 'pending' } }).sort({ createdAt: -1 }).limit(1000).toArray();
+      return json(200, {
+        serviceRate: DONATION_SERVICE_RATE,
+        charities: Object.fromEntries(Object.entries(CHARITIES).map(([id, c]) => [id, c.name])),
+        donations: rows.map(d => ({ ...donorView(d), charityId: d.charityId, donor: d.donor, message: d.message ?? '', forward: d.forward ?? null, refund: d.refund ?? null, charged: d.charged ?? null })),
+      });
+    }
+
+    // Records that the paid, not yet passed on gifts for one charity were sent, and tells each donor
+    case 'donations.forward': {
+      const charityId = String(body.charityId ?? '');
+      if (!CHARITIES[charityId]) return json(400, { error: 'Unknown charity' });
+      const reference = String(body.reference ?? '').trim().slice(0, 200);
+      if (reference.length < 3) return json(400, { error: 'Enter the payment reference or receipt number from the charity' });
+      const ids = (Array.isArray(body.ids) ? body.ids : []).map(String);
+      const rows = await coll.find({ _id: { $in: ids }, charityId, status: 'paid' }).toArray();
+      if (!rows.length) return json(400, { error: 'No paid donations to mark' });
+      const now = new Date().toISOString();
+      await coll.updateMany({ _id: { $in: rows.map(r => r._id) } }, { $set: { status: 'forwarded', forward: { at: now, reference } } });
+      const name = CHARITIES[charityId].name;
+      await Promise.all(rows.map(d => sendEmail({
+        to: d.donor.email, subject: `Your donation has reached ${name}`,
+        html: jobAppEmail(`Your donation has been passed on to ${name}`, [...donationRows(d), ['Passed on', now.slice(0, 10)]], 'Thank you for giving through Lyrtrip.'),
+        text: `Your donation of USD ${d.amount.toFixed(2)} has been passed on to ${name}. Thank you.`,
+      })));
+      return json(200, { ok: true, count: rows.length });
+    }
+
+    case 'donations.refund': {
+      const d = await coll.findOne({ _id: String(body.id ?? '') });
+      if (!d || d.status !== 'paid') return json(409, { error: 'Only paid donations not yet passed on can be refunded' });
+      if (!d.paymentIntent) return json(409, { error: 'No card payment found; refund it in Stripe' });
+      const refund = await mainStripe().refunds.create({ payment_intent: d.paymentIntent, metadata: { type: 'donation', donationId: d._id } });
+      await coll.updateOne({ _id: d._id }, { $set: { status: 'refunded', refund: { id: refund.id, amount: refund.amount / 100, at: new Date().toISOString() } } });
+      return json(200, { ok: true });
+    }
+
+    default:
+      return null;
+  }
+}
+
 // Errors from visitors' browsers (the site's error pages), written to the Lambda log for debugging
 async function handleClientError(event) {
   let b = {};
@@ -6780,6 +7006,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/study')                  && method === 'POST')         return handleStudy(event);
     if (path.endsWith('/api/events')                 && method === 'POST')         return handleEventTickets(event);
     if (path.endsWith('/api/packages')               && method === 'POST')         return handleTourRequests(event);
+    if (path.endsWith('/api/donations')              && method === 'POST')         return handleDonations(event);
     if (path.endsWith('/api/client-error')           && method === 'POST')         return handleClientError(event);
     if (path.endsWith('/api/ride/estimate')          && method === 'POST')         return handleRideEstimate(event);
     if (path.endsWith('/api/ride/checkout')          && method === 'POST')         return handleRideCheckout(event);

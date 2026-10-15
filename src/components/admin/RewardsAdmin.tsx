@@ -1226,3 +1226,81 @@ export function TourRequestsPanel({ call }: { call: Call }) {
     </div>
   );
 }
+
+interface AdminDonation {
+  id: string; charityId: string; charity: string; cause: string; giftType: string; amount: number; service: number; total: number;
+  status: 'paid' | 'forwarded' | 'refunded'; dedication: string; message: string; createdAt: string; paidAt: string | null;
+  donor: { name: string; email: string; country: string; anonymous: boolean };
+  forward: { at: string; reference: string } | null; refund: { amount: number; at: string } | null; charged: number | null;
+}
+
+// Donations collected for charities: what each one is owed, recording that it was passed on, and refunds
+export function DonationsPanel({ call }: { call: Call }) {
+  const [data, setData] = useState<{ donations: AdminDonation[]; charities: Record<string, string>; serviceRate: number } | null>(null);
+  const [ref, setRef] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    call({ action: 'donations.list' }).then(d => setData(d as unknown as NonNullable<typeof data>)).catch(() => setData({ donations: [], charities: {}, serviceRate: 0.05 }));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+  const rows = data?.donations ?? null;
+  const owed = Object.entries((rows ?? []).filter(d => d.status === 'paid').reduce<Record<string, AdminDonation[]>>((m, d) => ({ ...m, [d.charityId]: [...(m[d.charityId] ?? []), d] }), {}));
+  const sum = (list: AdminDonation[], k: 'amount' | 'service') => list.reduce((s, d) => s + d[k], 0);
+  const live = (rows ?? []).filter(d => d.status !== 'refunded');
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try { await fn(); load(); } catch (err) { alert(err instanceof Error ? err.message : 'Failed'); }
+    setBusy(false);
+  };
+  const forward = (charityId: string, list: AdminDonation[]) => run(async () => {
+    if (!confirm(`Mark ${list.length} donation(s), ${usd(sum(list, 'amount'))} in total, as passed on to ${data?.charities[charityId]}? Each donor is emailed.`)) return;
+    await call({ action: 'donations.forward', charityId, ids: list.map(d => d.id), reference: ref[charityId] ?? '' });
+  });
+  const refund = (d: AdminDonation) => run(async () => {
+    if (!confirm(`Refund ${usd(d.charged ?? d.total)} to ${d.donor.name}?`)) return;
+    await call({ action: 'donations.refund', id: d.id });
+  });
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['Donations', String(live.length)], ['Given (all time)', usd(sum(live, 'amount'))],
+          ['To pass on now', usd(owed.reduce((s, [, l]) => s + sum(l, 'amount'), 0))], ['Service earned', usd(sum(live, 'service'))],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      {owed.length > 0 && (
+        <div className={`${panel} p-4 space-y-3`}>
+          <p className="font-semibold text-gray-900">To pass on</p>
+          <p className="text-xs text-gray-500">Donate the total to each charity from Lyrtrip&apos;s account (on its official donation page or by bank transfer), then record the reference here.</p>
+          {owed.map(([id, list]) => (
+            <div key={id} className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-semibold text-gray-900 min-w-[12rem]">{data?.charities[id] ?? id}</span>
+              <span>{list.length} gift(s) · <b>{usd(sum(list, 'amount'))}</b></span>
+              <input value={ref[id] ?? ''} onChange={e => setRef({ ...ref, [id]: e.target.value })} placeholder="Charity receipt or transfer reference" className="flex-1 min-w-[12rem] border border-gray-300 rounded-lg px-2 py-1.5" />
+              <button onClick={() => forward(id, list)} disabled={busy || (ref[id] ?? '').trim().length < 3} className="px-3 py-1.5 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">Mark passed on</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No donations yet.</p>}
+        {rows?.map(d => (
+          <div key={d.id} className="p-4 text-sm flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="font-semibold text-gray-900">{usd(d.amount)} · {d.charity} <span className="font-normal text-gray-500">· {d.giftType} · {d.cause}</span></p>
+              <p className="text-gray-600">{d.donor.name}{d.donor.anonymous ? ' (anonymous to the charity)' : ''} · {d.donor.email}{d.donor.country ? ` · ${d.donor.country}` : ''}</p>
+              <p className="text-xs text-gray-400">{new Date(d.createdAt).toLocaleString()} · paid {usd(d.charged ?? d.total)} incl. {usd(d.service)} service · {d.id}</p>
+              {(d.dedication || d.message) && <p className="text-gray-600">{d.dedication && `In honour/memory of ${d.dedication}. `}{d.message}</p>}
+              {d.forward && <p className="text-emerald-700 text-xs">Passed on {new Date(d.forward.at).toLocaleDateString()} · ref {d.forward.reference}</p>}
+            </div>
+            <div className="text-right space-y-1">
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{d.status === 'paid' ? 'To pass on' : d.status === 'forwarded' ? 'Passed on' : 'Refunded'}</span>
+              {d.status === 'paid' && <button onClick={() => refund(d)} disabled={busy} className="block ml-auto text-xs text-red-600 underline">Refund</button>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
