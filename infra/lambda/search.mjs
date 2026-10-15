@@ -2902,12 +2902,13 @@ const SUPPORT_EMAIL = 'support@lyrtrip.com';
 const LYRBOT_SYSTEM_PROMPT = `You are Lyrbot, the help assistant on Lyrtrip (lyrtrip.com), a travel booking site. You chat with travellers in a small window on the site.
 
 What you know about Lyrtrip:
-- Home page tiles: Transport (flights, bus, train, cruise, and rides: car, taxi, limo, motorcycle taxi, bike, e-bike, moped and scooter), Helicopter (helicopter, seaplane and air ambulance charters), Stay (hotels), Shipping (shipments, same-day courier and food delivery), tourism (tour packages, visas, passports, insurance and destination ideas), events, study abroad and careers.
+- Home page tiles: Transport (flights; helicopter, seaplane and air ambulance charters; bus, train, cruise; and rides: car, taxi, limo, motorcycle taxi, bike, e-bike, moped and scooter), Stay (hotels), Shipping (food delivery, same-day courier, parcel shipments, truck booking, and cargo and containers by sea, air, rail and road), tourism (tour packages, visas, passports, insurance and destination ideas), events, study abroad and careers.
 - Accounts: sign in or create an account at lyrtrip.com/login with email, Google, Facebook or WeChat. New email accounts confirm a 6-digit code sent by email; "Forgot password?" on the sign-in form emails a reset code. The dashboard (lyrtrip.com/dashboard) shows the traveller's tours and bookings.
 - Flights: booked and ticketed directly on Lyrtrip, paid securely by card through Stripe. After payment the e-ticket and booking reference arrive by email and on the receipt page. Baggage allowance and change or refund rules depend on the fare and are set by the airline.
 - Hotels: the guest pays the hotel's total plus a 12% Lyrtrip service fee, and Lyrtrip books the room directly with the property, then emails the hotel's confirmation number. If the hotel can't confirm, the guest is refunded in full (allow 5-10 business days for the card refund). Check-in times, deposits and cancellation rules are set by the hotel.
 - Rides: the car, taxi, limo and motorcycle options show fare estimates; booking rides, bikes, e-bikes and scooters on Lyrtrip opens soon.
 - Air charters: helicopter, seaplane and air ambulance requests get a quote from Lyrtrip (the operator's price plus a 10% service charge), paid by card, and are followed at lyrtrip.com/helicopter/requests. Air ambulance is not an emergency service: for a life-threatening emergency, tell the traveller to call their local emergency number.
+- Trucks, cargo and containers: requests get a quote from Lyrtrip (the carrier's price plus a 10% service charge), paid by card, with booking and tracking updates at lyrtrip.com/freight/requests. Duties, taxes and port charges not in the quote are the customer's.
 - Courier and food delivery: the Courier option books a same-day courier that picks up an item and delivers it across town, usually within the hour, paid on Lyrtrip with live status on the receipt page. Food delivery uses the same courier to collect a meal the traveller has already ordered and paid for at a restaurant.
 - Shipping: the Shipping tab compares courier rates (USPS, FedEx, UPS, DHL and more) for parcels worldwide and sells a printable label.
 - Never mention which company provides Lyrtrip's courier deliveries.
@@ -3189,6 +3190,7 @@ async function handleAdmin(event) {
     if (String(body.action ?? '').startsWith('studyapps.')) return (await studyAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('eventtix.')) return (await eventTicketsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('tourreqs.')) return (await tourRequestsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
+    if (String(body.action ?? '').startsWith('freight.')) return (await freightAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('heli.')) return (await heliAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('donations.')) return (await donationsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     switch (body.action) {
@@ -7329,6 +7331,339 @@ async function heliAdmin(db, body) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Freight (Truck booking and Cargo & containers options in the Shipping tile): Lyrtrip sells them
+// itself, like air charters. The customer sends the route, ready date and cargo (weight, volume,
+// packaging, containers, hazards, customs); an admin finds a carrier or forwarder and quotes the
+// price, and the customer pays it plus Lyrtrip's 10%. Once paid, the admin books it and posts
+// in-transit and delivered updates; if they can't book it, the payment is refunded.
+// ---------------------------------------------------------------------------
+
+const FREIGHT_SERVICE_RATE = 0.10;
+const FREIGHT_QUOTE_HOURS = 72;   // carrier rates and space move; a quote is payable for this long
+// Per mode: its categories and whether it is international (ports, Incoterms, customs)
+const FREIGHT_MODES = {
+  truck: {
+    label: 'Truck booking', international: false,
+    categories: {
+      mini:     'Mini truck / pickup (up to 1.5 t)',
+      ltl:      'Part load (LTL, shared truck)',
+      ftl:      'Full truckload (FTL)',
+      reefer:   'Refrigerated truck',
+      flatbed:  'Flatbed / heavy haul',
+      tanker:   'Tanker (liquids)',
+      moving:   'House or office moving',
+      carrier:  'Car carrier (vehicle transport)',
+    },
+  },
+  freight: {
+    label: 'Cargo & containers', international: true,
+    categories: {
+      fcl:     'Sea freight: full container (FCL)',
+      lcl:     'Sea freight: shared container (LCL)',
+      air:     'Air cargo',
+      express: 'Air express (urgent, door to door)',
+      rail:    'Rail freight',
+      road:    'Cross-border road freight',
+      project: 'Heavy / project cargo (breakbulk, out of gauge)',
+      vehicle: 'Vehicle shipping (RoRo or container)',
+    },
+  },
+};
+const freightMode = r => FREIGHT_MODES[r.mode] ?? FREIGHT_MODES.truck;
+const FREIGHT_CARGO_TYPES = ['General goods', 'Fragile', 'Perishable / temperature controlled', 'Hazardous (dangerous goods)', 'Oversized / heavy', 'Vehicles', 'Household goods', 'Livestock / live animals'];
+const FREIGHT_PACKAGING = ['Pallets', 'Boxes / cartons', 'Crates', 'Loose / bulk', 'Drums / IBCs', 'Not packed yet'];
+const FREIGHT_CONTAINERS = ["20' standard", "40' standard", "40' high cube", "20' refrigerated", "40' refrigerated", "Open top", "Flat rack"];
+const FREIGHT_INCOTERMS = ['Not sure', 'EXW', 'FCA', 'FOB', 'CFR', 'CIF', 'DAP', 'DDP'];
+const FREIGHT_STATUS = {
+  submitted: 'Received by Lyrtrip', info_needed: 'More details needed', quoted: 'Price to pay',
+  processing: 'Paid: Lyrtrip is booking it', booked: 'Booked', in_transit: 'In transit', delivered: 'Delivered',
+  unavailable: 'Not available', refunded: 'Refunded', cancelled: 'Cancelled',
+};
+const FREIGHT_CANCELLABLE = ['submitted', 'info_needed', 'quoted'];
+const freightTotals = amount => {
+  const service = Math.round(amount * FREIGHT_SERVICE_RATE * 100) / 100;
+  return { amount, service, total: Math.round((amount + service) * 100) / 100 };
+};
+
+function cleanFreightRequest(b) {
+  const s = (v, max) => String(v ?? '').trim().slice(0, max);
+  const day = v => (/^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s(v, 10)) ? s(v, 10) : '');
+  const num = (v, max) => { const n = Math.round(Number(v) * 100) / 100; return n > 0 && n <= max ? n : null; };
+  const c = b.contact ?? {};
+  const name = s(c.name, 80), email = s(c.email, 120).toLowerCase(), country = s(c.country, 60);
+  if (name.length < 2) throw new JobError('Enter your full name');
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw new JobError('Enter a valid email: the quote is sent there');
+  const phone = parsePhoneNumberFromString(s(c.phone, 30), 'US');
+  if (!phone?.isValid()) throw new JobError('Enter a valid phone number with the country code, e.g. +91 98765 43210');
+  if (!country) throw new JobError('Enter your country');
+
+  const mode = FREIGHT_MODES[b.mode] ? b.mode : 'truck';
+  const spec = FREIGHT_MODES[mode];
+  const category = Object.keys(spec.categories).includes(b.category) ? b.category : '';
+  if (!category) throw new JobError('Choose what kind of shipment this is');
+  const from = s(b.from, 200), to = s(b.to, 200);
+  if (from.length < 2) throw new JobError(spec.international ? 'Enter where the cargo is collected (address, city or port)' : 'Enter the pickup address or city');
+  if (to.length < 2) throw new JobError(spec.international ? 'Enter where it goes (address, city or port)' : 'Enter the delivery address or city');
+  const readyDate = day(b.readyDate);
+  if (!readyDate || readyDate < new Date().toISOString().slice(0, 10)) throw new JobError('Choose the date the cargo is ready, from today on');
+
+  const k = b.cargo ?? {};
+  const cargo = {
+    description: s(k.description, 500), type: FREIGHT_CARGO_TYPES.includes(k.type) ? k.type : FREIGHT_CARGO_TYPES[0],
+    weightKg: num(k.weightKg, 5_000_000), volumeCbm: num(k.volumeCbm, 100_000), pieces: Math.max(0, Math.min(100_000, Math.round(Number(k.pieces) || 0))),
+    packaging: FREIGHT_PACKAGING.includes(k.packaging) ? k.packaging : FREIGHT_PACKAGING[0],
+    dimensions: s(k.dimensions, 200), value: num(k.value, 10_000_000), unNumber: s(k.unNumber, 40),
+  };
+  if (cargo.description.length < 3) throw new JobError('Describe the cargo, e.g. 12 pallets of ceramic tiles');
+  const needsWeight = !['moving', 'carrier', 'vehicle', 'fcl'].includes(category);
+  if (needsWeight && !cargo.weightKg) throw new JobError('Enter the total weight in kg (an estimate is fine)');
+  if (cargo.type === 'Hazardous (dangerous goods)' && !cargo.unNumber) throw new JobError('Enter the UN number and class of the dangerous goods');
+
+  let containers = null;
+  if (category === 'fcl') {
+    const type = FREIGHT_CONTAINERS.includes(b.containers?.type) ? b.containers.type : '';
+    const count = Math.round(Number(b.containers?.count));
+    if (!type || !(count >= 1 && count <= 500)) throw new JobError('Choose the container type and how many (1 to 500)');
+    containers = { type, count };
+  }
+  const budget = b.budget === '' || b.budget == null ? null : num(b.budget, 999_999);
+  if (b.budget !== '' && b.budget != null && !budget) throw new JobError('Your budget must be a positive amount in USD, under 1,000,000');
+  if (!b.acceptTerms) throw new JobError('Please accept the shipping terms');
+  return {
+    mode, category, from, to, readyDate, flexibleDates: !!b.flexibleDates, cargo, containers,
+    incoterm: spec.international && FREIGHT_INCOTERMS.includes(b.incoterm) ? b.incoterm : '',
+    customs: spec.international ? !!b.customs : false, insurance: !!b.insurance,
+    loadingHelp: !spec.international ? !!b.loadingHelp : false,
+    contact: { name, email, phone: phone.number, country, company: s(c.company, 120) },
+    budget, note: s(b.note, 2000),
+  };
+}
+
+const customerFreightRequest = r => ({
+  id: r._id, mode: r.mode, modeLabel: freightMode(r).label, category: r.category, categoryLabel: freightMode(r).categories[r.category] ?? r.category,
+  from: r.from, to: r.to, readyDate: r.readyDate, flexibleDates: r.flexibleDates, cargo: r.cargo, containers: r.containers ?? null,
+  incoterm: r.incoterm ?? '', customs: !!r.customs, insurance: !!r.insurance, loadingHelp: !!r.loadingHelp,
+  contact: r.contact, budget: r.budget, note: r.note ?? '',
+  status: r.status, statusLabel: FREIGHT_STATUS[r.status] ?? r.status, message: r.customerMessage ?? '',
+  quote: r.quote ? { ...freightTotals(r.quote.amount), details: r.quote.details ?? '', expiresAt: r.quote.expiresAt, paidAt: r.quote.paidAt ?? null } : null,
+  createdAt: r.createdAt, updatedAt: r.updatedAt,
+});
+
+const freightRoute = r => `${r.from} → ${r.to}`;
+const freightName = r => freightMode(r).label.toLowerCase();
+const freightRows = r => [
+  ['Service', freightMode(r).label], ['Type', freightMode(r).categories[r.category] ?? r.category], ['Route', freightRoute(r)],
+  ['Ready', `${r.readyDate}${r.flexibleDates ? ' (flexible)' : ''}`], ['Cargo', `${r.cargo.description} · ${r.cargo.type}`],
+  ['Weight', r.cargo.weightKg ? `${r.cargo.weightKg} kg` : ''], ['Volume', r.cargo.volumeCbm ? `${r.cargo.volumeCbm} m³` : ''],
+  ['Containers', r.containers ? `${r.containers.count} × ${r.containers.type}` : ''],
+].filter(([, v]) => v);
+
+// Paid, but the customer closed the tab before coming back: settle it from Stripe
+async function settleFreightPayment(db, r) {
+  if (r.status !== 'quoted' || !r.quote?.sessionId) return r;
+  const session = await mainStripe()?.checkout.sessions.retrieve(r.quote.sessionId).catch(() => null);
+  if (session?.payment_status !== 'paid' || session.metadata?.requestId !== r._id) return r;
+  const now = new Date().toISOString();
+  const set = { status: 'processing', 'quote.paidAt': now, 'quote.paymentIntent': session.payment_intent ?? null, 'quote.charged': (session.amount_total ?? 0) / 100, updatedAt: now, 'statusAt.processing': now };
+  const u = await db.collection('freight_requests').updateOne({ _id: r._id, status: 'quoted' }, { $set: set });
+  if (u.modifiedCount) {
+    await sendEmail({
+      to: superAdminEmail(), subject: `${freightMode(r).label} paid: ${r.contact.name}, ${freightRoute(r)}`,
+      html: jobAppEmail(`Paid: book the ${freightName(r)}`, [...freightRows(r), ['Customer', r.contact.name], ['Paid', `USD ${set['quote.charged'].toFixed(2)}`]],
+        `Open ${SITE_URL}/admin, Freight & trucks, to book the carrier.`),
+      text: `${r.contact.name} paid for ${freightName(r)} ${freightRoute(r)}. See ${SITE_URL}/admin.`,
+    });
+  }
+  return { ...r, status: 'processing', quote: { ...r.quote, paidAt: now } };
+}
+
+async function handleFreight(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const db = await getDb();
+  const reqs = db.collection('freight_requests');
+  const user = await optionalUser(body.idToken);
+  const me = () => { if (!user) throw new JobError('Please sign in first.', 401); return user; };
+  const findMine = async id => {
+    const r = await reqs.findOne({ _id: String(id ?? ''), sub: me().sub });
+    if (!r) throw new JobError('Shipment request not found', 404);
+    return r;
+  };
+  const options = {
+    modes: FREIGHT_MODES, cargoTypes: FREIGHT_CARGO_TYPES, packaging: FREIGHT_PACKAGING, containers: FREIGHT_CONTAINERS, incoterms: FREIGHT_INCOTERMS,
+    serviceRate: FREIGHT_SERVICE_RATE, quoteHours: FREIGHT_QUOTE_HOURS,
+  };
+
+  try {
+    switch (body.action) {
+      case 'options':
+        return json(200, options);
+
+      case 'request': {
+        const clean = cleanFreightRequest(body);
+        const now = new Date().toISOString();
+        const r = { _id: `fr_${randomBytes(9).toString('hex')}`, sub: me().sub, accountEmail: me().email, ...clean, status: 'submitted', createdAt: now, updatedAt: now, statusAt: { submitted: now } };
+        await reqs.insertOne(r);
+        await Promise.all([
+          sendEmail({
+            to: clean.contact.email, subject: `We have your ${freightName(r)} request: ${freightRoute(r)}`,
+            html: jobAppEmail(`We have your ${freightName(r)} request`, freightRows(r),
+              `Lyrtrip finds a carrier and emails you the price: the freight plus our ${FREIGHT_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/freight/requests.`),
+            text: `We received your ${freightName(r)} request ${freightRoute(r)}. We will email you the price to pay. See ${SITE_URL}/freight/requests`,
+          }),
+          sendEmail({
+            to: superAdminEmail(), subject: `New ${freightName(r)} request: ${clean.contact.name}, ${freightRoute(r)}`,
+            html: jobAppEmail(`New ${freightName(r)} request`, [...freightRows(r), ['Customer', `${clean.contact.name} · ${clean.contact.email} · ${clean.contact.phone}`], ['Budget', clean.budget ? `USD ${clean.budget}` : 'Not given']],
+              `Open ${SITE_URL}/admin, Freight & trucks, to quote the price.`),
+            text: `New ${freightName(r)} request ${freightRoute(r)} from ${clean.contact.name}. See ${SITE_URL}/admin.`,
+          }),
+        ]);
+        return json(200, { request: customerFreightRequest(r) });
+      }
+
+      case 'requests.mine': {
+        const rows = await reqs.find({ sub: me().sub }).sort({ createdAt: -1 }).limit(200).toArray();
+        const settled = await Promise.all(rows.map(r => settleFreightPayment(db, r).catch(() => r)));
+        return json(200, { requests: settled.map(customerFreightRequest), ...options });
+      }
+
+      // Lyrtrip asked for more details: the customer corrects the request and sends it again
+      case 'request.update': {
+        const r = await findMine(body.id);
+        if (r.status !== 'info_needed') throw new JobError('This request is not waiting for details');
+        const clean = cleanFreightRequest({ ...body, acceptTerms: true });
+        const now = new Date().toISOString();
+        await reqs.updateOne({ _id: r._id }, { $set: { ...clean, status: 'submitted', customerMessage: '', updatedAt: now, 'statusAt.submitted': now } });
+        await sendEmail({
+          to: superAdminEmail(), subject: `${freightMode(clean).label} request updated: ${clean.contact.name}, ${freightRoute(clean)}`,
+          html: jobAppEmail(`${freightMode(clean).label} request updated`, freightRows(clean), `See ${SITE_URL}/admin, Freight & trucks.`),
+          text: `${clean.contact.name} updated their ${freightName(clean)} request. See ${SITE_URL}/admin.`,
+        });
+        return json(200, { request: customerFreightRequest({ ...r, ...clean, status: 'submitted', customerMessage: '' }) });
+      }
+
+      // The quoted freight price plus Lyrtrip's service charge, paid once by card
+      case 'pay': {
+        const stripe = mainStripe();
+        if (!stripe) throw new JobError('Payments are not configured', 500);
+        const r = await findMine(body.id);
+        if (r.status !== 'quoted' || !r.quote?.amount) throw new JobError('There is nothing to pay on this request');
+        if (Date.parse(r.quote.expiresAt) < Date.now()) throw new JobError('This price has expired because carrier rates change. Ask us for a new one at support@lyrtrip.com.', 410);
+        const t = freightTotals(r.quote.amount);
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          line_items: [
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.amount * 100), product_data: { name: `${freightMode(r).label}: ${freightRoute(r)}`.slice(0, 250), description: `${freightMode(r).categories[r.category]} · ready ${r.readyDate}`.slice(0, 250) } } },
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.service * 100), product_data: { name: `Lyrtrip service charge (${FREIGHT_SERVICE_RATE * 100}%)` } } },
+          ].filter(l => l.price_data.unit_amount > 0),
+          customer_email: r.contact.email || me().email,
+          client_reference_id: me().sub,
+          metadata: { type: 'freight', sub: me().sub, requestId: r._id },
+          payment_intent_data: { metadata: { type: 'freight', sub: me().sub, requestId: r._id } },
+          // Stripe needs 30 minutes to 24 hours; never past the quote's own expiry by more than that minimum
+          expires_at: Math.max(Math.floor(Date.now() / 1000) + 1860, Math.min(Math.floor(Date.parse(r.quote.expiresAt) / 1000), Math.floor(Date.now() / 1000) + 23 * 3600)),
+          success_url: `${SITE_URL}/freight/requests?pay_session={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${SITE_URL}/freight/requests?checkout=canceled`,
+        });
+        await reqs.updateOne({ _id: r._id }, { $set: { 'quote.sessionId': session.id } });
+        return json(200, { url: session.url });
+      }
+
+      case 'pay.confirm': {
+        const session = await mainStripe().checkout.sessions.retrieve(String(body.sessionId ?? '')).catch(() => null);
+        if (!session || session.metadata?.type !== 'freight' || session.metadata.sub !== me().sub) throw new JobError('This payment is not for your shipment', 403);
+        if (session.payment_status !== 'paid') throw new JobError('The payment was not completed', 402);
+        const r = await findMine(session.metadata.requestId);
+        if (r.status === 'quoted') await settleFreightPayment(db, { ...r, quote: { ...r.quote, sessionId: session.id } });
+        return json(200, { ok: true });
+      }
+
+      case 'request.cancel': {
+        const u = await reqs.updateOne(
+          { _id: String(body.id ?? ''), sub: me().sub, status: { $in: FREIGHT_CANCELLABLE } },
+          { $set: { status: 'cancelled', updatedAt: new Date().toISOString() } },
+        );
+        if (!u.matchedCount) throw new JobError('This request can no longer be cancelled. Contact support@lyrtrip.com.');
+        return json(200, { ok: true });
+      }
+
+      default:
+        throw new JobError('Unknown action');
+    }
+  } catch (err) {
+    if (err instanceof JobError) return json(err.status, { error: err.message });
+    if (err.name === 'JwtExpiredError' || /jwt/i.test(err.name ?? '')) return json(401, { error: 'Please sign in again.' });
+    console.error('Freight action failed:', body.action, err);
+    return json(500, { error: 'Something went wrong. Please try again.' });
+  }
+}
+
+// Admin side (called from handleAdmin): every detail, quotes, tracking updates, refunds and status
+async function freightAdmin(db, body) {
+  const reqs = db.collection('freight_requests');
+  switch (body.action) {
+    case 'freight.list': {
+      const rows = await reqs.find({}).sort({ createdAt: -1 }).limit(500).toArray();
+      return json(200, {
+        serviceRate: FREIGHT_SERVICE_RATE, quoteHours: FREIGHT_QUOTE_HOURS,
+        requests: rows.map(r => ({ ...customerFreightRequest(r), sub: r.sub, accountEmail: r.accountEmail ?? '', adminNote: r.adminNote ?? '', charged: r.quote?.charged ?? null, refund: r.refund ?? null })),
+      });
+    }
+
+    // Moves a request along. A price puts it at "Price to pay"; marking a paid request unavailable or
+    // refunded refunds the card in full. The message is emailed to the customer.
+    case 'freight.update': {
+      let status = Object.keys(FREIGHT_STATUS).includes(body.status) && body.status !== 'cancelled' ? body.status : null;
+      if (!status) return json(400, { error: 'Unknown status' });
+      const r = await reqs.findOne({ _id: String(body.id ?? '') });
+      if (!r) return json(404, { error: 'Request not found' });
+      if (r.status === 'cancelled' || r.status === 'refunded') return json(409, { error: `This request is ${FREIGHT_STATUS[r.status].toLowerCase()}` });
+      const paid = !!r.quote?.paidAt;
+      const now = new Date().toISOString();
+      const set = { adminNote: String(body.note ?? r.adminNote ?? '').slice(0, 1000), updatedAt: now };
+      if (status === 'quoted') {
+        if (paid) return json(409, { error: 'This request has already been paid' });
+        const amount = Math.round(Number(body.price) * 100) / 100;
+        if (!(amount >= 1 && amount <= 900000)) return json(400, { error: "Enter the carrier's total price in USD, with surcharges and fees (1 to 900,000)" });
+        set.quote = { amount, details: String(body.quoteDetails ?? '').trim().slice(0, 500), quotedAt: now, expiresAt: new Date(Date.now() + FREIGHT_QUOTE_HOURS * 3600e3).toISOString() };
+      }
+      if (['processing', 'booked', 'in_transit', 'delivered'].includes(status) && !paid) return json(409, { error: 'The customer has not paid yet. Quote a price first.' });
+      if (status === 'refunded' && !paid) status = 'unavailable';
+      if (status === 'unavailable' && paid) status = 'refunded';
+      if (status === 'refunded') {
+        const stripe = mainStripe();
+        if (!r.quote.paymentIntent || !stripe) return json(409, { error: 'No card payment found to refund; refund it in Stripe' });
+        const refund = await stripe.refunds.create({ payment_intent: r.quote.paymentIntent, metadata: { type: 'freight', requestId: r._id } });
+        set.refund = { id: refund.id, amount: refund.amount / 100, at: now };
+      }
+      const message = String(body.message ?? '').trim().slice(0, 2000);
+      Object.assign(set, { status, customerMessage: message, [`statusAt.${status}`]: now });
+      await reqs.updateOne({ _id: r._id }, { $set: set });
+      if (status !== r.status || message) {
+        const rows = freightRows(r);
+        if (status === 'quoted') {
+          const t = freightTotals(set.quote.amount);
+          rows.push(['Freight', `USD ${t.amount.toFixed(2)}`], [`Lyrtrip service (${FREIGHT_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]);
+          if (set.quote.details) rows.push(['Details', set.quote.details]);
+        }
+        if (status === 'refunded') rows.push(['Refunded', `USD ${set.refund.amount.toFixed(2)} to your card (allow 5 to 10 days)`]);
+        if (message) rows.push(['Message from Lyrtrip', message]);
+        const foot = status === 'quoted' ? `Pay within ${FREIGHT_QUOTE_HOURS} hours at ${SITE_URL}/freight/requests: carrier rates and space change.`
+          : status === 'info_needed' ? `Update your request at ${SITE_URL}/freight/requests.` : `See ${SITE_URL}/freight/requests.`;
+        await sendEmail({
+          to: r.contact.email, subject: `${FREIGHT_STATUS[status]}: ${freightName(r)} ${freightRoute(r)}`,
+          html: jobAppEmail(FREIGHT_STATUS[status], rows, `${foot} Please keep all contact about this shipment through Lyrtrip.`),
+          text: `${FREIGHT_STATUS[status]}: ${freightName(r)} ${freightRoute(r)}.${message ? `\n\n${message}` : ''} ${foot}`,
+        });
+      }
+      return json(200, { ok: true, status });
+    }
+
+    default:
+      return null;
+  }
+}
+
 // Errors from visitors' browsers (the site's error pages), written to the Lambda log for debugging
 async function handleClientError(event) {
   let b = {};
@@ -7378,6 +7713,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/study')                  && method === 'POST')         return handleStudy(event);
     if (path.endsWith('/api/events')                 && method === 'POST')         return handleEventTickets(event);
     if (path.endsWith('/api/packages')               && method === 'POST')         return handleTourRequests(event);
+    if (path.endsWith('/api/freight')                && method === 'POST')         return handleFreight(event);
     if (path.endsWith('/api/helicopter')             && method === 'POST')         return handleHeliRequests(event);
     if (path.endsWith('/api/donations')              && method === 'POST')         return handleDonations(event);
     if (path.endsWith('/api/client-error')           && method === 'POST')         return handleClientError(event);

@@ -1429,3 +1429,122 @@ export function HeliRequestsPanel({ call }: { call: Call }) {
     </div>
   );
 }
+
+interface AdminFreightRequest {
+  id: string; mode: string; modeLabel: string; category: string; categoryLabel: string; status: string; statusLabel: string;
+  from: string; to: string; readyDate: string; flexibleDates: boolean; incoterm: string; customs: boolean; insurance: boolean; loadingHelp: boolean;
+  cargo: { description: string; type: string; weightKg: number | null; volumeCbm: number | null; pieces: number; packaging: string; dimensions: string; value: number | null; unNumber: string };
+  containers: { type: string; count: number } | null; budget: number | null; note: string; adminNote: string; accountEmail: string; createdAt: string;
+  contact: { name: string; email: string; phone: string; country: string; company: string };
+  quote: { amount: number; service: number; total: number; details: string; expiresAt: string; paidAt: string | null } | null;
+  charged: number | null; refund: { amount: number; at: string } | null;
+}
+
+const FREIGHT_STEPS: [string, string][] = [
+  ['submitted', 'Received'], ['info_needed', 'More details needed'], ['quoted', 'Quote price (price to pay)'], ['processing', 'Paid: booking carrier'],
+  ['booked', 'Booked'], ['in_transit', 'In transit'], ['delivered', 'Delivered'], ['unavailable', 'Not available (refunds if paid)'], ['refunded', 'Refund in full'],
+];
+
+// Trucks, cargo and containers sold through Lyrtrip: find a carrier, quote (+ service), book and track once paid, or refund
+export function FreightRequestsPanel({ call }: { call: Call }) {
+  const [data, setData] = useState<{ requests: AdminFreightRequest[]; serviceRate: number; quoteHours: number } | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ status: '', message: '', note: '', price: '', quoteDetails: '' });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    call({ action: 'freight.list' }).then(d => setData(d as unknown as NonNullable<typeof data>)).catch(() => setData({ requests: [], serviceRate: 0.1, quoteHours: 72 }));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+  const rows = data?.requests ?? null;
+  const expand = (r: AdminFreightRequest) => {
+    setOpen(open === r.id ? null : r.id);
+    setDraft({ status: r.status === 'cancelled' ? 'submitted' : r.status, message: '', note: r.adminNote, price: r.quote ? String(r.quote.amount) : '', quoteDetails: r.quote?.details ?? '' });
+  };
+  const save = async (r: AdminFreightRequest) => {
+    const paid = !!r.quote?.paidAt;
+    if (paid && ['unavailable', 'refunded'].includes(draft.status) && !confirm(`Refund ${usd(r.charged ?? r.quote!.total)} to ${r.contact.name}'s card?`)) return;
+    setBusy(true);
+    try {
+      await call({ action: 'freight.update', id: r.id, status: draft.status, message: draft.message, note: draft.note, price: draft.price === '' ? undefined : Number(draft.price), quoteDetails: draft.quoteDetails });
+      setOpen(null);
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not update the request');
+    }
+    setBusy(false);
+  };
+  const count = (s: string) => (rows ?? []).filter(r => r.status === s).length;
+  const rate = data?.serviceRate ?? 0.1;
+  const priceNum = Number(draft.price) || 0;
+  const earned = (rows ?? []).filter(r => r.quote?.paidAt && !r.refund).reduce((s, r) => s + (r.quote?.service ?? 0), 0);
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['To quote', String(count('submitted'))], ['Awaiting payment', String(count('quoted'))],
+          ['Paid, to book', String(count('processing'))], ['Service earned', usd(earned)],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No truck or cargo requests yet.</p>}
+        {rows?.map(r => (
+          <div key={r.id} className="p-4 text-sm">
+            <button onClick={() => expand(r)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-900">{r.modeLabel} · {r.contact.name}{r.contact.company ? ` (${r.contact.company})` : ''} · {r.from} → {r.to}</p>
+                <p className="text-gray-600">{r.categoryLabel} · ready {r.readyDate} · {r.cargo.description}</p>
+                <p className="text-xs text-gray-400">Requested {new Date(r.createdAt).toLocaleString()}{r.budget ? ` · budget ${usd(r.budget)}` : ''}{r.quote ? ` · ${usd(r.quote.total)}${r.quote.paidAt ? ' paid' : ' quoted'}` : ''}{r.refund ? ' · refunded' : ''}</p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{r.statusLabel}</span>
+            </button>
+            {open === r.id && (
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase text-gray-500">Shipment</p>
+                  <p className="text-gray-700">{r.from} → {r.to} · ready {r.readyDate}{r.flexibleDates ? ' (flexible)' : ''}</p>
+                  <p className="text-gray-700">{r.cargo.description} · {r.cargo.type} · {r.cargo.packaging}{r.cargo.pieces ? ` · ${r.cargo.pieces} pcs` : ''}</p>
+                  <p className="text-gray-700">
+                    {[r.cargo.weightKg && `${r.cargo.weightKg} kg`, r.cargo.volumeCbm && `${r.cargo.volumeCbm} m³`, r.cargo.dimensions && `largest ${r.cargo.dimensions} cm`, r.cargo.value && `value ${usd(r.cargo.value)}`].filter(Boolean).join(' · ')}
+                  </p>
+                  {r.cargo.unNumber && <p className="text-red-700">Dangerous goods: {r.cargo.unNumber}</p>}
+                  {r.containers && <p className="text-gray-700">Containers: {r.containers.count} × {r.containers.type}</p>}
+                  <p className="text-gray-700">{[r.incoterm && `Incoterm ${r.incoterm}`, r.customs && 'customs clearance', r.insurance && 'insurance', r.loadingHelp && 'loading help'].filter(Boolean).join(' · ') || 'No extras'}</p>
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Customer</p>
+                  <p className="text-gray-700">{r.contact.name}{r.contact.company ? ` · ${r.contact.company}` : ''} · {r.contact.email} · {r.contact.phone} · {r.contact.country}</p>
+                  {r.accountEmail && r.accountEmail !== r.contact.email && <p className="text-xs text-gray-500">Account: {r.accountEmail}</p>}
+                  {r.note && <p className="whitespace-pre-line bg-gray-50 rounded-lg p-2">Customer note: {r.note}</p>}
+                </div>
+                <div className="space-y-2">
+                  {r.status === 'cancelled' || r.status === 'refunded' ? (
+                    <p className="text-gray-500">{r.status === 'cancelled' ? 'The customer cancelled this request.' : `Refunded ${usd(r.refund?.amount ?? 0)} on ${r.refund ? new Date(r.refund.at).toLocaleDateString() : ''}.`}</p>
+                  ) : (<>
+                    <label className="block text-xs font-semibold text-gray-600">Status</label>
+                    <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
+                      {FREIGHT_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    {draft.status === 'quoted' && !r.quote?.paidAt && (<>
+                      <label className="block text-xs font-semibold text-gray-600">Carrier&apos;s total price, with surcharges and fees (USD)</label>
+                      <input type="number" min={1} step="0.01" value={draft.price} onChange={e => setDraft({ ...draft, price: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <label className="block text-xs font-semibold text-gray-600">What they get (shown to the customer)</label>
+                      <input value={draft.quoteDetails} maxLength={500} onChange={e => setDraft({ ...draft, quoteDetails: e.target.value })} placeholder="e.g. 1 × 40' HC, port to port, 28 days transit, excl. destination duties" className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <p className="text-xs text-gray-600">Customer pays {usd(priceNum)} + {Math.round(rate * 100)}% service {usd(Math.round(priceNum * rate * 100) / 100)} = <b>{usd(Math.round(priceNum * (1 + rate) * 100) / 100)}</b>, within {data?.quoteHours ?? 72} hours.</p>
+                    </>)}
+                    {r.quote?.paidAt && <p className="text-emerald-700">Paid {usd(r.charged ?? r.quote.total)} on {new Date(r.quote.paidAt).toLocaleDateString()}</p>}
+                    {r.quote?.paidAt && ['unavailable', 'refunded'].includes(draft.status) && <p className="text-red-700 text-xs">Saving refunds the card in full.</p>}
+                    <label className="block text-xs font-semibold text-gray-600">Message to the customer (emailed)</label>
+                    <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000}
+                      placeholder={draft.status === 'in_transit' ? 'e.g. Loaded on MSC Aurora, B/L MSCU1234567, ETA 12 Dec' : draft.status === 'booked' ? 'e.g. Truck KA-01-1234 collects on 3 Nov, 9–11 am; driver Ravi +91 …' : ''} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <label className="block text-xs font-semibold text-gray-600">Internal note (carrier, contact, cost)</label>
+                    <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <button onClick={() => save(r)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>
+                  </>)}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

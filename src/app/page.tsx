@@ -22,6 +22,7 @@ import EventTicketDialog, { type TicketEvent } from '@/components/EventTicketDia
 import TourRequestDialog, { type TourItem } from '@/components/TourRequestDialog';
 import CharityPanel, { CHARITY_EVENT_TYPES } from '@/components/CharityPanel';
 import HelicopterPanel from '@/components/HelicopterPanel';
+import FreightPanel from '@/components/FreightPanel';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -393,12 +394,6 @@ const ICON_MOTION: Record<string, IconMotion> = {
     { transform: 'rotate(8deg) translateY(2px)', offset: 0.55 },
     { transform: 'rotate(-4deg) translateY(-2px)', offset: 0.8 },
     { transform: 'rotate(0) translateY(0)' },
-  ] },
-  helicopter: { duration: 1100, easing: 'ease-in-out', frames: [
-    { transform: 'translateY(0) rotate(0)' },
-    { transform: 'translateY(-10px) rotate(-6deg)', offset: 0.35 },
-    { transform: 'translateY(-14px) rotate(4deg)', offset: 0.6 },
-    { transform: 'translateY(0) rotate(0)' },
   ] },
   dash: { duration: 900, easing: 'ease-out', frames: [
     { transform: 'perspective(200px) rotateY(0) translateY(0)' },
@@ -1333,6 +1328,9 @@ export default function Home() {
 
   const tabs = [
     { id: 'flights', icon: '✈️', label: t('Flights'), sub: t('Fly anywhere') },
+    { id: 'helicopter', icon: '🚁', label: t('Helicopter'), sub: t('Charter a helicopter') },
+    { id: 'seaplane', icon: '🛩️', label: t('Seaplane'), sub: t('Island & water flights') },
+    { id: 'airambulance', icon: '🚑', label: t('Air ambulance'), sub: t('Medical flights') },
     { id: 'bus', icon: '🚌', label: t('Bus'), sub: t('Intercity routes') },
     { id: 'train', icon: '🚂', label: t('Train'), sub: t('Rail journeys') },
     { id: 'cruise', icon: '🚢', label: t('Cruise'), sub: t('Sail away') },
@@ -1343,13 +1341,12 @@ export default function Home() {
     { id: 'bike', icon: '🚲', label: t('Bike'), sub: t('Shared bikes') },
     { id: 'ebike', icon: '⚡', label: t('E-bike'), sub: t('Electric bikes') },
     { id: 'scooter', icon: '🛴', label: t('Moped & scooter'), sub: t('Scooters & mopeds') },
-    { id: 'helicopter', icon: '🚁', label: t('Helicopter'), sub: t('Charter a helicopter') },
-    { id: 'seaplane', icon: '🛩️', label: t('Seaplane'), sub: t('Island & water flights') },
-    { id: 'airambulance', icon: '🚑', label: t('Air ambulance'), sub: t('Medical flights') },
     { id: 'hotels', icon: '🏨', label: t('Hotels'), sub: t('Places to stay') },
-    { id: 'shipping', icon: '📦', label: t('Shipment'), sub: t('Send parcels') },
-    { id: 'dash', icon: '🛵', label: t('Courier'), sub: t('Same-day parcels') },
     { id: 'food', icon: '🍱', label: t('Food delivery'), sub: t('From any restaurant') },
+    { id: 'dash', icon: '🛵', label: t('Courier'), sub: t('Same-day parcels') },
+    { id: 'shipping', icon: '📦', label: t('Shipment'), sub: t('Send parcels') },
+    { id: 'truck', icon: '🚚', label: t('Truck booking'), sub: t('Loads, moving & haulage') },
+    { id: 'freight', icon: '🚢', label: t('Cargo & containers'), sub: t('Sea, air & rail freight') },
     { id: 'tourism', icon: '🎒', label: t('Tourism'), sub: t('Tours & trips') },
     { id: 'study', icon: '🎓', label: t('Study'), sub: t('Study abroad') },
     { id: 'career', icon: '💼', label: t('Job'), sub: t('Find work') },
@@ -1370,12 +1367,11 @@ export default function Home() {
     bike: ['🚲', t('Bike rides')], ebike: ['⚡', t('E-bike rides')], scooter: ['🛴', t('Moped & scooter rides')],
   };
 
-  // The tiles: Transport, Helicopter, Stay, Shipping and Events group several tabs (shown as a row of options below)
+  // The tiles: Transport, Stay, Shipping and Events group several tabs (shown as a row of options below)
   const TAB_GROUPS = [
-    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, bus, train, cruise & rides'), items: ['flights', 'bus', 'train', 'cruise', 'car', 'taxi', 'limo', 'motorcycle', 'bike', 'ebike', 'scooter'] },
-    { id: 'aircharter', icon: '🚁', motion: 'helicopter', label: t('Helicopter'), sub: t('Helicopter, seaplane & air ambulance'), items: ['helicopter', 'seaplane', 'airambulance'] },
+    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, air charters, bus, train, cruise & rides'), items: ['flights', 'helicopter', 'seaplane', 'airambulance', 'bus', 'train', 'cruise', 'car', 'taxi', 'limo', 'motorcycle', 'bike', 'ebike', 'scooter'] },
     { id: 'stay', icon: '🏨', motion: 'hotels', label: t('Stay'), sub: t('Hotels, homestays & more'), items: ['hotels'] },
-    { id: 'shippinggroup', icon: '📦', motion: 'shipping', label: t('Shipping'), sub: t('Shipments, courier & food'), items: ['shipping', 'dash', 'food'] },
+    { id: 'shippinggroup', icon: '📦', motion: 'shipping', label: t('Shipping'), sub: t('Food, courier, parcels, trucks & cargo'), items: ['food', 'dash', 'shipping', 'truck', 'freight'] },
     { id: 'eventsgroup', icon: '🎟️', motion: 'events', label: t('Events'), sub: t('Shows, summits & charity'), items: ['events', 'charity'] },
   ];
   const tiles = [
@@ -2265,7 +2261,7 @@ export default function Home() {
             })}
           </div>
 
-          {/* Options inside a group: Transport, Helicopter, Shipping and Events pick a tab, Stay picks the property type */}
+          {/* Options inside a group: Transport, Shipping and Events pick a tab, Stay picks the property type */}
           {(activeTile.items.length > 1 || activeTile.id === 'stay') && (
             <div className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 sm:px-5 py-3 bg-gray-50/60">
               {activeTile.id === 'stay'
@@ -2916,6 +2912,10 @@ export default function Home() {
             {activeTab === 'shipping' && (
               <ShippingTab user={user} />
             )}
+
+            {/* Trucks, cargo and containers sold through Lyrtrip */}
+            {activeTab === 'truck' && <FreightPanel key="truck" mode="truck" />}
+            {activeTab === 'freight' && <FreightPanel key="freight" mode="freight" />}
 
           </div>
         </div>
