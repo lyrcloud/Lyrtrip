@@ -394,6 +394,12 @@ const ICON_MOTION: Record<string, IconMotion> = {
     { transform: 'rotate(-4deg) translateY(-2px)', offset: 0.8 },
     { transform: 'rotate(0) translateY(0)' },
   ] },
+  helicopter: { duration: 1100, easing: 'ease-in-out', frames: [
+    { transform: 'translateY(0) rotate(0)' },
+    { transform: 'translateY(-10px) rotate(-6deg)', offset: 0.35 },
+    { transform: 'translateY(-14px) rotate(4deg)', offset: 0.6 },
+    { transform: 'translateY(0) rotate(0)' },
+  ] },
   dash: { duration: 900, easing: 'ease-out', frames: [
     { transform: 'perspective(200px) rotateY(0) translateY(0)' },
     { transform: 'perspective(200px) rotateY(180deg) translateY(-18px)', offset: 0.45 },
@@ -1327,30 +1333,49 @@ export default function Home() {
 
   const tabs = [
     { id: 'flights', icon: '✈️', label: t('Flights'), sub: t('Fly anywhere') },
+    { id: 'bus', icon: '🚌', label: t('Bus'), sub: t('Intercity routes') },
+    { id: 'train', icon: '🚂', label: t('Train'), sub: t('Rail journeys') },
+    { id: 'cruise', icon: '🚢', label: t('Cruise'), sub: t('Sail away') },
+    { id: 'car', icon: '🚗', label: t('Car'), sub: t('Book a ride') },
+    { id: 'taxi', icon: '🚕', label: t('Taxi'), sub: t('Licensed taxis') },
+    { id: 'limo', icon: '🥂', label: t('Limo'), sub: t('Luxury rides') },
+    { id: 'motorcycle', icon: '🏍️', label: t('Motorcycle'), sub: t('Bike taxis') },
+    { id: 'bike', icon: '🚲', label: t('Bike'), sub: t('Shared bikes') },
+    { id: 'ebike', icon: '⚡', label: t('E-bike'), sub: t('Electric bikes') },
+    { id: 'scooter', icon: '🛴', label: t('Moped & scooter'), sub: t('Scooters & mopeds') },
     { id: 'helicopter', icon: '🚁', label: t('Helicopter'), sub: t('Charter a helicopter') },
     { id: 'seaplane', icon: '🛩️', label: t('Seaplane'), sub: t('Island & water flights') },
     { id: 'airambulance', icon: '🚑', label: t('Air ambulance'), sub: t('Medical flights') },
     { id: 'hotels', icon: '🏨', label: t('Hotels'), sub: t('Places to stay') },
-    { id: 'car', icon: '🚗', label: t('Car'), sub: t('Book a ride') },
-    { id: 'dash', icon: '🛵', label: t('Dash'), sub: t('Same-day courier') },
-    { id: 'bike', icon: '🚲', label: t('Bike'), sub: t('Bikes & scooters') },
-    { id: 'bus', icon: '🚌', label: t('Bus'), sub: t('Intercity routes') },
-    { id: 'train', icon: '🚂', label: t('Train'), sub: t('Rail journeys') },
-    { id: 'cruise', icon: '🚢', label: t('Cruise'), sub: t('Sail away') },
+    { id: 'shipping', icon: '📦', label: t('Shipment'), sub: t('Send parcels') },
+    { id: 'dash', icon: '🛵', label: t('Courier'), sub: t('Same-day parcels') },
+    { id: 'food', icon: '🍱', label: t('Food delivery'), sub: t('From any restaurant') },
     { id: 'tourism', icon: '🎒', label: t('Tourism'), sub: t('Tours & trips') },
     { id: 'study', icon: '🎓', label: t('Study'), sub: t('Study abroad') },
     { id: 'career', icon: '💼', label: t('Job'), sub: t('Find work') },
     { id: 'events', icon: '🎟️', label: t('Events'), sub: t('Concerts & shows') },
     { id: 'charity', icon: '🤲', label: t('Charity'), sub: t('Donate & give') },
-    { id: 'shipping', icon: '📦', label: t('Shipping'), sub: t('Send parcels') },
   ];
   const tabById = Object.fromEntries(tabs.map(tab => [tab.id, tab]));
+  // Ride tabs share one booking flow (estimate, then book with Lyrtrip's 10% once ride booking opens); each shows its own tiers
+  const RIDE_KINDS: Record<string, { title: string; none: string; tiers: string[] }> = {
+    car: { title: t('Request a ride'), none: t('No cars on this route right now.'), tiers: ['Standard', 'Comfort', 'XL', 'Premium', 'Premium SUV'] },
+    taxi: { title: t('Book a taxi'), none: t('No taxis on this route right now. Try a car instead.'), tiers: ['Taxi'] },
+    limo: { title: t('Book a limo or luxury car'), none: t('No luxury cars on this route right now.'), tiers: ['Limo', 'Premium', 'Premium SUV'] },
+    motorcycle: { title: t('Book a motorcycle taxi'), none: t('No motorcycle taxis in this city right now. Try a car instead.'), tiers: ['Motorcycle'] },
+  };
+  const kindPrices = RIDE_KINDS[activeTab] ? uberPrices.filter(r => RIDE_KINDS[activeTab].tiers.includes(r.name)) : [];
+  // Bikes, e-bikes and scooters: not bookable yet
+  const MICRO_RIDES: Record<string, [string, string]> = {
+    bike: ['🚲', t('Bike rides')], ebike: ['⚡', t('E-bike rides')], scooter: ['🛴', t('Moped & scooter rides')],
+  };
 
-  // The tiles: Transport, Stay, Ride and Events group several tabs (shown as a row of options below)
+  // The tiles: Transport, Helicopter, Stay, Shipping and Events group several tabs (shown as a row of options below)
   const TAB_GROUPS = [
-    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, air charters, bus, train & cruise'), items: ['flights', 'helicopter', 'seaplane', 'airambulance', 'bus', 'train', 'cruise'] },
+    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, bus, train, cruise & rides'), items: ['flights', 'bus', 'train', 'cruise', 'car', 'taxi', 'limo', 'motorcycle', 'bike', 'ebike', 'scooter'] },
+    { id: 'aircharter', icon: '🚁', motion: 'helicopter', label: t('Helicopter'), sub: t('Helicopter, seaplane & air ambulance'), items: ['helicopter', 'seaplane', 'airambulance'] },
     { id: 'stay', icon: '🏨', motion: 'hotels', label: t('Stay'), sub: t('Hotels, homestays & more'), items: ['hotels'] },
-    { id: 'ride', icon: '🚗', motion: 'car', label: t('Ride'), sub: t('Car, dash & bike'), items: ['car', 'dash', 'bike'] },
+    { id: 'shippinggroup', icon: '📦', motion: 'shipping', label: t('Shipping'), sub: t('Shipments, courier & food'), items: ['shipping', 'dash', 'food'] },
     { id: 'eventsgroup', icon: '🎟️', motion: 'events', label: t('Events'), sub: t('Shows, summits & charity'), items: ['events', 'charity'] },
   ];
   const tiles = [
@@ -2240,7 +2265,7 @@ export default function Home() {
             })}
           </div>
 
-          {/* Options inside a group: Transport, Ride and Events pick a tab, Stay picks the property type */}
+          {/* Options inside a group: Transport, Helicopter, Shipping and Events pick a tab, Stay picks the property type */}
           {(activeTile.items.length > 1 || activeTile.id === 'stay') && (
             <div className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 sm:px-5 py-3 bg-gray-50/60">
               {activeTile.id === 'stay'
@@ -2261,12 +2286,15 @@ export default function Home() {
           <div key={activeTab} role="tabpanel" className="p-5 sm:p-8 animate-[panelIn_250ms_ease-out]">
 
             {/* Bike: no booking partner yet */}
-            {activeTab === 'bike' && (
+            {MICRO_RIDES[activeTab] && (
               <div className="text-center py-10">
-                <p className="text-5xl mb-3" aria-hidden>🚲</p>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">{t('Bike & scooter rides')}</h3>
-                <p className="text-gray-600 max-w-md mx-auto mb-5">{t('Booking bikes, e-bikes and scooters on Lyrtrip opens soon. Need to get there now? Book a car.')}</p>
-                <button onClick={() => switchTab('car')} className="px-5 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover transition">{t('Book a car')}</button>
+                <p className="text-5xl mb-3" aria-hidden>{MICRO_RIDES[activeTab][0]}</p>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">{MICRO_RIDES[activeTab][1]}</h3>
+                <p className="text-gray-600 max-w-md mx-auto mb-5">{t('Booking bikes, e-bikes, mopeds and scooters on Lyrtrip opens soon. Need to get there now? Book a car or a motorcycle taxi.')}</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button onClick={() => switchTab('car')} className="px-5 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover transition">{t('Book a car')}</button>
+                  <button onClick={() => switchTab('motorcycle')} className="px-5 py-2.5 bg-white text-gray-800 ring-1 ring-gray-200 rounded-xl font-semibold hover:ring-brand-300 transition">{t('Book a motorcycle taxi')}</button>
+                </div>
               </div>
             )}
 
@@ -2414,7 +2442,7 @@ export default function Home() {
             )}
 
             {/* Car */}
-            {activeTab === 'car' && (
+            {RIDE_KINDS[activeTab] && (
               <div>
                 <div>
                   {/* City header */}
@@ -2430,7 +2458,7 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <h3 className="text-xl font-bold text-gray-900 mb-3">Request a ride</h3>
+                  <h3 className="text-xl font-bold text-gray-900 mb-3">{RIDE_KINDS[activeTab].title}</h3>
 
                   <button className="mb-4 px-4 py-2 bg-gray-100 rounded-full text-sm font-medium text-gray-700 hover:bg-gray-200 transition">
                     🕐 Pickup now ▾
@@ -2473,9 +2501,12 @@ export default function Home() {
                   </button>
 
                   {/* Live price results */}
-                  {uberPrices.length > 0 && (
+                  {uberPrices.length > 0 && !kindPrices.length && (
+                    <p className="text-sm text-gray-600 mb-3">{RIDE_KINDS[activeTab].none}</p>
+                  )}
+                  {kindPrices.length > 0 && (
                     <div className="space-y-3">
-                      {uberPrices.map(ride => {
+                      {kindPrices.map(ride => {
                         const baseFare   = Math.round((ride.lowEstimate + ride.highEstimate) / 2);
                         const serviceFee = Math.max(2, Math.round(baseFare * 0.1));
                         return (
@@ -2618,7 +2649,7 @@ export default function Home() {
             )}
 
             {/* Dash (Food Delivery) */}
-            {activeTab === 'dash' && (
+            {(activeTab === 'dash' || activeTab === 'food') && (
               <div>
                 {/* Header row */}
                 <div className="flex items-center justify-between mb-5">
@@ -2628,7 +2659,7 @@ export default function Home() {
                   </div>
                 </div>
 
-                <CourierDelivery user={user} />
+                <CourierDelivery key={activeTab} user={user} food={activeTab === 'food'} />
 
               </div>
             )}

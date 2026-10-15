@@ -2663,6 +2663,9 @@ const RIDE_TIERS = [
   { name: 'XL',           emoji: '🚐', seats: '1–6', base: 4.50, mile: 2.00, min: 0.40, minFare: 12, spread: 0.18 },
   { name: 'Premium',      emoji: '🖤', seats: '1–4', base: 8.00, mile: 3.50, min: 0.65, minFare: 20, spread: 0.18 },
   { name: 'Premium SUV',  emoji: '🚙', seats: '1–6', base: 10.0, mile: 4.50, min: 0.80, minFare: 25, spread: 0.18 },
+  { name: 'Limo',         emoji: '🥂', seats: '1–6', base: 15.0, mile: 5.50, min: 1.00, minFare: 60, spread: 0.20 },
+  { name: 'Taxi',         emoji: '🚕', seats: '1–4', base: 3.00, mile: 2.50, min: 0.40, minFare:  8, spread: 0.20 },
+  { name: 'Motorcycle',   emoji: '🏍️', seats: '1',   base: 1.00, mile: 0.60, min: 0.10, minFare:  3, spread: 0.20 },
 ];
 
 async function handleUberEstimates(event) {
@@ -2899,12 +2902,13 @@ const SUPPORT_EMAIL = 'support@lyrtrip.com';
 const LYRBOT_SYSTEM_PROMPT = `You are Lyrbot, the help assistant on Lyrtrip (lyrtrip.com), a travel booking site. You chat with travellers in a small window on the site.
 
 What you know about Lyrtrip:
-- Search: the home page searches flights, hotels, car rides, Dash (same-day courier delivery), shipping, bus, train, cruise, tourism (tour packages, visas, passports, insurance and destination ideas), events, study abroad and careers.
+- Home page tiles: Transport (flights, bus, train, cruise, and rides: car, taxi, limo, motorcycle taxi, bike, e-bike, moped and scooter), Helicopter (helicopter, seaplane and air ambulance charters), Stay (hotels), Shipping (shipments, same-day courier and food delivery), tourism (tour packages, visas, passports, insurance and destination ideas), events, study abroad and careers.
 - Accounts: sign in or create an account at lyrtrip.com/login with email, Google, Facebook or WeChat. New email accounts confirm a 6-digit code sent by email; "Forgot password?" on the sign-in form emails a reset code. The dashboard (lyrtrip.com/dashboard) shows the traveller's tours and bookings.
 - Flights: booked and ticketed directly on Lyrtrip, paid securely by card through Stripe. After payment the e-ticket and booking reference arrive by email and on the receipt page. Baggage allowance and change or refund rules depend on the fare and are set by the airline.
 - Hotels: the guest pays the hotel's total plus a 12% Lyrtrip service fee, and Lyrtrip books the room directly with the property, then emails the hotel's confirmation number. If the hotel can't confirm, the guest is refunded in full (allow 5-10 business days for the card refund). Check-in times, deposits and cancellation rules are set by the hotel.
-- Rides: the Car tab shows fare estimates; booking rides on Lyrtrip opens soon.
-- Courier: the Dash tab books a same-day courier that picks up an item and delivers it across town, usually within the hour, paid on Lyrtrip with live status on the receipt page.
+- Rides: the car, taxi, limo and motorcycle options show fare estimates; booking rides, bikes, e-bikes and scooters on Lyrtrip opens soon.
+- Air charters: helicopter, seaplane and air ambulance requests get a quote from Lyrtrip (the operator's price plus a 10% service charge), paid by card, and are followed at lyrtrip.com/helicopter/requests. Air ambulance is not an emergency service: for a life-threatening emergency, tell the traveller to call their local emergency number.
+- Courier and food delivery: the Courier option books a same-day courier that picks up an item and delivers it across town, usually within the hour, paid on Lyrtrip with live status on the receipt page. Food delivery uses the same courier to collect a meal the traveller has already ordered and paid for at a restaurant.
 - Shipping: the Shipping tab compares courier rates (USPS, FedEx, UPS, DHL and more) for parcels worldwide and sells a printable label.
 - Never mention which company provides Lyrtrip's courier deliveries.
 - Payment: card payments are processed by Stripe; Lyrtrip never sees card numbers.
@@ -4450,9 +4454,12 @@ async function guestRidesFetch(path, { method = 'GET', body, timeoutMs = 20_000 
 // Uber's product names mapped to Lyrtrip's neutral tiers; shared, pet, accessible and other special products are not offered
 function rideTierName(displayName) {
   const n = String(displayName ?? '');
-  if (/share|pool|pet|wav|assist|access|teen|senior|moto|taxi|reserve|courier|connect|package|flash|hourly/i.test(n)) return null;
+  if (/share|pool|pet|wav|assist|access|teen|senior|reserve|courier|connect|package|flash|hourly/i.test(n)) return null;
+  if (/moto|bike|auto|tuk/i.test(n)) return /moto|bike/i.test(n) ? 'Motorcycle' : null;
+  if (/taxi/i.test(n)) return 'Taxi';
+  if (/lux|limo/i.test(n)) return 'Limo';
   if (/suv/i.test(n)) return 'Premium SUV';
-  if (/black|lux|premier|select/i.test(n)) return 'Premium';
+  if (/black|premier|select/i.test(n)) return 'Premium';
   if (/xl/i.test(n)) return 'XL';
   if (/comfort/i.test(n)) return 'Comfort';
   if (/^uber\s*x$|^x$|standard|green|electric|uberx/i.test(n)) return 'Standard';

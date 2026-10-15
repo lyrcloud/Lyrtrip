@@ -13,10 +13,11 @@ const SIZES: [string, string][] = [['small', 'Small (fits in a bag)'], ['medium'
 const input = 'w-full px-3 py-2.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100';
 const label = 'block text-xs font-medium text-gray-600 mb-1';
 
-// Same-day courier delivery, booked and paid on Lyrtrip (the courier partner's fee + 10%)
-export default function CourierDelivery({ user }: { user: { email?: string; name?: string } | null }) {
-  const [pickup, setPickup] = useState<Stop>({ ...EMPTY, name: user?.name ?? '' });
-  const [dropoff, setDropoff] = useState<Stop>(EMPTY);
+// Same-day courier delivery, booked and paid on Lyrtrip (the courier partner's fee + 10%). With `food`, the courier
+// collects a meal the customer has already ordered and paid for at a restaurant, and brings it to them.
+export default function CourierDelivery({ user, food = false }: { user: { email?: string; name?: string } | null; food?: boolean }) {
+  const [pickup, setPickup] = useState<Stop>({ ...EMPTY, name: food ? '' : user?.name ?? '' });
+  const [dropoff, setDropoff] = useState<Stop>({ ...EMPTY, name: food ? user?.name ?? '' : '' });
   const [item, setItem] = useState({ description: '', size: 'small', value: '' });
   const [email, setEmail] = useState(user?.email ?? '');
   const [leaveAtDoor, setLeaveAtDoor] = useState(false);
@@ -28,7 +29,7 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
   const [error, setError] = useState<string | null>(null);
 
   const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-  const payload = () => ({ pickup, dropoff, item: { ...item, value: Number(item.value) || 0 } });
+  const payload = () => ({ pickup, dropoff, item: { ...item, description: food && item.description.trim() ? `Food order: ${item.description.trim()}` : item.description, value: Number(item.value) || 0 } });
   const stale = () => { setQuote(null); setError(null); };
   const setStop = (side: 'pickup' | 'dropoff', k: keyof Stop, v: string) => {
     (side === 'pickup' ? setPickup : setDropoff)(s => ({ ...s, [k]: v }));
@@ -80,9 +81,9 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
 
   const stopFields = (side: 'pickup' | 'dropoff', s: Stop) => (
     <div className="rounded-2xl border border-gray-200 p-4 space-y-2">
-      <p className="font-semibold text-gray-900">{side === 'pickup' ? '📍 Pick up from' : '🏁 Deliver to'}</p>
+      <p className="font-semibold text-gray-900">{side === 'pickup' ? (food ? '🍽️ Restaurant' : '📍 Pick up from') : '🏁 Deliver to'}</p>
       <div className="grid grid-cols-2 gap-2">
-        <div><label className={label}>Contact name *</label><input className={input} value={s.name} onChange={e => setStop(side, 'name', e.target.value)} /></div>
+        <div><label className={label}>{food && side === 'pickup' ? 'Restaurant name *' : 'Contact name *'}</label><input className={input} value={s.name} onChange={e => setStop(side, 'name', e.target.value)} /></div>
         <div><label className={label}>Phone *</label><input className={input} type="tel" placeholder="+1 718 555 0100" value={s.phone} onChange={e => setStop(side, 'phone', e.target.value)} /></div>
         <div className="col-span-2"><label className={label}>Street address *</label><input className={input} value={s.line1} onChange={e => setStop(side, 'line1', e.target.value)} /></div>
         <div><label className={label}>Apt / suite</label><input className={input} value={s.line2} onChange={e => setStop(side, 'line2', e.target.value)} /></div>
@@ -90,7 +91,7 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
         <div><label className={label}>State</label><input className={input} value={s.state} onChange={e => setStop(side, 'state', e.target.value)} /></div>
         <div><label className={label}>ZIP / postal code</label><input className={input} value={s.postalCode} onChange={e => setStop(side, 'postalCode', e.target.value)} /></div>
         <div className="col-span-2"><label className={label}>Notes for the courier</label>
-          <input className={input} maxLength={280} placeholder={side === 'pickup' ? 'e.g. Ask at the front desk' : 'e.g. Buzz 4B, leave with doorman'} value={s.notes} onChange={e => setStop(side, 'notes', e.target.value)} /></div>
+          <input className={input} maxLength={280} placeholder={side === 'pickup' ? (food ? 'e.g. Collect order #482 under Priya at the counter' : 'e.g. Ask at the front desk') : 'e.g. Buzz 4B, leave with doorman'} value={s.notes} onChange={e => setStop(side, 'notes', e.target.value)} /></div>
       </div>
     </div>
   );
@@ -98,10 +99,12 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
   return (
     <div className="rounded-2xl border-2 border-emerald-100 bg-emerald-50/30 p-4 sm:p-5 mb-8 space-y-4">
       <div className="flex items-center gap-3">
-        <span className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-xl">🛵</span>
+        <span className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-xl">{food ? '🍱' : '🛵'}</span>
         <div>
-          <h3 className="text-lg font-bold text-gray-900">Send anything across town</h3>
-          <p className="text-sm text-gray-600">A courier picks it up and delivers it today, usually within the hour. Book, pay and track it all here.</p>
+          <h3 className="text-lg font-bold text-gray-900">{food ? 'Food delivery from any restaurant' : 'Send anything across town'}</h3>
+          <p className="text-sm text-gray-600">{food
+            ? 'Order and pay at the restaurant for pickup, then a Lyrtrip courier collects it and brings it to you, usually within the hour.'
+            : 'A courier picks it up and delivers it today, usually within the hour. Book, pay and track it all here.'}</p>
         </div>
       </div>
 
@@ -111,8 +114,8 @@ export default function CourierDelivery({ user }: { user: { email?: string; name
       </div>
 
       <div className="rounded-2xl border border-gray-200 bg-white p-4 grid sm:grid-cols-4 gap-2">
-        <div className="sm:col-span-2"><label className={label}>What are we delivering? *</label>
-          <input className={input} placeholder="e.g. House keys, documents, a gift" value={item.description} onChange={e => { setItem({ ...item, description: e.target.value }); stale(); }} /></div>
+        <div className="sm:col-span-2"><label className={label}>{food ? 'Your order *' : 'What are we delivering? *'}</label>
+          <input className={input} placeholder={food ? 'e.g. Order #482: 2 bags, hot food' : 'e.g. House keys, documents, a gift'} value={item.description} onChange={e => { setItem({ ...item, description: e.target.value }); stale(); }} /></div>
         <div><label className={label}>Size</label>
           <select className={input} value={item.size} onChange={e => { setItem({ ...item, size: e.target.value }); stale(); }}>
             {SIZES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
