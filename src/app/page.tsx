@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import React from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import AirportInput from '@/components/AirportInput';
 import LocationMap from '@/components/LocationMap';
 import LocationPicker from '@/components/LocationPicker';
@@ -16,6 +17,7 @@ import CourierDelivery from '@/components/CourierDelivery';
 import RideBooking from '@/components/RideBooking';
 import JobProfilePromo from '@/components/JobProfilePromo';
 import JobApplyDialog, { type ApplyJob } from '@/components/JobApplyDialog';
+import StudyApplyDialog, { type ApplyStudy } from '@/components/StudyApplyDialog';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -555,6 +557,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [applyJob, setApplyJob] = useState<ApplyJob | null>(null);
+  const [applyStudy, setApplyStudy] = useState<ApplyStudy | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [showLocationMap, setShowLocationMap] = useState(false);
   const [flightSearchError, setFlightSearchError] = useState<string | null>(null);
@@ -1710,10 +1713,44 @@ export default function Home() {
     );
     return (
       <div className="mt-6 space-y-3">
-        {results.map(r => r.kind === 'place' ? placeCard(r) : linkCard(r))}
+        {results.map(studyCard)}
       </div>
     );
   };
+
+  // Study results never show the institution's website, phone or page: students apply through Lyrtrip
+  const studyCard = (r: SearchResult) => (
+    <div key={r.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition animate-[panelIn_250ms_ease-out]">
+      {r.kind === 'place' && (
+        <div className="relative w-24 sm:w-36 shrink-0 bg-brand-50 flex items-center justify-center text-4xl" aria-hidden>
+          🏫
+          {r.imageUrl && (
+            <img src={r.imageUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+          )}
+        </div>
+      )}
+      <div className="flex-1 min-w-0 p-4">
+        <h3 className="font-bold text-gray-900 leading-tight">{r.name}</h3>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
+          {r.placeType && <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600">{r.placeType}</span>}
+          {r.rating != null && <span className="text-yellow-600 font-semibold">★ {r.rating}</span>}
+          {r.reviewCount != null && <span>({r.reviewCount.toLocaleString()} reviews)</span>}
+          {r.postedAt && <span>{r.postedAt}</span>}
+        </div>
+        {r.address && <p className="mt-1 text-sm text-gray-600 line-clamp-2">{r.address}</p>}
+        {r.description && <p className="mt-1 text-sm text-gray-600 line-clamp-3">{r.description}</p>}
+        <div className="mt-3">
+          {r.applyToken ? (
+            <button type="button"
+              onClick={() => setApplyStudy({ name: r.name, placeType: r.placeType, address: r.address, applyToken: r.applyToken!, type: studyChoice === 'Scholarship' ? 'scholarship' : 'admission' })}
+              className="px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition">
+              {studyChoice === 'Scholarship' ? 'Apply for scholarship via Lyrtrip →' : 'Apply via Lyrtrip →'}
+            </button>
+          ) : <span className="text-xs text-gray-400">Example listing</span>}
+        </div>
+      </div>
+    </div>
+  );
 
   const JobList = () => {
     if (!hasSearched) return null;
@@ -2636,7 +2673,13 @@ export default function Home() {
                     </div>
                     {searchBtn('study', choice.id === 'study-academy' && !studyForm.location.trim() && !studyForm.query.trim())}
                   </div>
+                  <div className="mt-5 rounded-2xl bg-gradient-to-r from-brand-50 to-amber-50 ring-1 ring-brand-100 p-4 flex flex-wrap items-center gap-3">
+                    <span className="text-3xl" aria-hidden>🎓</span>
+                    <p className="flex-1 min-w-[220px] text-sm text-gray-700"><span className="font-bold text-gray-900">Apply through Lyrtrip.</span> Build your student profile once with every document, and we apply to schools and scholarships for you. Plans from $5 a month; institution fees plus 10% service.</p>
+                    <Link href="/study/profile" className="px-4 py-2 rounded-xl bg-btn text-white text-sm font-semibold hover:bg-btn-hover">My student profile</Link>
+                  </div>
                   <StudyList />
+                  {applyStudy && <StudyApplyDialog item={applyStudy} onClose={() => setApplyStudy(null)} />}
                 </div>
               );
             })()}

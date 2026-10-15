@@ -2145,9 +2145,25 @@ async function searchStudySerpApi({ category, level, query, location }) {
   const where = location ? ` in ${location}` : '';
   const year  = new Date().getFullYear();
   const keywords = (query || '').trim();
-  if (category === 'academy') return searchMapsPlaces(`${keywords ? `${keywords} ` : ''}${kind}${where}`, 'study');
-  const topic = category === 'admission' ? `admission ${year}` : `scholarships ${year}`;
-  return searchWebLinks(`${keywords || kind} ${topic}${where}`, 'study');
+  const results = category === 'academy'
+    ? await searchMapsPlaces(`${keywords ? `${keywords} ` : ''}${kind}${where}`, 'study')
+    : await searchWebLinks(`${keywords || kind} ${category === 'admission' ? `admission ${year}` : `scholarships ${year}`}${where}`, 'study');
+  return results.map(r => studyResult(r, category));
+}
+
+// Students apply through Lyrtrip, so study results never show the school's website, phone or page link.
+// What the admin needs to apply travels inside a sealed token, as for jobs.
+function studyResult(r, category) {
+  const sealed = sealJob({
+    study: true, category, kind: r.kind, name: r.name, placeType: r.placeType ?? null, address: r.address ?? '',
+    website: r.website ?? null, phone: r.phone ?? null, mapsLink: r.mapsLink ?? null,
+    link: r.link ?? null, source: r.source ?? null, description: (r.description ?? '').slice(0, 1500), at: Date.now(),
+  });
+  return {
+    id: r.id, kind: r.kind, name: scrubJobContacts(r.name), placeType: r.placeType ?? null, address: r.address ?? null,
+    rating: r.rating ?? null, reviewCount: r.reviewCount ?? null, openState: r.openState ?? null, imageUrl: r.imageUrl ?? null,
+    description: scrubJobContacts(r.description ?? '').slice(0, 400), postedAt: r.postedAt ?? null, price: null, applyToken: sealed,
+  };
 }
 
 // Visa requirement between any two countries, from the open Passport Index dataset (cached per Lambda container)
@@ -3137,6 +3153,7 @@ async function handleAdmin(event) {
   const db = await getDb();
 
   try {
+    if (String(body.action ?? '').startsWith('studyapps.')) return (await studyAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     switch (body.action) {
       case 'me':
         return json(200, { email: actor.email, role: actor.role });
@@ -5290,6 +5307,538 @@ async function handleJobs(event) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Study applications (Study tab): students build a profile with every document admissions and
+// scholarships ask for, take a plan (same prices as job profiles) and apply to schools and
+// scholarships through Lyrtrip. Lyrtrip never shows them the institution's website or contacts:
+// an admin applies for them, quotes the institution's fee, and the student pays that fee plus
+// Lyrtrip's 10% service charge. Files share the private JOB_PROFILE_BUCKET under students/.
+// ---------------------------------------------------------------------------
+
+const STUDY_PLANS = {
+  basic:   { name: 'Basic',   rank: 1, monthly: 5,  apps: 3,  perks: ['Apply to up to 3 programs or scholarships per billing period', 'Lyrtrip checks your documents before applying', 'Status updates by email'] },
+  plus:    { name: 'Plus',    rank: 2, monthly: 9,  apps: 8,  perks: ['Up to 8 applications per billing period', 'Everything in Basic', 'Priority document review'] },
+  premium: { name: 'Premium', rank: 3, monthly: 15, apps: 25, perks: ['Up to 25 applications per billing period', 'Everything in Plus', 'Your applications are handled first'] },
+};
+const STUDY_SERVICE_RATE = 0.10;  // Lyrtrip's charge on top of the institution's admission or scholarship fee
+const PERIOD_DAYS = { week: 7, month: 30, month3: 91, month6: 182, year: 365 };
+const STUDY_LEVEL_OPTIONS = ['Secondary school', 'Foundation / pathway', 'Diploma / certificate', "Bachelor's", "Master's", 'MBA', 'PhD / doctorate', 'Language course'];
+const FUNDING_OPTIONS = ['Self-funded', 'Family', 'Sponsor / employer', 'Education loan', 'Need a scholarship'];
+const TEST_OPTIONS = ['IELTS', 'TOEFL', 'PTE', 'Duolingo', 'Cambridge', 'SAT', 'ACT', 'GRE', 'GMAT', 'Other'];
+const DOC_TYPES = {
+  'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+  'application/msword': 'doc', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+};
+// Every document a student can upload; `for` says which applications need it
+const STUDY_DOCS = {
+  photo:        { label: 'Passport-size photo',                    for: ['admission', 'scholarship'], images: true },
+  passport:     { label: 'Passport (photo page)',                  for: ['admission', 'scholarship'] },
+  transcripts:  { label: 'Academic transcripts / mark sheets',     for: ['admission', 'scholarship'] },
+  certificates: { label: 'Certificates / diplomas',                for: ['admission', 'scholarship'] },
+  cv:           { label: 'CV / résumé',                            for: ['admission', 'scholarship'] },
+  sop:          { label: 'Statement of purpose',                   for: ['admission', 'scholarship'] },
+  lor1:         { label: 'Recommendation letter 1',                for: ['admission', 'scholarship'] },
+  lor2:         { label: 'Recommendation letter 2',                for: ['scholarship'] },
+  englishTest:  { label: 'English test result (IELTS, TOEFL…)',    for: ['admission', 'scholarship'], waivable: true },
+  essay:        { label: 'Scholarship essay',                      for: ['scholarship'] },
+  financial:    { label: 'Financial documents (bank statement, income proof)', for: ['scholarship'] },
+  portfolio:    { label: 'Portfolio (art, design, architecture)',  for: [] },
+  other:        { label: 'Other supporting document',              for: [] },
+};
+const STUDY_DOC_MAX = 10 * 1024 * 1024;
+const STUDY_APP_STATUS = {
+  submitted: 'Received by Lyrtrip', docs_needed: 'More documents needed', fee_due: 'Fee to pay', processing: 'Lyrtrip is applying',
+  applied: 'Submitted to the institution', interview: 'Interview requested', offer: 'Offer / award received', rejected: 'Not successful',
+  withdrawn: 'Withdrawn',
+};
+const STUDY_WITHDRAWABLE = ['submitted', 'docs_needed', 'fee_due'];
+
+function cleanStudyProfile(b) {
+  const s = (v, max) => String(v ?? '').trim().slice(0, max);
+  const list = (v, max, each) => (Array.isArray(v) ? v : []).map(x => s(x, each)).filter(Boolean).slice(0, max);
+  const day = v => (/^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s(v, 10)) ? s(v, 10) : '');
+  const month = v => (/^(19|20)\d{2}-(0[1-9]|1[0-2])$/.test(s(v, 7)) ? s(v, 7) : '');
+  const year = v => (/^(19|20)\d{2}$/.test(s(v, 4)) ? s(v, 4) : '');
+  const phoneRaw = s(b.phone, 30);
+  const phone = phoneRaw ? parsePhoneNumberFromString(phoneRaw, 'US') : null;
+  if (phoneRaw && !phone?.isValid()) throw new JobError("The phone number isn't valid. Include the country code, e.g. +44 7700 900123");
+  const email = s(b.email, 120).toLowerCase();
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new JobError("The email address isn't valid");
+  const work = b.workYears === '' || b.workYears == null ? null : Number(b.workYears);
+  if (work != null && !(work >= 0 && work <= 60)) throw new JobError('Years of work experience must be 0 to 60');
+  return {
+    firstName: s(b.firstName, 40), lastName: s(b.lastName, 40), dateOfBirth: day(b.dateOfBirth), gender: s(b.gender, 30),
+    nationality: s(b.nationality, 60), countryOfResidence: s(b.countryOfResidence, 60), city: s(b.city, 60), address: s(b.address, 200),
+    email, phone: phone?.number ?? '', passportNumber: s(b.passportNumber, 20).toUpperCase(), passportExpiry: day(b.passportExpiry),
+    studyLevel: STUDY_LEVEL_OPTIONS.includes(b.studyLevel) ? b.studyLevel : '', fieldsOfStudy: list(b.fieldsOfStudy, 5, 60),
+    preferredCountries: list(b.preferredCountries, 5, 60), intake: month(b.intake), budgetPerYear: s(b.budgetPerYear, 60),
+    fundingSource: FUNDING_OPTIONS.includes(b.fundingSource) ? b.fundingSource : '',
+    education: (Array.isArray(b.education) ? b.education : []).slice(0, 8).map(e => ({
+      school: s(e?.school, 100), qualification: s(e?.qualification, 80), field: s(e?.field, 80), grade: s(e?.grade, 40),
+      country: s(e?.country, 60), start: year(e?.start), end: year(e?.end),
+    })).filter(e => e.school),
+    tests: (Array.isArray(b.tests) ? b.tests : []).slice(0, 6).map(t => ({
+      test: TEST_OPTIONS.includes(t?.test) ? t.test : 'Other', score: s(t?.score, 30), date: month(t?.date),
+    })).filter(t => t.score),
+    englishWaiver: !!b.englishWaiver, languages: list(b.languages, 10, 40), workYears: work,
+    goals: s(b.goals, 2000), achievements: s(b.achievements, 2000),
+    guardianName: s(b.guardianName, 80), guardianPhone: s(b.guardianPhone, 30),
+  };
+}
+
+const ENGLISH_TESTS = new Set(['IELTS', 'TOEFL', 'PTE', 'Duolingo', 'Cambridge']);
+
+// What is still missing before applying, as the form labels it
+function studyMissing(p, type = 'admission') {
+  const m = [];
+  if (!p) return ['Your student profile'];
+  if (!p.firstName || !p.lastName) m.push('Full name');
+  if (!p.dateOfBirth) m.push('Date of birth');
+  if (!p.nationality) m.push('Nationality');
+  if (!p.countryOfResidence || !p.city) m.push('Country and city of residence');
+  if (!p.email) m.push('Email');
+  if (!p.phone) m.push('Phone');
+  if (!p.passportNumber || !p.passportExpiry) m.push('Passport number and expiry');
+  else if (Date.parse(p.passportExpiry) < Date.now() + 180 * 864e5) m.push('A passport valid for at least 6 more months');
+  if (!p.studyLevel) m.push('Level you want to study');
+  if (!p.fieldsOfStudy?.length) m.push('Fields of study');
+  if (!p.preferredCountries?.length) m.push('Countries you want to study in');
+  if (!p.intake) m.push('Intake (when you want to start)');
+  if (!p.fundingSource) m.push('How you will pay');
+  if (!p.education?.some(e => e.school && e.qualification && e.grade)) m.push('Education with your grade');
+  const english = p.englishWaiver || p.tests?.some(t => ENGLISH_TESTS.has(t.test));
+  if (!english) m.push('English test score (or tick the English waiver)');
+  if ((p.goals ?? '').length < 50) m.push('Study goals (at least 50 characters)');
+  if (type === 'scholarship' && (p.achievements ?? '').length < 30) m.push('Achievements and activities (at least 30 characters)');
+  for (const [kind, d] of Object.entries(STUDY_DOCS)) {
+    if (!d.for.includes(type) || p.docs?.[kind]) continue;
+    if (d.waivable && p.englishWaiver) continue;
+    m.push(d.label);
+  }
+  return m;
+}
+
+const studyName = p => `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim();
+const studyAppId = (sub, type, inst, program) =>
+  `${sub}:${type}:${createHash('sha256').update(`${inst.link || inst.mapsLink || `${inst.name}|${inst.address}`}|${program.toLowerCase()}`).digest('hex').slice(0, 24)}`;
+const feeTotals = fee => {
+  const service = Math.round(fee * STUDY_SERVICE_RATE * 100) / 100;
+  return { fee, service, total: Math.round((fee + service) * 100) / 100 };
+};
+
+// What the student sees: never the institution's website, phone or page link
+const studentStudyApp = a => ({
+  id: a._id, type: a.type, institution: scrubJobContacts(a.institution.name), placeType: a.institution.placeType ?? null,
+  address: a.institution.address ?? '', program: a.program, intake: a.intake ?? '', status: a.status,
+  statusLabel: STUDY_APP_STATUS[a.status] ?? a.status, message: a.studentMessage ?? '',
+  fee: a.fee ? { ...feeTotals(a.fee.amount), label: a.fee.label, paidAt: a.fee.paidAt ?? null } : null,
+  createdAt: a.createdAt, updatedAt: a.updatedAt,
+});
+
+function studyPlansReply() {
+  return {
+    plans: Object.entries(STUDY_PLANS).map(([id, p]) => ({ id, name: p.name, monthly: p.monthly, apps: p.apps, perks: p.perks })),
+    periods: Object.entries(JOB_PERIODS).map(([id, p]) => ({ id, label: p.label, price: p.price })),
+    serviceRate: STUDY_SERVICE_RATE,
+    options: { levels: STUDY_LEVEL_OPTIONS, funding: FUNDING_OPTIONS, tests: TEST_OPTIONS },
+    docs: Object.entries(STUDY_DOCS).map(([id, d]) => ({ id, label: d.label, for: d.for, images: !!d.images, waivable: !!d.waivable })),
+  };
+}
+
+async function refreshStudySub(coll, p) {
+  const sub = p.subscription;
+  if (!sub?.stripeSubscriptionId) return p;
+  const s = await mainStripe()?.subscriptions.retrieve(sub.stripeSubscriptionId).catch(() => null);
+  if (!s) return p;
+  const subscription = { ...sub, ...stripeSubFields(s, sub.plan, sub.period) };
+  await coll.updateOne({ _id: p._id }, { $set: { subscription, subscriptionCheckedAt: new Date().toISOString() } });
+  return { ...p, subscription };
+}
+
+// Applications made in the plan's current billing period count towards its limit
+async function studyAppsUsed(db, p) {
+  const sub = p?.subscription;
+  if (!subLive(sub)) return 0;
+  const start = new Date(Date.parse(sub.currentPeriodEnd) - (PERIOD_DAYS[sub.period] ?? 30) * 864e5).toISOString();
+  return db.collection('study_applications').countDocuments({ sub: p._id, createdAt: { $gte: start }, status: { $ne: 'withdrawn' } });
+}
+
+async function ownerStudyView(db, p) {
+  const docs = {};
+  for (const [kind, d] of Object.entries(p?.docs ?? {})) docs[kind] = { name: d.name, uploadedAt: d.uploadedAt, url: await signedFileUrl(d.key, d.name) };
+  const { _id, docs: _d, subscriptionCheckedAt, ...fields } = p ?? {};
+  const live = subLive(p?.subscription);
+  return {
+    profile: p ? { ...fields, id: String(_id) } : null, docs,
+    photoUrl: p?.docs?.photo ? await signedFileUrl(p.docs.photo.key) : null,
+    missing: { admission: studyMissing(p, 'admission'), scholarship: studyMissing(p, 'scholarship') },
+    subscription: p?.subscription ?? null, live,
+    appsUsed: live ? await studyAppsUsed(db, p) : 0, appsLimit: live ? STUDY_PLANS[p.subscription.plan]?.apps ?? 0 : 0,
+  };
+}
+
+// The fee was paid but the student closed the tab before coming back: settle it from Stripe
+async function settleStudyFee(db, a) {
+  if (a.status !== 'fee_due' || !a.fee?.sessionId) return a;
+  const session = await mainStripe()?.checkout.sessions.retrieve(a.fee.sessionId).catch(() => null);
+  if (session?.payment_status !== 'paid' || session.metadata?.appId !== a._id) return a;
+  const now = new Date().toISOString();
+  const set = { status: 'processing', 'fee.paidAt': now, 'fee.paymentIntent': session.payment_intent ?? null, 'fee.charged': (session.amount_total ?? 0) / 100, updatedAt: now, 'statusAt.processing': now };
+  const r = await db.collection('study_applications').updateOne({ _id: a._id, status: 'fee_due' }, { $set: set });
+  if (r.modifiedCount) {
+    await sendEmail({
+      to: superAdminEmail(), subject: `Study fee paid: ${a.applicant.name} for ${a.institution.name}`,
+      html: jobAppEmail('Fee paid: submit the application', [['Student', a.applicant.name], ['Institution', a.institution.name], ['Program', a.program], ['Paid', `USD ${set['fee.charged'].toFixed(2)}`]],
+        `Open ${SITE_URL}/admin, Study applications, to apply for them.`),
+      text: `${a.applicant.name} paid the fee for ${a.institution.name} (${a.program}). See ${SITE_URL}/admin.`,
+    });
+  }
+  return { ...a, status: 'processing', fee: { ...a.fee, paidAt: now } };
+}
+
+const snapshotDocs = p => Object.fromEntries(Object.entries(p.docs ?? {}).map(([k, d]) => [k, { key: d.key, name: d.name }]));
+const applicantSnapshot = p => ({
+  name: studyName(p), email: p.email, phone: p.phone, dateOfBirth: p.dateOfBirth, gender: p.gender ?? '', nationality: p.nationality,
+  countryOfResidence: p.countryOfResidence, city: p.city, address: p.address ?? '', passportNumber: p.passportNumber, passportExpiry: p.passportExpiry,
+  studyLevel: p.studyLevel, fieldsOfStudy: p.fieldsOfStudy ?? [], preferredCountries: p.preferredCountries ?? [], budgetPerYear: p.budgetPerYear ?? '',
+  fundingSource: p.fundingSource, education: p.education ?? [], tests: p.tests ?? [], englishWaiver: !!p.englishWaiver, languages: p.languages ?? [],
+  workYears: p.workYears ?? null, goals: p.goals ?? '', achievements: p.achievements ?? '', guardianName: p.guardianName ?? '', guardianPhone: p.guardianPhone ?? '',
+});
+
+async function handleStudy(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const db = await getDb();
+  const coll = db.collection('student_profiles');
+  const apps = db.collection('study_applications');
+  const user = await optionalUser(body.idToken);
+  const me = () => { if (!user) throw new JobError('Please sign in first.', 401); return user; };
+  const mine = async () => (await coll.findOne({ _id: me().sub })) ?? { _id: me().sub, email: me().email, createdAt: new Date().toISOString() };
+  const docInUse = key => apps.findOne({ docKeys: key }, { projection: { _id: 1 } });
+
+  try {
+    switch (body.action) {
+      case 'plans':
+        return json(200, studyPlansReply());
+
+      case 'profile.get': {
+        let p = await coll.findOne({ _id: me().sub });
+        if (p?.subscription && Date.parse(p.subscription.currentPeriodEnd) < Date.now()) p = await refreshStudySub(coll, p);
+        return json(200, { ...studyPlansReply(), ...(await ownerStudyView(db, p)), signedInEmail: me().email, signedInName: me().name });
+      }
+
+      case 'profile.save': {
+        const p = { ...(await mine()), ...cleanStudyProfile(body.profile ?? {}), updatedAt: new Date().toISOString() };
+        await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        return json(200, await ownerStudyView(db, p));
+      }
+
+      case 'upload.start': {
+        const kind = STUDY_DOCS[body.kind] ? body.kind : null;
+        if (!kind) throw new JobError('Unknown document');
+        const ext = DOC_TYPES[body.contentType];
+        if (!ext || (STUDY_DOCS[kind].images && !body.contentType.startsWith('image/'))) {
+          throw new JobError(STUDY_DOCS[kind].images ? 'Upload a JPG, PNG or WebP photo' : 'Upload a PDF, Word document or a photo (JPG, PNG)');
+        }
+        if (!(Number(body.size) > 0 && Number(body.size) <= STUDY_DOC_MAX)) throw new JobError('The file must be under 10 MB');
+        const key = `students/${me().sub}/${kind}-${Date.now()}.${ext}`;
+        const { s3 } = await jobS3();
+        const { createPresignedPost } = await import('@aws-sdk/s3-presigned-post');
+        const post = await createPresignedPost(s3, {
+          Bucket: jobBucket(), Key: key, Expires: 600,
+          Conditions: [['content-length-range', 1, STUDY_DOC_MAX], ['eq', '$Content-Type', body.contentType]],
+          Fields: { 'Content-Type': body.contentType },
+        });
+        return json(200, { url: post.url, fields: post.fields, key });
+      }
+
+      case 'upload.finish': {
+        const kind = STUDY_DOCS[body.kind] ? body.kind : null;
+        const key = String(body.key ?? '');
+        if (!kind || !key.startsWith(`students/${me().sub}/${kind}-`)) throw new JobError('Unknown document');
+        const { s3, mod } = await jobS3();
+        const head = await s3.send(new mod.HeadObjectCommand({ Bucket: jobBucket(), Key: key })).catch(() => null);
+        if (!head) throw new JobError('The upload did not finish. Please try again.');
+        const p = await mine();
+        const old = p.docs?.[kind]?.key;
+        p.docs = { ...p.docs, [kind]: { key, name: String(body.fileName ?? STUDY_DOCS[kind].label).slice(0, 120), uploadedAt: new Date().toISOString() } };
+        p.updatedAt = new Date().toISOString();
+        await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        // A replaced file stays while an application still points at it
+        if (old && old !== key && !(await docInUse(old))) await deleteJobFile(old);
+        return json(200, await ownerStudyView(db, p));
+      }
+
+      case 'doc.remove': {
+        const p = await coll.findOne({ _id: me().sub });
+        const d = p?.docs?.[body.kind];
+        if (!d) return json(200, await ownerStudyView(db, p));
+        const { [body.kind]: _gone, ...rest } = p.docs;
+        await coll.updateOne({ _id: p._id }, { $set: { docs: rest, updatedAt: new Date().toISOString() } });
+        if (!(await docInUse(d.key))) await deleteJobFile(d.key);
+        return json(200, await ownerStudyView(db, { ...p, docs: rest }));
+      }
+
+      case 'subscribe': {
+        const stripe = mainStripe();
+        if (!stripe) throw new JobError('Payments are not configured', 500);
+        const p = await mine();
+        const plan = STUDY_PLANS[body.plan] ? body.plan : null, period = JOB_PERIODS[body.period] ? body.period : null;
+        if (!plan || !period) throw new JobError('Choose a plan and how often to pay');
+        if (subLive(p.subscription) && !p.subscription.cancelAtPeriodEnd) {
+          throw new JobError(`You already have the ${STUDY_PLANS[p.subscription.plan].name} plan. To change it, cancel it first; it stays active until ${p.subscription.currentPeriodEnd.slice(0, 10)}.`, 409);
+        }
+        const per = JOB_PERIODS[period];
+        const session = await stripe.checkout.sessions.create({
+          mode: 'subscription',
+          line_items: [{ quantity: 1, price_data: {
+            currency: 'usd', unit_amount: Math.round(per.price[plan] * 100),
+            recurring: { interval: per.interval, interval_count: per.count },
+            product_data: { name: `Lyrtrip study applications: ${STUDY_PLANS[plan].name}`, description: `${STUDY_PLANS[plan].perks.join(' · ')}. Billed ${per.label.toLowerCase()}; cancel any time. Institution fees are extra.` },
+          } }],
+          ...(p.subscription?.stripeCustomerId ? { customer: p.subscription.stripeCustomerId } : { customer_email: p.email || me().email }),
+          client_reference_id: me().sub,
+          metadata: { type: 'study_plan', sub: me().sub, plan, period },
+          subscription_data: { metadata: { type: 'study_plan', sub: me().sub, plan, period } },
+          success_url: `${SITE_URL}/study/profile?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${SITE_URL}/study/profile?checkout=canceled`,
+        });
+        return json(200, { url: session.url });
+      }
+
+      case 'subscribe.confirm': {
+        const session = await mainStripe().checkout.sessions.retrieve(String(body.sessionId ?? ''), { expand: ['subscription'] }).catch(() => null);
+        if (!session || session.metadata?.type !== 'study_plan' || session.metadata.sub !== me().sub) throw new JobError('This payment is not for your profile', 403);
+        if (session.status !== 'complete' || !session.subscription) throw new JobError('The payment was not completed', 402);
+        const p = await mine();
+        p.subscription = stripeSubFields(session.subscription, session.metadata.plan, session.metadata.period);
+        p.subscriptionCheckedAt = new Date().toISOString();
+        await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        return json(200, await ownerStudyView(db, p));
+      }
+
+      case 'subscription.cancel':
+      case 'subscription.resume': {
+        const p = await coll.findOne({ _id: me().sub });
+        if (!p?.subscription?.stripeSubscriptionId || !subLive(p.subscription)) throw new JobError('You have no active plan');
+        await mainStripe().subscriptions.update(p.subscription.stripeSubscriptionId, { cancel_at_period_end: body.action === 'subscription.cancel' });
+        return json(200, await ownerStudyView(db, await refreshStudySub(coll, p)));
+      }
+
+      // Removes the profile, its documents and applications; an active plan ends now (no refund)
+      case 'profile.delete': {
+        const p = await coll.findOne({ _id: me().sub });
+        if (!p) return json(200, { deleted: true });
+        if (p.subscription?.stripeSubscriptionId && subLive(p.subscription)) {
+          await mainStripe().subscriptions.cancel(p.subscription.stripeSubscriptionId).catch(err => console.error('Cancelling a study plan failed:', err.message));
+        }
+        const rows = await apps.find({ sub: p._id }, { projection: { docKeys: 1 } }).toArray();
+        const keys = new Set([...Object.values(p.docs ?? {}).map(d => d.key), ...rows.flatMap(a => a.docKeys ?? [])].filter(Boolean));
+        await Promise.all([...keys].map(deleteJobFile));
+        await coll.deleteOne({ _id: p._id });
+        await apps.deleteMany({ sub: p._id });
+        return json(200, { deleted: true });
+      }
+
+      // Before applying: what is missing, plan room left, and whether this was applied for already
+      case 'apply.check': {
+        const inst = openJob(body.token);
+        if (!inst?.study) throw new JobError('This listing has expired. Please search again.');
+        const type = body.type === 'scholarship' ? 'scholarship' : 'admission';
+        let p = await coll.findOne({ _id: me().sub });
+        if (p?.subscription && Date.parse(p.subscription.currentPeriodEnd) < Date.now()) p = await refreshStudySub(coll, p);
+        const live = subLive(p?.subscription);
+        return json(200, {
+          missing: studyMissing(p, type), name: p ? studyName(p) : '', email: p?.email ?? me().email, studyLevel: p?.studyLevel ?? '',
+          fieldsOfStudy: p?.fieldsOfStudy ?? [], intake: p?.intake ?? '', live, plan: live ? p.subscription.plan : null,
+          appsUsed: live ? await studyAppsUsed(db, p) : 0, appsLimit: live ? STUDY_PLANS[p.subscription.plan]?.apps ?? 0 : 0,
+          serviceRate: STUDY_SERVICE_RATE,
+        });
+      }
+
+      case 'apply': {
+        const inst = openJob(body.token);
+        if (!inst?.study) throw new JobError('This listing has expired. Please search again.');
+        if (Date.now() - (inst.at ?? 0) > 30 * 864e5) throw new JobError('This listing is over 30 days old. Please search again.');
+        const type = body.type === 'scholarship' ? 'scholarship' : 'admission';
+        const program = String(body.program ?? '').trim().slice(0, 120);
+        if (program.length < 2) throw new JobError(type === 'scholarship' ? 'Name the scholarship or the program it is for' : 'Name the program or course you want');
+        const p = await coll.findOne({ _id: me().sub });
+        const missing = studyMissing(p, type);
+        if (missing.length) throw new JobError(`Complete your student profile first: ${missing.join(', ')}`);
+        if (!subLive(p.subscription)) throw new JobError('Choose a study plan to apply through Lyrtrip.', 402);
+        const limit = STUDY_PLANS[p.subscription.plan]?.apps ?? 0;
+        if (await studyAppsUsed(db, p) >= limit) throw new JobError(`Your ${STUDY_PLANS[p.subscription.plan].name} plan includes ${limit} applications per billing period, and you have used them. Upgrade after your plan renews, or wait for the next period.`, 402);
+        const _id = studyAppId(me().sub, type, inst, program);
+        const prior = await apps.findOne({ _id });
+        if (prior && prior.status !== 'withdrawn') throw new JobError('You have already applied for this.', 409);
+        const now = new Date().toISOString();
+        const docs = snapshotDocs(p);
+        const a = {
+          _id, sub: me().sub, type, institution: inst, program, intake: /^\d{4}-\d{2}$/.test(body.intake ?? '') ? body.intake : p.intake,
+          note: String(body.note ?? '').trim().slice(0, 4000), status: 'submitted', createdAt: now, updatedAt: now, statusAt: { submitted: now },
+          applicant: applicantSnapshot(p), docs, docKeys: Object.values(docs).map(d => d.key),
+        };
+        await apps.replaceOne({ _id }, a, { upsert: true });
+        const what = type === 'scholarship' ? 'scholarship application' : 'admission application';
+        await Promise.all([
+          sendEmail({
+            to: p.email, subject: `We have your ${what}: ${inst.name}`,
+            html: jobAppEmail(`We have your ${what}`, [['Institution', inst.name], ['Program', program]],
+              `Lyrtrip checks your documents, finds the institution's ${type} fee and emails you the amount to pay (the fee plus Lyrtrip's ${STUDY_SERVICE_RATE * 100}% service charge). Then we apply for you. Follow it at ${SITE_URL}/study/profile.`),
+            text: `We received your ${what} for ${program} at ${inst.name}. We will email you the fee to pay, then apply for you.`,
+          }),
+          sendEmail({
+            to: superAdminEmail(), subject: `New ${what}: ${a.applicant.name} for ${inst.name}`,
+            html: jobAppEmail(`New ${what}`, [['Student', a.applicant.name], ['Institution', inst.name], ['Program', program], ['Intake', a.intake]],
+              `Open ${SITE_URL}/admin, Study applications, to check the documents and quote the fee.`),
+            text: `New ${what} from ${a.applicant.name} for ${inst.name} (${program}). See ${SITE_URL}/admin.`,
+          }),
+        ]);
+        return json(200, { application: studentStudyApp(a) });
+      }
+
+      case 'applications.mine': {
+        const rows = await apps.find({ sub: me().sub }).sort({ createdAt: -1 }).limit(200).toArray();
+        const settled = await Promise.all(rows.map(a => settleStudyFee(db, a).catch(() => a)));
+        return json(200, { applications: settled.map(studentStudyApp) });
+      }
+
+      // Lyrtrip asked for more documents: send the profile's current documents again
+      case 'application.resubmit': {
+        const a = await apps.findOne({ _id: String(body.id ?? ''), sub: me().sub });
+        if (!a || a.status !== 'docs_needed') throw new JobError('This application is not waiting for documents');
+        const p = await coll.findOne({ _id: me().sub });
+        const docs = snapshotDocs(p);
+        const now = new Date().toISOString();
+        await apps.updateOne({ _id: a._id }, { $set: {
+          status: 'submitted', docs, docKeys: [...new Set([...(a.docKeys ?? []), ...Object.values(docs).map(d => d.key)])],
+          applicant: applicantSnapshot(p), updatedAt: now, 'statusAt.submitted': now, studentMessage: '',
+        } });
+        await sendEmail({
+          to: superAdminEmail(), subject: `Documents updated: ${a.applicant.name} for ${a.institution.name}`,
+          html: jobAppEmail('Documents updated', [['Student', a.applicant.name], ['Institution', a.institution.name], ['Program', a.program]], `See ${SITE_URL}/admin, Study applications.`),
+          text: `${a.applicant.name} sent updated documents for ${a.institution.name}. See ${SITE_URL}/admin.`,
+        });
+        return json(200, { ok: true });
+      }
+
+      // The institution's fee plus Lyrtrip's service charge, paid once by card
+      case 'fee.pay': {
+        const stripe = mainStripe();
+        if (!stripe) throw new JobError('Payments are not configured', 500);
+        const a = await apps.findOne({ _id: String(body.id ?? ''), sub: me().sub });
+        if (!a || a.status !== 'fee_due' || !a.fee?.amount) throw new JobError('There is no fee to pay on this application');
+        const t = feeTotals(a.fee.amount);
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          line_items: [
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.fee * 100), product_data: { name: `${a.fee.label}: ${scrubJobContacts(a.institution.name)}`.slice(0, 250), description: a.program } } },
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.service * 100), product_data: { name: `Lyrtrip service charge (${STUDY_SERVICE_RATE * 100}%)` } } },
+          ].filter(l => l.price_data.unit_amount > 0),
+          customer_email: a.applicant.email || me().email,
+          client_reference_id: me().sub,
+          metadata: { type: 'study_fee', sub: me().sub, appId: a._id },
+          payment_intent_data: { metadata: { type: 'study_fee', sub: me().sub, appId: a._id } },
+          success_url: `${SITE_URL}/study/profile?fee_session={CHECKOUT_SESSION_ID}#applications`,
+          cancel_url: `${SITE_URL}/study/profile?checkout=canceled#applications`,
+        });
+        await apps.updateOne({ _id: a._id }, { $set: { 'fee.sessionId': session.id } });
+        return json(200, { url: session.url });
+      }
+
+      case 'fee.confirm': {
+        const session = await mainStripe().checkout.sessions.retrieve(String(body.sessionId ?? '')).catch(() => null);
+        if (!session || session.metadata?.type !== 'study_fee' || session.metadata.sub !== me().sub) throw new JobError('This payment is not for your application', 403);
+        if (session.payment_status !== 'paid') throw new JobError('The payment was not completed', 402);
+        const a = await apps.findOne({ _id: session.metadata.appId, sub: me().sub });
+        if (!a) throw new JobError('Application not found', 404);
+        if (a.status === 'fee_due') await settleStudyFee(db, { ...a, fee: { ...a.fee, sessionId: session.id } });
+        return json(200, { ok: true });
+      }
+
+      case 'application.withdraw': {
+        const r = await apps.updateOne(
+          { _id: String(body.id ?? ''), sub: me().sub, status: { $in: STUDY_WITHDRAWABLE } },
+          { $set: { status: 'withdrawn', updatedAt: new Date().toISOString() } },
+        );
+        if (!r.matchedCount) throw new JobError('This application can no longer be withdrawn. Contact support@lyrtrip.com.');
+        return json(200, { ok: true });
+      }
+
+      default:
+        throw new JobError('Unknown action');
+    }
+  } catch (err) {
+    if (err instanceof JobError) return json(err.status, { error: err.message });
+    if (err.name === 'JwtExpiredError' || /jwt/i.test(err.name ?? '')) return json(401, { error: 'Please sign in again.' });
+    console.error('Study action failed:', body.action, err);
+    return json(500, { error: 'Something went wrong. Please try again.' });
+  }
+}
+
+// Admin side (called from handleAdmin): every document, the institution's real details, fees and status
+async function studyAdmin(db, body) {
+  const apps = db.collection('study_applications');
+  switch (body.action) {
+    case 'studyapps.list': {
+      const rows = await apps.find({}).sort({ createdAt: -1 }).limit(500).toArray();
+      const students = db.collection('student_profiles');
+      const plans = await students.find({ 'subscription.status': { $in: [...LIVE_SUB] } }, { projection: { subscription: 1 } }).toArray();
+      return json(200, {
+        serviceRate: STUDY_SERVICE_RATE,
+        payingStudents: plans.filter(p => subLive(p.subscription)).length,
+        studentProfiles: await students.countDocuments({}),
+        applications: await Promise.all(rows.map(async a => ({
+          ...studentStudyApp(a), sub: a.sub, note: a.note ?? '', adminNote: a.adminNote ?? '',
+          institution: a.institution, applicant: a.applicant,
+          docs: await Promise.all(Object.entries(a.docs ?? {}).map(async ([kind, d]) => ({ kind, label: STUDY_DOCS[kind]?.label ?? kind, name: d.name, url: await signedFileUrl(d.key, d.name) }))),
+          feeCharged: a.fee?.charged ?? null,
+        }))),
+      });
+    }
+
+    // Moves an application along; a fee puts it at "Fee to pay"; the message is emailed without the institution's contacts
+    case 'studyapps.update': {
+      let status = Object.keys(STUDY_APP_STATUS).includes(body.status) && body.status !== 'withdrawn' ? body.status : null;
+      if (!status) return json(400, { error: 'Unknown status' });
+      const a = await apps.findOne({ _id: String(body.id ?? '') });
+      if (!a) return json(404, { error: 'Application not found' });
+      if (a.status === 'withdrawn') return json(409, { error: 'The student withdrew this application' });
+      const now = new Date().toISOString();
+      const set = { adminNote: String(body.note ?? a.adminNote ?? '').slice(0, 1000), updatedAt: now };
+      if (status === 'fee_due') {
+        if (a.fee?.paidAt) return json(409, { error: 'The fee has already been paid' });
+        const amount = Math.round(Number(body.fee) * 100) / 100;
+        if (!(amount >= 0 && amount <= 20000)) return json(400, { error: 'Enter the institution fee in USD (0 if there is none)' });
+        if (amount > 0 && amount < 1) return json(400, { error: 'The fee must be at least USD 1' });
+        if (amount === 0) status = 'processing';
+        else set.fee = { amount, label: a.type === 'scholarship' ? 'Scholarship application fee' : 'Admission application fee', quotedAt: now };
+      }
+      const message = String(body.message ?? '').trim().slice(0, 2000);
+      Object.assign(set, { status, studentMessage: message, [`statusAt.${status}`]: now });
+      await apps.updateOne({ _id: a._id }, { $set: set });
+      if (status !== a.status || message) {
+        const rows = [['Institution', scrubJobContacts(a.institution.name)], ['Program', a.program]];
+        if (status === 'fee_due') {
+          const t = feeTotals(set.fee.amount);
+          rows.push([set.fee.label, `USD ${t.fee.toFixed(2)}`], [`Lyrtrip service (${STUDY_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]);
+        }
+        if (message) rows.push(['Message from Lyrtrip', message]);
+        await sendEmail({
+          to: a.applicant.email, subject: `${STUDY_APP_STATUS[status]}: ${scrubJobContacts(a.institution.name)}`,
+          html: jobAppEmail(STUDY_APP_STATUS[status], rows,
+            `${status === 'fee_due' ? 'Pay at' : status === 'docs_needed' ? 'Upload the documents at' : 'See'} ${SITE_URL}/study/profile. Please keep all contact about this application through Lyrtrip.`),
+          text: `${STUDY_APP_STATUS[status]}: ${a.program} at ${scrubJobContacts(a.institution.name)}.${message ? `\n\n${message}` : ''} See ${SITE_URL}/study/profile`,
+        });
+      }
+      return json(200, { ok: true });
+    }
+
+    default:
+      return null;
+  }
+}
+
 async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
@@ -5315,6 +5864,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/delivery/checkout')      && method === 'POST')         return handleDeliveryCheckout(event);
     if (path.endsWith('/api/delivery/confirm')       && method === 'POST')         return handleDeliveryConfirm(event);
     if (path.endsWith('/api/jobs')                   && method === 'POST')         return handleJobs(event);
+    if (path.endsWith('/api/study')                  && method === 'POST')         return handleStudy(event);
     if (path.endsWith('/api/ride/estimate')          && method === 'POST')         return handleRideEstimate(event);
     if (path.endsWith('/api/ride/checkout')          && method === 'POST')         return handleRideCheckout(event);
     if (path.endsWith('/api/ride/confirm')           && method === 'POST')         return handleRideConfirm(event);

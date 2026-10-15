@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 // The admin console's rewards tabs, as on Lyrshop: everyone with admin access can look; only the super admin
 // changes points, coupons, gift cards, business accounts and program settings.
@@ -829,6 +829,130 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
                       {JOB_APP_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     </select>
                     <label className="block text-xs font-semibold text-gray-600">Message to the applicant (emailed; no employer contact details)</label>
+                    <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <label className="block text-xs font-semibold text-gray-600">Internal note</label>
+                    <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <button onClick={() => save(a)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>
+                  </>)}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface AdminStudyApplication {
+  id: string; sub: string; type: 'admission' | 'scholarship'; program: string; intake: string; status: string; statusLabel: string; message: string;
+  fee: { fee: number; service: number; total: number; label: string; paidAt: string | null } | null; feeCharged: number | null;
+  createdAt: string; updatedAt: string; note: string; adminNote: string;
+  institution: { name: string; placeType: string | null; address: string; website: string | null; phone: string | null; mapsLink: string | null; link: string | null; source: string | null; description: string };
+  applicant: Record<string, unknown> & {
+    name: string; email: string; phone: string; education: { school: string; qualification: string; field: string; grade: string; country: string; start: string; end: string }[];
+    tests: { test: string; score: string; date: string }[];
+  };
+  docs: { kind: string; label: string; name: string; url: string | null }[];
+}
+
+const STUDY_STEPS: [string, string][] = [
+  ['submitted', 'Received'], ['docs_needed', 'More documents needed'], ['fee_due', 'Quote fee (fee to pay)'], ['processing', 'Lyrtrip is applying'],
+  ['applied', 'Submitted to institution'], ['interview', 'Interview requested'], ['offer', 'Offer / award received'], ['rejected', 'Not successful'],
+];
+const APPLICANT_FIELDS: [string, string][] = [
+  ['dateOfBirth', 'Date of birth'], ['gender', 'Gender'], ['nationality', 'Nationality'], ['countryOfResidence', 'Residence'], ['city', 'City'], ['address', 'Address'],
+  ['passportNumber', 'Passport'], ['passportExpiry', 'Passport expiry'], ['studyLevel', 'Level'], ['fieldsOfStudy', 'Fields'], ['preferredCountries', 'Countries'],
+  ['budgetPerYear', 'Budget / year'], ['fundingSource', 'Funding'], ['englishWaiver', 'English waiver'], ['languages', 'Languages'], ['workYears', 'Work years'],
+  ['guardianName', 'Guardian'], ['guardianPhone', 'Guardian phone'],
+];
+
+// Study applications made through Lyrtrip: check documents, quote the institution's fee (+ service), apply, relay results
+export function StudyApplicationsPanel({ call }: { call: Call }) {
+  const [data, setData] = useState<{ applications: AdminStudyApplication[]; payingStudents: number; studentProfiles: number; serviceRate: number } | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ status: '', message: '', note: '', fee: '' });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    call({ action: 'studyapps.list' }).then(d => setData(d as unknown as NonNullable<typeof data>)).catch(() => setData({ applications: [], payingStudents: 0, studentProfiles: 0, serviceRate: 0.1 }));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+  const rows = data?.applications ?? null;
+  const expand = (a: AdminStudyApplication) => {
+    setOpen(open === a.id ? null : a.id);
+    setDraft({ status: a.status === 'withdrawn' ? 'submitted' : a.status, message: '', note: a.adminNote, fee: a.fee ? String(a.fee.fee) : '' });
+  };
+  const save = async (a: AdminStudyApplication) => {
+    setBusy(true);
+    try {
+      await call({ action: 'studyapps.update', id: a.id, status: draft.status, message: draft.message, note: draft.note, fee: draft.fee === '' ? undefined : Number(draft.fee) });
+      setOpen(null);
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not update the application');
+    }
+    setBusy(false);
+  };
+  const count = (s: string) => (rows ?? []).filter(r => r.status === s).length;
+  const rate = data?.serviceRate ?? 0.1;
+  const feeNum = Number(draft.fee) || 0;
+  const earned = (rows ?? []).filter(r => r.fee?.paidAt).reduce((s, r) => s + (r.fee?.service ?? 0), 0);
+  const show = (v: unknown) => (Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : v == null ? '' : String(v));
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        {[
+          ['Student profiles', String(data?.studentProfiles ?? 0)], ['Paying students', String(data?.payingStudents ?? 0)],
+          ['To review', String(count('submitted'))], ['Fee paid, to apply', String(count('processing'))], ['Service earned', usd(earned)],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No study applications yet.</p>}
+        {rows?.map(a => (
+          <div key={a.id} className="p-4 text-sm">
+            <button onClick={() => expand(a)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-900">{a.applicant.name} <span className="font-normal text-gray-500">· {a.type}</span> · {a.program}</p>
+                <p className="text-gray-600">{[a.institution.name, a.institution.address].filter(Boolean).join(' · ')}</p>
+                <p className="text-xs text-gray-400">Applied {new Date(a.createdAt).toLocaleString()}{a.intake ? ` · intake ${a.intake}` : ''}{a.fee ? ` · ${usd(a.fee.total)}${a.fee.paidAt ? ' paid' : ' due'}` : ''}</p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{a.statusLabel}</span>
+            </button>
+            {open === a.id && (
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase text-gray-500">Institution (hidden from the student)</p>
+                  {a.institution.website && <a href={a.institution.website} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">Website: {a.institution.website}</a>}
+                  {a.institution.link && <a href={a.institution.link} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">Page: {a.institution.source ?? a.institution.link}</a>}
+                  {a.institution.mapsLink && <a href={a.institution.mapsLink} target="_blank" rel="noopener noreferrer" className="block text-brand-600">Map</a>}
+                  {a.institution.phone && <p>Phone: {a.institution.phone}</p>}
+                  {a.institution.description && <p className="text-gray-600 whitespace-pre-line">{a.institution.description}</p>}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Student</p>
+                  <p className="text-gray-700">{a.applicant.email} · {a.applicant.phone}</p>
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-gray-700">
+                    {APPLICANT_FIELDS.filter(([k]) => show(a.applicant[k])).map(([k, l]) => <React.Fragment key={k}><dt className="text-gray-500">{l}</dt><dd>{show(a.applicant[k])}</dd></React.Fragment>)}
+                  </dl>
+                  {a.applicant.education.map((e, i) => <p key={i} className="text-gray-700">🎓 {[e.qualification, e.field, e.school, e.country].filter(Boolean).join(', ')} · {e.grade} ({e.start}–{e.end})</p>)}
+                  {a.applicant.tests.map((t, i) => <p key={i} className="text-gray-700">📝 {t.test} {t.score} {t.date && `(${t.date})`}</p>)}
+                  {['goals', 'achievements'].map(k => show(a.applicant[k]) && <details key={k}><summary className="cursor-pointer text-gray-500">{k === 'goals' ? 'Study goals' : 'Achievements'}</summary><p className="whitespace-pre-line mt-1">{show(a.applicant[k])}</p></details>)}
+                  {a.note && <p className="whitespace-pre-line bg-gray-50 rounded-lg p-2">Student note: {a.note}</p>}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Documents</p>
+                  {a.docs.map(d => <a key={d.kind} href={d.url ?? '#'} className="block text-brand-600 truncate">{d.label}: {d.name}</a>)}
+                </div>
+                <div className="space-y-2">
+                  {a.status === 'withdrawn' ? <p className="text-gray-500">The student withdrew this application.</p> : (<>
+                    <label className="block text-xs font-semibold text-gray-600">Status</label>
+                    <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
+                      {STUDY_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    {draft.status === 'fee_due' && !a.fee?.paidAt && (<>
+                      <label className="block text-xs font-semibold text-gray-600">Institution {a.type} fee (USD; 0 if none)</label>
+                      <input type="number" min={0} step="0.01" value={draft.fee} onChange={e => setDraft({ ...draft, fee: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <p className="text-xs text-gray-600">Student pays {usd(feeNum)} + {Math.round(rate * 100)}% service {usd(Math.round(feeNum * rate * 100) / 100)} = <b>{usd(Math.round(feeNum * (1 + rate) * 100) / 100)}</b>. 0 skips payment and moves to &quot;Lyrtrip is applying&quot;.</p>
+                    </>)}
+                    {a.fee?.paidAt && <p className="text-emerald-700">Paid {usd(a.feeCharged ?? a.fee.total)} on {new Date(a.fee.paidAt).toLocaleDateString()}</p>}
+                    <label className="block text-xs font-semibold text-gray-600">Message to the student (emailed; no institution contact details)</label>
                     <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
                     <label className="block text-xs font-semibold text-gray-600">Internal note</label>
                     <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
