@@ -1636,17 +1636,19 @@ export function LegalRequestsPanel({ call }: { call: Call }) {
                       {LEGAL_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     </select>
                     {draft.status === 'quoted' && !r.quote?.paidAt && (<>
-                      <label className="block text-xs font-semibold text-gray-600">Professional&apos;s total fee, with government and filing fees (USD)</label>
+                      <label className="block text-xs font-semibold text-gray-600">Professional&apos;s total fee, with government and filing fees (USD){['lawyer', 'legal'].includes(r.service) ? ': the customer pays this to them directly' : ''}</label>
                       <input type="number" min={1} step="0.01" value={draft.price} onChange={e => setDraft({ ...draft, price: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
                       <label className="block text-xs font-semibold text-gray-600">What they get (shown to the customer)</label>
                       <input value={draft.quoteDetails} maxLength={500} onChange={e => setDraft({ ...draft, quoteDetails: e.target.value })} placeholder="e.g. ITR-2 filing with DTAA relief by a chartered accountant, 1 video call" className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
-                      <p className="text-xs text-gray-600">Customer pays {usd(priceNum)} + {Math.round(rate * 100)}% service {usd(Math.round(priceNum * rate * 100) / 100)} = <b>{usd(Math.round(priceNum * (1 + rate) * 100) / 100)}</b>, within {data?.quoteHours ?? 72} hours.</p>
+                      <p className="text-xs text-gray-600">{['lawyer', 'legal'].includes(r.service)
+                        ? <>Customer pays Lyrtrip a <b>{usd(Math.round(priceNum * rate * 100) / 100)}</b> booking fee ({Math.round(rate * 100)}%) within {data?.quoteHours ?? 72} hours, and pays the professional {usd(priceNum)} directly. Minimum fee $10.</>
+                        : <>Customer pays {usd(priceNum)} + {Math.round(rate * 100)}% service {usd(Math.round(priceNum * rate * 100) / 100)} = <b>{usd(Math.round(priceNum * (1 + rate) * 100) / 100)}</b>, within {data?.quoteHours ?? 72} hours.</>}</p>
                     </>)}
                     {r.quote?.paidAt && <p className="text-emerald-700">Paid {usd(r.charged ?? r.quote.total)} on {new Date(r.quote.paidAt).toLocaleDateString()}</p>}
                     {r.quote?.paidAt && ['unavailable', 'refunded'].includes(draft.status) && <p className="text-red-700 text-xs">Saving refunds the card in full.</p>}
                     <label className="block text-xs font-semibold text-gray-600">Message to the customer (emailed)</label>
                     <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000}
-                      placeholder={draft.status === 'in_progress' ? 'e.g. Your adviser, A. Mehta CA, will email you a secure upload link today' : ''} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      placeholder={draft.status === 'in_progress' ? (['lawyer', 'legal'].includes(r.service) ? 'e.g. Your lawyer, R. Shah (Bar no. …), will contact you today with their engagement letter and invoice' : 'e.g. Your adviser, A. Mehta CA, will email you a secure upload link today') : ''} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
                     <label className="block text-xs font-semibold text-gray-600">Internal note (professional, licence no., cost)</label>
                     <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
                     <button onClick={() => save(r)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>

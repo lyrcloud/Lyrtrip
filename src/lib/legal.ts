@@ -16,12 +16,16 @@ export interface LegalDraft {
 export interface LegalRequest extends Omit<LegalDraft, 'budget'> {
   id: string; serviceLabel: string; categoryLabel: string; budget: number | null;
   status: LegalStatus; statusLabel: string; message: string;
-  quote: { amount: number; service: number; total: number; details: string; expiresAt: string; paidAt: string | null } | null;
+  // direct: the professional's fee (amount) is paid to them, and total is only Lyrtrip's booking fee
+  quote: { amount: number; service: number; total: number; direct: boolean; details: string; expiresAt: string; paidAt: string | null } | null;
   createdAt: string; updatedAt: string;
 }
 
 export interface LegalServiceSpec { label: string; categories: Record<string, string> }
 export interface LegalOptions { services: Record<LegalService, LegalServiceSpec>; meeting: string[]; urgency: string[]; serviceRate: number; quoteHours: number }
+
+// Lawyers and legal services: the customer pays the professional directly and Lyrtrip only a booking fee
+export const LEGAL_DIRECT: string[] = ['lawyer', 'legal'];
 
 export const LEGAL_ICON: Record<string, string> = { tax: '🧾', legal: '📜', lawyer: '👩‍⚖️' };
 

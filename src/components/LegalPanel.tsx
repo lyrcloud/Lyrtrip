@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import LegalForm from '@/components/LegalForm';
-import { legalCall, LEGAL_ICON, LEGAL_STATUS_STYLE, type LegalDraft, type LegalOptions, type LegalRequest, type LegalService } from '@/lib/legal';
+import { legalCall, LEGAL_DIRECT, LEGAL_ICON, LEGAL_STATUS_STYLE, type LegalDraft, type LegalOptions, type LegalRequest, type LegalService } from '@/lib/legal';
 import { rememberReturnTo } from '@/lib/returnTo';
 
 const primary = 'px-5 py-3 bg-btn text-white rounded-xl font-bold hover:bg-btn-hover disabled:bg-gray-300 transition';
@@ -58,13 +58,14 @@ export default function LegalPanel({ service }: { service: LegalService }) {
   };
 
   const pct = Math.round((opts?.serviceRate ?? 0.1) * 100);
+  const direct = LEGAL_DIRECT.includes(service);
   return (
     <div className="space-y-4">
       <div className="rounded-2xl bg-gradient-to-r from-slate-50 to-indigo-50 ring-1 ring-slate-200 p-4">
         <p className="font-bold text-gray-900">{LEGAL_ICON[service]} {INTRO[service][0]}</p>
         <p className="text-sm text-gray-600">
-          {INTRO[service][1]} Tell us about your matter: we find a licensed professional, send you one all-in fee (plus our {pct}% service charge),
-          and assign them once you pay. <Link href="/legal/requests" className="font-semibold text-brand-600">My requests →</Link>
+          {INTRO[service][1]} Tell us about your matter: we find a licensed professional and send you their fee.
+          {direct ? ` You pay their fee to them directly and Lyrtrip only a ${pct}% booking fee.` : ` You pay it plus our ${pct}% service charge, and we assign them.`} <Link href="/legal/requests" className="font-semibold text-brand-600">My requests →</Link>
         </p>
       </div>
 
@@ -72,8 +73,8 @@ export default function LegalPanel({ service }: { service: LegalService }) {
         <div className="rounded-2xl ring-1 ring-gray-100 bg-white p-5 space-y-3">
           <p><span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${LEGAL_STATUS_STYLE[done.status] ?? ''}`}>{done.statusLabel}</span></p>
           <p className="text-sm text-gray-700">
-            Lyrtrip is finding a professional for {done.categoryLabel.toLowerCase()} ({done.jurisdiction}). We will email you the fee: theirs plus our
-            {' '}{pct}% service charge. Nothing is charged until you pay that quote.
+            Lyrtrip is finding a professional for {done.categoryLabel.toLowerCase()} ({done.jurisdiction}). We will email you their fee
+            {direct ? ` (paid to them directly) and our ${pct}% booking fee` : ` plus our ${pct}% service charge`}. Nothing is charged until you accept.
           </p>
           <div className="flex gap-3">
             <Link href="/legal/requests" className="text-sm font-semibold text-brand-600">See my requests →</Link>
@@ -89,8 +90,10 @@ export default function LegalPanel({ service }: { service: LegalService }) {
             <input type="checkbox" className="mt-0.5" checked={terms} onChange={e => setTerms(e.target.checked)} />
             <span>
               I understand Lyrtrip is not a law or accounting firm and does not give advice: it arranges an independent licensed professional, who
-              advises me directly. I pay their quoted fee plus Lyrtrip&apos;s {pct}% service charge; the quote is valid for {opts.quoteHours} hours.
-              Government, court and filing fees not in the quote are mine to pay. If no professional can take my matter, I get a full refund.
+              advises me directly. {direct
+                ? `I pay Lyrtrip a booking fee of ${pct}% of the professional's quoted fee, and I pay the professional's fee to them directly under their own engagement terms; Lyrtrip takes no part of it.`
+                : `I pay their quoted fee plus Lyrtrip's ${pct}% service charge.`} The quote is valid for {opts.quoteHours} hours.
+              Government, court and filing fees not in the quote are mine to pay. If no professional can take my matter, my payment to Lyrtrip is refunded in full.
             </span>
           </label>
           {error && <div role="alert" className="rounded-lg p-3 text-sm bg-red-50 border border-red-200 text-red-700">{error}</div>}

@@ -98,7 +98,9 @@ export default function LegalRequestsPage() {
                     <p className="text-xs text-gray-400 line-clamp-2">{r.description} · requested {new Date(r.createdAt).toLocaleDateString()}</p>
                     {r.quote && (
                       <p className="mt-1 text-gray-700">
-                        Fee {usd(r.quote.amount)} + Lyrtrip service {usd(r.quote.service)} = <span className="font-semibold">{usd(r.quote.total)}</span>
+                        {r.quote.direct
+                          ? <>Professional&apos;s fee {usd(r.quote.amount)}, paid to them directly · Lyrtrip booking fee <span className="font-semibold">{usd(r.quote.total)}</span></>
+                          : <>Fee {usd(r.quote.amount)} + Lyrtrip service {usd(r.quote.service)} = <span className="font-semibold">{usd(r.quote.total)}</span></>}
                         {r.quote.paidAt
                           ? <span className="text-emerald-700"> · paid {new Date(r.quote.paidAt).toLocaleDateString()}</span>
                           : r.status === 'quoted' && <span className="text-gray-500"> · pay by {new Date(r.quote.expiresAt).toLocaleString()}</span>}
@@ -110,7 +112,7 @@ export default function LegalRequestsPage() {
                   <div className="text-right space-y-1">
                     <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${LEGAL_STATUS_STYLE[r.status] ?? ''}`}>{r.statusLabel}</span>
                     {r.status === 'quoted' && r.quote && (
-                      <button onClick={() => pay(r)} disabled={busy === r.id} className={`block ml-auto mt-1 ${small}`}>{busy === r.id ? 'Opening…' : `Pay ${usd(r.quote.total)}`}</button>
+                      <button onClick={() => pay(r)} disabled={busy === r.id} className={`block ml-auto mt-1 ${small}`}>{busy === r.id ? 'Opening…' : r.quote.direct ? `Pay booking fee ${usd(r.quote.total)}` : `Pay ${usd(r.quote.total)}`}</button>
                     )}
                     {r.status === 'info_needed' && editing?.id !== r.id && (
                       <button onClick={() => setEditing({ id: r.id, draft: legalDraftFrom(r) })} className={`block ml-auto mt-1 ${small}`}>Update details</button>

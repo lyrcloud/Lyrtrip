@@ -2909,7 +2909,7 @@ What you know about Lyrtrip:
 - Rides: the car, taxi, limo and motorcycle options show fare estimates; booking rides, bikes, e-bikes and scooters on Lyrtrip opens soon.
 - Air charters and ambulances: helicopter, seaplane, air ambulance and ground ambulance (the Ambulance ride option) requests get a quote from Lyrtrip (the operator's price plus a 10% service charge), paid by card, and are followed at lyrtrip.com/helicopter/requests. Air and ground ambulance bookings are not an emergency service: for a life-threatening emergency, tell the traveller to call their local emergency number.
 - Trucks, cargo and containers: requests get a quote from Lyrtrip (the carrier's price plus a 10% service charge), paid by card, with booking and tracking updates at lyrtrip.com/freight/requests. Duties, taxes and port charges not in the quote are the customer's.
-- Tax & Legal (the tile after Job): tax services, legal services and lawyers. Lyrtrip finds a licensed professional and quotes their fee plus a 10% service charge, paid by card, with progress at lyrtrip.com/legal/requests. Lyrtrip arranges the service and does not give tax or legal advice itself.
+- Tax & Legal (the tile after Job): tax services, legal services and lawyers. Lyrtrip finds a licensed professional and quotes their fee. For tax services the customer pays Lyrtrip that fee plus a 10% service charge; for lawyers and legal services the customer pays the professional's fee to them directly and pays Lyrtrip only a 10% booking fee by card, with progress at lyrtrip.com/legal/requests. Lyrtrip arranges the service and does not give tax or legal advice itself.
 - Courier and food delivery: the Courier option books a same-day courier that picks up an item and delivers it across town, usually within the hour, paid on Lyrtrip with live status on the receipt page. Food delivery uses the same courier to collect a meal the traveller has already ordered and paid for at a restaurant.
 - Shipping: the Shipping tab compares courier rates (USPS, FedEx, UPS, DHL and more) for parcels worldwide and sells a printable label.
 - Never mention which company provides Lyrtrip's courier deliveries.
@@ -7741,10 +7741,19 @@ const LEGAL_STATUS = {
   unavailable: 'Not available', refunded: 'Refunded', cancelled: 'Cancelled',
 };
 const LEGAL_CANCELLABLE = ['submitted', 'info_needed', 'quoted'];
-const legalTotals = amount => {
+// Lawyers and legal services: Lyrtrip never collects or shares the professional's fee (fee-sharing rules).
+// The customer pays Lyrtrip only a booking fee (10% of the quoted fee) and pays the professional directly.
+// Tax services: Lyrtrip collects the fee plus 10% and pays the professional, like freight.
+const LEGAL_DIRECT = ['lawyer', 'legal'];
+const legalDirect = r => (r.quote?.direct ?? LEGAL_DIRECT.includes(r.service));
+// amount = the professional's fee; service = Lyrtrip's 10%; total = what Lyrtrip charges by card
+const legalTotals = (amount, direct = false) => {
   const service = Math.round(amount * LEGAL_SERVICE_RATE * 100) / 100;
-  return { amount, service, total: Math.round((amount + service) * 100) / 100 };
+  return { amount, service, total: direct ? service : Math.round((amount + service) * 100) / 100, direct };
 };
+const legalPriceRows = (t) => t.direct
+  ? [["Professional's fee (you pay them directly)", `USD ${t.amount.toFixed(2)}`], [`Lyrtrip booking fee (${LEGAL_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['To pay Lyrtrip now', `USD ${t.total.toFixed(2)}`]]
+  : [['Professional fee', `USD ${t.amount.toFixed(2)}`], [`Lyrtrip service (${LEGAL_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]];
 
 function cleanLegalRequest(b) {
   const s = (v, max) => String(v ?? '').trim().slice(0, max);
@@ -7787,7 +7796,7 @@ const customerLegalRequest = r => ({
   forBusiness: r.forBusiness, businessName: r.businessName, meeting: r.meeting, urgency: r.urgency, language: r.language, otherParty: r.otherParty,
   contact: r.contact, budget: r.budget,
   status: r.status, statusLabel: LEGAL_STATUS[r.status] ?? r.status, message: r.customerMessage ?? '',
-  quote: r.quote ? { ...legalTotals(r.quote.amount), details: r.quote.details ?? '', expiresAt: r.quote.expiresAt, paidAt: r.quote.paidAt ?? null } : null,
+  quote: r.quote ? { ...legalTotals(r.quote.amount, legalDirect(r)), details: r.quote.details ?? '', expiresAt: r.quote.expiresAt, paidAt: r.quote.paidAt ?? null } : null,
   createdAt: r.createdAt, updatedAt: r.updatedAt,
 });
 
@@ -7810,7 +7819,8 @@ async function settleLegalPayment(db, r) {
   if (u.modifiedCount) {
     await sendEmail({
       to: superAdminEmail(), subject: `${legalService(r).label} paid: ${r.contact.name}, ${legalTitle(r)}`,
-      html: jobAppEmail('Paid: assign the professional', [...legalRows(r), ['Customer', r.contact.name], ['Paid', `USD ${set['quote.charged'].toFixed(2)}`]],
+      html: jobAppEmail('Paid: assign the professional', [...legalRows(r), ['Customer', r.contact.name], ['Paid', `USD ${set['quote.charged'].toFixed(2)}`],
+        ...(legalDirect(r) ? [['Professional fee', `USD ${r.quote.amount.toFixed(2)}, which the customer pays to the professional directly`]] : [])],
         `Open ${SITE_URL}/admin, Tax & legal, to assign it.`),
       text: `${r.contact.name} paid for ${legalTitle(r)}. See ${SITE_URL}/admin.`,
     });
@@ -7845,7 +7855,9 @@ async function handleLegal(event) {
           sendEmail({
             to: clean.contact.email, subject: `We have your request: ${legalTitle(r)}`,
             html: jobAppEmail('We have your request', legalRows(r),
-              `Lyrtrip finds a licensed professional and emails you the fee: their fee plus our ${LEGAL_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/legal/requests.`),
+              LEGAL_DIRECT.includes(r.service)
+                ? `Lyrtrip finds a licensed professional and emails you their fee, which you pay to them directly, and our ${LEGAL_SERVICE_RATE * 100}% booking fee. Nothing is charged until you accept it. Follow it at ${SITE_URL}/legal/requests.`
+                : `Lyrtrip finds a licensed professional and emails you the fee: their fee plus our ${LEGAL_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/legal/requests.`),
             text: `We received your request: ${legalTitle(r)}. We will email you the fee to pay. See ${SITE_URL}/legal/requests`,
           }),
           sendEmail({
@@ -7886,10 +7898,13 @@ async function handleLegal(event) {
         const r = await findMine(body.id);
         if (r.status !== 'quoted' || !r.quote?.amount) throw new JobError('There is nothing to pay on this request');
         if (Date.parse(r.quote.expiresAt) < Date.now()) throw new JobError('This fee quote has expired. Ask us for a new one at support@lyrtrip.com.', 410);
-        const t = legalTotals(r.quote.amount);
+        const t = legalTotals(r.quote.amount, legalDirect(r));
         const session = await stripe.checkout.sessions.create({
           mode: 'payment',
-          line_items: [
+          line_items: t.direct ? [
+            // Only Lyrtrip's own booking fee; the professional's fee is paid to them, never through Lyrtrip
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.service * 100), product_data: { name: `Lyrtrip booking fee: ${legalTitle(r)}`.slice(0, 250), description: `Matching and booking with a licensed professional. Their fee of USD ${t.amount.toFixed(2)} is paid to them directly.`.slice(0, 250) } } },
+          ] : [
             { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.amount * 100), product_data: { name: `${legalService(r).label}: ${legalTitle(r)}`.slice(0, 250), description: (r.quote.details || r.meeting).slice(0, 250) } } },
             { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.service * 100), product_data: { name: `Lyrtrip service charge (${LEGAL_SERVICE_RATE * 100}%)` } } },
           ].filter(l => l.price_data.unit_amount > 0),
@@ -7961,8 +7976,9 @@ async function legalAdmin(db, body) {
       if (status === 'quoted') {
         if (paid) return json(409, { error: 'This request has already been paid' });
         const amount = Math.round(Number(body.price) * 100) / 100;
-        if (!(amount >= 1 && amount <= 500000)) return json(400, { error: "Enter the professional's total fee in USD, with government or filing fees (at least 1)" });
-        set.quote = { amount, details: String(body.quoteDetails ?? '').trim().slice(0, 500), quotedAt: now, expiresAt: new Date(Date.now() + LEGAL_QUOTE_HOURS * 3600e3).toISOString() };
+        const direct = LEGAL_DIRECT.includes(r.service);
+        if (!(amount >= (direct ? 10 : 1) && amount <= 500000)) return json(400, { error: direct ? "Enter the professional's total fee in USD (at least 10, so the booking fee meets the card minimum)" : "Enter the professional's total fee in USD, with government or filing fees (at least 1)" });
+        set.quote = { amount, direct, details: String(body.quoteDetails ?? '').trim().slice(0, 500), quotedAt: now, expiresAt: new Date(Date.now() + LEGAL_QUOTE_HOURS * 3600e3).toISOString() };
       }
       if (['processing', 'in_progress', 'completed'].includes(status) && !paid) return json(409, { error: 'The customer has not paid yet. Quote a fee first.' });
       if (status === 'refunded' && !paid) status = 'unavailable';
@@ -7979,8 +7995,7 @@ async function legalAdmin(db, body) {
       if (status !== r.status || message) {
         const rows = legalRows(r);
         if (status === 'quoted') {
-          const t = legalTotals(set.quote.amount);
-          rows.push(['Professional fee', `USD ${t.amount.toFixed(2)}`], [`Lyrtrip service (${LEGAL_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]);
+          rows.push(...legalPriceRows(legalTotals(set.quote.amount, set.quote.direct)));
           if (set.quote.details) rows.push(['Details', set.quote.details]);
         }
         if (status === 'refunded') rows.push(['Refunded', `USD ${set.refund.amount.toFixed(2)} to your card (allow 5 to 10 days)`]);
