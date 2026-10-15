@@ -119,7 +119,8 @@ EXCL=""; for r in $ROUTES; do EXCL="$EXCL --exclude $r"; done
 aws s3 sync . $BUCKET/ --exclude "*.html" $EXCL --only-show-errors
 for f in $(find . -name '*.html' | sed 's|^\./||'); do aws s3 cp "$f" "$BUCKET/$f" --content-type text/html --cache-control no-cache --only-show-errors; done
 for r in $ROUTES; do aws s3 cp "$r.html" "$BUCKET/$r" --content-type text/html --cache-control no-cache --only-show-errors; done
-aws s3 sync . $BUCKET/ --delete $EXCL --only-show-errors
+# Keep earlier builds' hashed JS/CSS: tabs still running an old build load them after this deploy
+aws s3 sync . $BUCKET/ --delete $EXCL --exclude "_next/static/*" --only-show-errors
 for d in $DISTRIBUTIONS; do aws cloudfront create-invalidation --distribution-id $d --paths "/*" --query Invalidation.Id --output text; done
 
 echo "Done. In a minute, check https://www.lyrtrip.com"
