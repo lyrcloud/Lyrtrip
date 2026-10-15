@@ -5446,7 +5446,7 @@ function studyPlansReply() {
     periods: Object.entries(JOB_PERIODS).map(([id, p]) => ({ id, label: p.label, price: p.price })),
     serviceRate: STUDY_SERVICE_RATE,
     options: { levels: STUDY_LEVEL_OPTIONS, funding: FUNDING_OPTIONS, tests: TEST_OPTIONS },
-    docs: Object.entries(STUDY_DOCS).map(([id, d]) => ({ id, label: d.label, for: d.for, images: !!d.images, waivable: !!d.waivable })),
+    docTypes: Object.entries(STUDY_DOCS).map(([id, d]) => ({ id, label: d.label, for: d.for, images: !!d.images, waivable: !!d.waivable })),
   };
 }
 

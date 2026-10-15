@@ -20,7 +20,7 @@ export interface StudyPlans {
   periods: { id: string; label: string; price: Record<string, number> }[];
   serviceRate: number;
   options: { levels: string[]; funding: string[]; tests: string[] };
-  docs: StudyDocType[];
+  docTypes: StudyDocType[];
 }
 
 export interface StudyOwnerView {

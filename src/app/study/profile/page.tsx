@@ -186,7 +186,7 @@ export default function StudyProfilePage() {
       // Save typed changes first so the upload's reply doesn't overwrite them
       await studyCall<StudyOwnerView>({ action: 'profile.save', profile: p });
       apply(await uploadStudyDoc(kind, file));
-      setNotice(`${plans.docs.find(d => d.id === kind)?.label ?? 'Document'} uploaded.`);
+      setNotice(`${plans.docTypes.find(d => d.id === kind)?.label ?? 'Document'} uploaded.`);
     });
   };
   const removeDoc = (kind: string) => run(`doc-${kind}`, async () => {
@@ -350,7 +350,7 @@ export default function StudyProfilePage() {
             <p className="text-sm text-gray-600">PDF, Word or a clear photo (JPG, PNG), up to 10 MB each. Scans must be readable and in colour.</p>
           </div>
           <div className="divide-y divide-gray-100">
-            {plans.docs.map(d => {
+            {plans.docTypes.map(d => {
               const have = view.docs[d.id];
               const needed = d.for.length > 0 && !(d.waivable && p.englishWaiver);
               return (
