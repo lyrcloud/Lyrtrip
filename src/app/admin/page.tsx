@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { getSession } from '@/lib/auth';
 import {
-  AffiliatesPanel, BusinessPanel, CouponsPanel, GiftCardsPanel, RewardsPanel, SettingsPanel, ShipmentsPanel, DeliveriesPanel, RidesPanel, JobProfilesPanel, JobApplicationsPanel, StudyApplicationsPanel, TIER_STYLE,
+  AffiliatesPanel, BusinessPanel, CouponsPanel, GiftCardsPanel, RewardsPanel, SettingsPanel, ShipmentsPanel, DeliveriesPanel, RidesPanel, JobProfilesPanel, JobApplicationsPanel, StudyApplicationsPanel, EventTicketsPanel, TIER_STYLE,
   type RewardsAccount, type RewardsSettings,
 } from '@/components/admin/RewardsAdmin';
 
@@ -50,7 +50,7 @@ interface AdminFlight {
   createdAt: string | null;
 }
 
-type Tab = 'users' | 'shipments' | 'deliveries' | 'rides' | 'jobs' | 'jobapps' | 'studyapps' | 'rewards' | 'business' | 'affiliates' | 'coupons' | 'giftcards' | 'settings' | 'tours' | 'flights';
+type Tab = 'users' | 'shipments' | 'deliveries' | 'rides' | 'jobs' | 'jobapps' | 'studyapps' | 'eventtix' | 'rewards' | 'business' | 'affiliates' | 'coupons' | 'giftcards' | 'settings' | 'tours' | 'flights';
 
 const ROLE_STYLE: Record<Role, string> = {
   superadmin: 'bg-purple-100 text-purple-800',
@@ -203,6 +203,7 @@ export default function AdminPage() {
                 ['jobs', 'Job profiles'],
                 ['jobapps', 'Job applications'],
                 ['studyapps', 'Study applications'],
+                ['eventtix', 'Event tickets'],
               ] as const).map(([key, label]) => (
                 <button key={key} onClick={() => setTab(key)}
                   className={`px-3 py-1.5 rounded-lg text-sm font-medium ${tab === key ? 'bg-btn text-white' : 'bg-white border border-gray-300 text-gray-700'}`}>
@@ -328,6 +329,7 @@ export default function AdminPage() {
             {tab === 'jobs' && <JobProfilesPanel call={call} />}
             {tab === 'jobapps' && <JobApplicationsPanel call={call} />}
             {tab === 'studyapps' && <StudyApplicationsPanel call={call} />}
+            {tab === 'eventtix' && <EventTicketsPanel call={call} />}
             {tab === 'coupons' && <CouponsPanel call={call} isSuper={isSuper} />}
             {tab === 'giftcards' && <GiftCardsPanel call={call} isSuper={isSuper} />}
             {tab === 'settings' && (

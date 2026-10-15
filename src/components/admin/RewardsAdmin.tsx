@@ -967,3 +967,125 @@ export function StudyApplicationsPanel({ call }: { call: Call }) {
     </div>
   );
 }
+
+interface AdminEventRequest {
+  id: string; status: string; statusLabel: string; ticketType: string; seatTogether: boolean; maxPerTicket: number | null; eventDate: string;
+  quantity: number; accessibility: string; note: string; adminNote: string; accountEmail: string; createdAt: string;
+  event: { name: string; when: string | null; venue: string | null; address: string };
+  eventFull: { link: string | null; ticketLink: string | null; ticketSource: string | null; mapsLink: string | null; description: string; tickets?: { source: string | null; link: string; type: string | null }[] };
+  contact: { name: string; email: string; phone: string; country: string };
+  attendees: { fullName: string; dateOfBirth: string; nationality: string; idType: string; idNumber: string }[];
+  quote: { amount: number; service: number; total: number; details: string; expiresAt: string; paidAt: string | null } | null;
+  charged: number | null; refund: { amount: number; at: string } | null;
+}
+
+const EVENT_STEPS: [string, string][] = [
+  ['submitted', 'Received'], ['info_needed', 'More details needed'], ['quoted', 'Quote price (price to pay)'], ['processing', 'Paid: getting tickets'],
+  ['ticketed', 'Tickets sent'], ['unavailable', 'Not available (refunds if paid)'], ['refunded', 'Refund in full'],
+];
+
+// Event tickets sold through Lyrtrip: find the tickets, quote the price (+ service), buy them once paid, or refund
+export function EventTicketsPanel({ call }: { call: Call }) {
+  const [data, setData] = useState<{ requests: AdminEventRequest[]; serviceRate: number; quoteHours: number } | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ status: '', message: '', note: '', price: '', quoteDetails: '' });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    call({ action: 'eventtix.list' }).then(d => setData(d as unknown as NonNullable<typeof data>)).catch(() => setData({ requests: [], serviceRate: 0.05, quoteHours: 72 }));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+  const rows = data?.requests ?? null;
+  const expand = (r: AdminEventRequest) => {
+    setOpen(open === r.id ? null : r.id);
+    setDraft({ status: r.status === 'cancelled' ? 'submitted' : r.status, message: '', note: r.adminNote, price: r.quote ? String(r.quote.amount) : '', quoteDetails: r.quote?.details ?? '' });
+  };
+  const save = async (r: AdminEventRequest) => {
+    const paid = !!r.quote?.paidAt;
+    if (paid && ['unavailable', 'refunded'].includes(draft.status) && !confirm(`Refund ${usd(r.charged ?? r.quote!.total)} to ${r.contact.name}'s card?`)) return;
+    setBusy(true);
+    try {
+      await call({ action: 'eventtix.update', id: r.id, status: draft.status, message: draft.message, note: draft.note, price: draft.price === '' ? undefined : Number(draft.price), quoteDetails: draft.quoteDetails });
+      setOpen(null);
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not update the request');
+    }
+    setBusy(false);
+  };
+  const count = (s: string) => (rows ?? []).filter(r => r.status === s).length;
+  const rate = data?.serviceRate ?? 0.05;
+  const priceNum = Number(draft.price) || 0;
+  const earned = (rows ?? []).filter(r => r.quote?.paidAt && !r.refund).reduce((s, r) => s + (r.quote?.service ?? 0), 0);
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['To quote', String(count('submitted'))], ['Awaiting payment', String(count('quoted'))],
+          ['Paid, to buy', String(count('processing'))], ['Service earned', usd(earned)],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No ticket requests yet.</p>}
+        {rows?.map(r => (
+          <div key={r.id} className="p-4 text-sm">
+            <button onClick={() => expand(r)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-900">{r.contact.name} · {r.quantity} × {r.ticketType}</p>
+                <p className="text-gray-600">{r.event.name} · {[r.eventDate || r.event.when, r.event.venue || r.event.address].filter(Boolean).join(' · ')}</p>
+                <p className="text-xs text-gray-400">Requested {new Date(r.createdAt).toLocaleString()}{r.maxPerTicket ? ` · max ${usd(r.maxPerTicket)}/ticket` : ''}{r.quote ? ` · ${usd(r.quote.total)}${r.quote.paidAt ? ' paid' : ' quoted'}` : ''}{r.refund ? ' · refunded' : ''}</p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{r.statusLabel}</span>
+            </button>
+            {open === r.id && (
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase text-gray-500">Where to buy (hidden from the customer)</p>
+                  {(r.eventFull.tickets ?? []).map(t => <a key={t.link} href={t.link} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">{t.type === 'tickets' ? 'Tickets' : 'Info'}: {t.source ?? t.link}</a>)}
+                  {!r.eventFull.tickets?.length && r.eventFull.ticketLink && <a href={r.eventFull.ticketLink} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">Tickets: {r.eventFull.ticketSource ?? r.eventFull.ticketLink}</a>}
+                  {r.eventFull.link && <a href={r.eventFull.link} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">Event page</a>}
+                  {r.eventFull.mapsLink && <a href={r.eventFull.mapsLink} target="_blank" rel="noopener noreferrer" className="block text-brand-600">Map</a>}
+                  {r.eventFull.description && <p className="text-gray-600 whitespace-pre-line">{r.eventFull.description}</p>}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Customer</p>
+                  <p className="text-gray-700">{r.contact.name} · {r.contact.email} · {r.contact.phone} · {r.contact.country}</p>
+                  {r.accountEmail && r.accountEmail !== r.contact.email && <p className="text-xs text-gray-500">Account: {r.accountEmail}</p>}
+                  <p className="text-gray-700">{r.ticketType}{r.quantity > 1 ? (r.seatTogether ? ' · seats together' : ' · seats can be apart') : ''}{r.maxPerTicket ? ` · up to ${usd(r.maxPerTicket)} each` : ''}</p>
+                  {r.eventDate && <p className="text-gray-700">Date / session: {r.eventDate}</p>}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Attendees</p>
+                  {r.attendees.map((a, i) => <p key={i} className="text-gray-700">{i + 1}. {a.fullName} · born {a.dateOfBirth} · {a.nationality} · {a.idType} {a.idNumber}</p>)}
+                  {r.accessibility && <p className="text-gray-700">Accessibility: {r.accessibility}</p>}
+                  {r.note && <p className="whitespace-pre-line bg-gray-50 rounded-lg p-2">Customer note: {r.note}</p>}
+                </div>
+                <div className="space-y-2">
+                  {r.status === 'cancelled' || r.status === 'refunded' ? (
+                    <p className="text-gray-500">{r.status === 'cancelled' ? 'The customer cancelled this request.' : `Refunded ${usd(r.refund?.amount ?? 0)} on ${r.refund ? new Date(r.refund.at).toLocaleDateString() : ''}.`}</p>
+                  ) : (<>
+                    <label className="block text-xs font-semibold text-gray-600">Status</label>
+                    <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
+                      {EVENT_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    {draft.status === 'quoted' && !r.quote?.paidAt && (<>
+                      <label className="block text-xs font-semibold text-gray-600">Total for all {r.quantity} ticket(s), with booking fees (USD)</label>
+                      <input type="number" min={1} step="0.01" value={draft.price} onChange={e => setDraft({ ...draft, price: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <label className="block text-xs font-semibold text-gray-600">What they get (shown to the customer)</label>
+                      <input value={draft.quoteDetails} maxLength={500} onChange={e => setDraft({ ...draft, quoteDetails: e.target.value })} placeholder="e.g. Block 112, row F, seats together; e-tickets" className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <p className="text-xs text-gray-600">Customer pays {usd(priceNum)} + {Math.round(rate * 100)}% service {usd(Math.round(priceNum * rate * 100) / 100)} = <b>{usd(Math.round(priceNum * (1 + rate) * 100) / 100)}</b>, within {data?.quoteHours ?? 72} hours.</p>
+                    </>)}
+                    {r.quote?.paidAt && <p className="text-emerald-700">Paid {usd(r.charged ?? r.quote.total)} on {new Date(r.quote.paidAt).toLocaleDateString()}</p>}
+                    {r.quote?.paidAt && ['unavailable', 'refunded'].includes(draft.status) && <p className="text-red-700 text-xs">Saving refunds the card in full.</p>}
+                    <label className="block text-xs font-semibold text-gray-600">Message to the customer (emailed; no outside links)</label>
+                    <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000}
+                      placeholder={draft.status === 'ticketed' ? 'e.g. Your e-tickets are attached to the email from Lyrtrip; order LT-1234' : ''} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <label className="block text-xs font-semibold text-gray-600">Internal note</label>
+                    <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <button onClick={() => save(r)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>
+                  </>)}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

@@ -18,6 +18,7 @@ import RideBooking from '@/components/RideBooking';
 import JobProfilePromo from '@/components/JobProfilePromo';
 import JobApplyDialog, { type ApplyJob } from '@/components/JobApplyDialog';
 import StudyApplyDialog, { type ApplyStudy } from '@/components/StudyApplyDialog';
+import EventTicketDialog, { type TicketEvent } from '@/components/EventTicketDialog';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -140,8 +141,6 @@ interface SearchResult {
   when?: string | null;
   startDate?: string | null;
   venue?: string | null;
-  ticketLink?: string | null;
-  ticketSource?: string | null;
   // study: 'place' = school/college from Maps, 'link' = admission/scholarship web result
   kind?: 'place' | 'link';
   placeType?: string | null;
@@ -558,6 +557,7 @@ export default function Home() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [applyJob, setApplyJob] = useState<ApplyJob | null>(null);
   const [applyStudy, setApplyStudy] = useState<ApplyStudy | null>(null);
+  const [applyEvent, setApplyEvent] = useState<TicketEvent | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [showLocationMap, setShowLocationMap] = useState(false);
   const [flightSearchError, setFlightSearchError] = useState<string | null>(null);
@@ -1585,18 +1585,11 @@ export default function Home() {
               )}
               {r.description && <p className="mt-2 text-xs text-gray-500 line-clamp-2">{r.description}</p>}
               <div className="mt-auto flex flex-wrap gap-2 pt-3">
-                {r.ticketLink && (
-                  <a href={r.ticketLink} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition" title={r.ticketSource ? `Tickets on ${r.ticketSource}` : 'Tickets'}>
-                    Tickets
-                  </a>
-                )}
-                {r.link && (
-                  <a href={r.link} target="_blank" rel="noopener noreferrer" className={`px-3 py-1.5 text-sm font-semibold rounded-lg transition ${r.ticketLink ? 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700' : 'bg-btn text-white hover:bg-btn-hover'}`}>
-                    Details
-                  </a>
-                )}
-                {r.mapsLink && (
-                  <a href={r.mapsLink} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">Map</a>
+                {r.applyToken && (
+                  <button type="button" onClick={() => setApplyEvent({ name: r.name, when: r.when, venue: r.venue, address: r.address, applyToken: r.applyToken! })}
+                    className="px-3 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition">
+                    Get tickets
+                  </button>
                 )}
               </div>
             </div>
@@ -2727,7 +2720,9 @@ export default function Home() {
                   </div>
                   {searchBtn('events', !eventForm.location.trim())}
                 </div>
+                <p className="-mt-2 mb-2 text-sm text-gray-600">Book tickets through Lyrtrip: we find them and send them to you. <Link href="/events/tickets" className="font-semibold text-brand-600">My tickets →</Link></p>
                 <EventList />
+                {applyEvent && <EventTicketDialog item={applyEvent} onClose={() => setApplyEvent(null)} />}
               </div>
             )}
 
