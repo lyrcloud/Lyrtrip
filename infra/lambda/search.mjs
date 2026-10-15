@@ -6127,10 +6127,19 @@ async function handleClientError(event) {
   let b = {};
   try { b = JSON.parse(event.body || '{}'); } catch { /* not JSON */ }
   const s = (v, max) => String(v ?? '').slice(0, max);
-  console.error('CLIENT_ERROR', JSON.stringify({
+  const row = {
     message: s(b.message, 500), name: s(b.name, 100), digest: s(b.digest, 100), stack: s(b.stack, 3000),
-    url: s(b.url, 300), userAgent: s(event.headers?.['user-agent'], 300), boundary: s(b.boundary, 20), at: new Date().toISOString(),
-  }));
+    url: s(b.url, 300), userAgent: s(event.headers?.['user-agent'], 300), boundary: s(b.boundary, 20), at: new Date(),
+  };
+  console.error('CLIENT_ERROR', JSON.stringify(row));
+  // The Lambda's log group isn't kept, so errors also go to a collection that empties itself after 30 days
+  try {
+    const coll = (await getDb()).collection('client_errors');
+    await coll.createIndex({ at: 1 }, { expireAfterSeconds: 30 * 86400 }).catch(() => {});
+    if (await coll.estimatedDocumentCount() < 5000) await coll.insertOne(row);
+  } catch (err) {
+    console.error('Saving a client error failed:', err.message);
+  }
   return json(204, {});
 }
 
