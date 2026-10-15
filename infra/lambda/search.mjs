@@ -2004,16 +2004,18 @@ function priceInsights(p) {
 // Applicants apply through Lyrtrip, so job results never show the employer's website, email or phone.
 // The real apply links travel inside a sealed token that only this Lambda can open.
 const JOB_CONTACT_NOTE = '[apply via Lyrtrip]';
-function scrubJobContacts(text) {
+function scrubJobContacts(text, note = JOB_CONTACT_NOTE) {
+  const esc = note.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return String(text ?? '')
-    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, JOB_CONTACT_NOTE)
-    .replace(/\b(?:https?:\/\/|www\.)\S+/gi, JOB_CONTACT_NOTE)
-    .replace(/\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|co|in|uk|us|ca|au|de|jobs|careers|ai|biz|info)(?:\/\S*)?\b/gi, JOB_CONTACT_NOTE)
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, note)
+    .replace(/\b(?:https?:\/\/|www\.)\S+/gi, note)
+    .replace(/\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|co|in|uk|us|ca|au|de|jobs|careers|ai|biz|info|travel|tours|sa|ae|pk)(?:\/\S*)?\b/gi, note)
     // Phone numbers: runs of digits and separators with at least 9 digits
-    .replace(/\+?\(?\d[\d\s().-]{7,}\d/g, m => (m.replace(/\D/g, '').length >= 9 ? JOB_CONTACT_NOTE : m))
-    .replace(/(?:\[apply via Lyrtrip\][\s,;/]*){2,}/g, `${JOB_CONTACT_NOTE} `)
+    .replace(/\+?\(?\d[\d\s().-]{7,}\d/g, m => (m.replace(/\D/g, '').length >= 9 ? note : m))
+    .replace(new RegExp(`(?:${esc}[\\s,;/]*){2,}`, 'g'), `${note} `)
     .trim();
 }
+const BOOK_NOTE = '[book via Lyrtrip]';
 
 const jobTokenKey = () => createHash('sha256').update(process.env.JOB_APPLY_SECRET || `${process.env.STRIPE_SECRET_KEY}:job-apply`).digest();
 function sealJob(data) {
@@ -2216,23 +2218,44 @@ const TOUR_QUERIES = {
   honeymoon:   d => `honeymoon packages ${d}`,
 };
 
-async function searchTourism({ category, from, to, destination, purpose }) {
+async function searchTourism({ category, sub, from, to, origin, destination, purpose }) {
   const place = (destination || '').trim();
   const fromName = from ? countryName(from) : '';
   const toName   = to ? countryName(to) : '';
+  const sell = (results, extra = {}) => results.map(r => tourResult(r, { category, sub: sub ?? null, from: (origin || '').trim(), destination: place || toName, ...extra }));
 
   if (category === 'visa') {
     const table = await loadVisaTable();
     const visa = { from, to, fromName, toName, ...describeVisa(table.get(`${from}-${to}`)) };
     if (from === to) return { visa, results: [] };
     const results = await searchWebLinks(`${toName} ${purpose || 'tourist'} visa types requirements fees for ${fromName} citizens`, 'visa', { preferOfficial: true });
-    return { visa, results };
+    return { visa, results: sell(results, { from: fromName, destination: toName }) };
   }
-  if (category === 'passport') return { results: await searchWebLinks(`${fromName} passport application renewal requirements fees official`, 'passport', { preferOfficial: true }) };
-  if (category === 'id')       return { results: await searchWebLinks(`${fromName} national ID card application requirements fees official`, 'id', { preferOfficial: true }) };
-  if (category === 'insurance') return { results: await searchWebLinks(`travel insurance for a trip to ${place}${fromName ? ` from ${fromName}` : ''}`, 'insurance') };
-  if (category === 'destination') return { results: await searchMapsPlaces(`top tourist attractions in ${place}`, 'destinations') };
-  return { results: await searchWebLinks(TOUR_QUERIES[category](place), 'tours') };
+  if (category === 'passport') return { results: sell(await searchWebLinks(`${fromName} passport application renewal requirements fees official`, 'passport', { preferOfficial: true }), { from: fromName }) };
+  if (category === 'id')       return { results: sell(await searchWebLinks(`${fromName} national ID card application requirements fees official`, 'id', { preferOfficial: true }), { from: fromName }) };
+  if (category === 'insurance') return { results: sell(await searchWebLinks(`travel insurance for a trip to ${place}${fromName ? ` from ${fromName}` : ''}`, 'insurance'), { from: fromName }) };
+  if (category === 'destination') return { results: sell(await searchMapsPlaces(`top tourist attractions in ${place}`, 'destinations')) };
+  if (category === 'religious') {
+    const pil = PILGRIMAGES[sub] ?? PILGRIMAGES.other;
+    return { results: sell(await searchWebLinks(pil.query((origin || '').trim(), place), 'tours'), { destination: pil.destination ?? place }) };
+  }
+  return { results: sell(await searchWebLinks(TOUR_QUERIES[category](place), 'tours')) };
+}
+
+// Tourism is sold through Lyrtrip: results never show the agency's or official site's link, phone or name of
+// the site; what the admin needs to book travels inside a sealed token, as for jobs and events.
+function tourResult(r, ctx) {
+  const sealed = sealJob({
+    tourism: true, ...ctx, kind: r.kind, name: r.name, placeType: r.placeType ?? null, address: r.address ?? '',
+    website: r.website ?? null, phone: r.phone ?? null, mapsLink: r.mapsLink ?? null, link: r.link ?? null, source: r.source ?? null,
+    description: (r.description ?? '').slice(0, 1500), at: Date.now(),
+  });
+  return {
+    id: r.id, kind: r.kind, name: scrubJobContacts(r.name, BOOK_NOTE), placeType: r.placeType ?? null, address: r.address ?? null,
+    rating: r.rating ?? null, reviewCount: r.reviewCount ?? null, openState: r.openState ?? null, imageUrl: r.imageUrl ?? null,
+    description: scrubJobContacts(r.description ?? '', BOOK_NOTE).slice(0, 400), postedAt: r.postedAt ?? null, official: !!r.official,
+    price: null, applyToken: sealed,
+  };
 }
 
 // Events: Google Events via SerpAPI (concerts, festivals, sports, shows...)
@@ -2305,7 +2328,7 @@ async function searchEventsSerpApi({ location, category, query, when, today }) {
       venue:       e.venue?.name ?? null,
       rating:      e.venue?.rating ?? null,
       reviewCount: e.venue?.reviews ?? null,
-      description: scrubJobContacts((e.description ?? '').slice(0, 300)),
+      description: scrubJobContacts((e.description ?? '').slice(0, 300), BOOK_NOTE),
       imageUrl:    e.image ?? e.thumbnail ?? null,
       price:       null,
       // Tickets are sold through Lyrtrip: the organiser's and ticket sites' links stay in this sealed token
@@ -2467,15 +2490,17 @@ async function handleSearch(event) {
 
     // --- Tourism: visa requirements (Passport Index) + SerpAPI for everything else (no placeholder data) ---
     if (service === 'tourism') {
-      const { category, from, to, destination, purpose } = body;
+      const { category, sub, from, to, origin, destination, purpose } = body;
       const iso = v => typeof v === 'string' && /^[A-Z]{2}$/.test(v);
       if (!['visa', 'passport', 'id', 'insurance', 'destination', ...Object.keys(TOUR_QUERIES)].includes(category)) return json(400, { error: 'Unknown tourism category' });
+      if (category === 'religious' && !PILGRIMAGES[sub]) return json(400, { error: 'Choose a pilgrimage' });
+      if (category === 'religious' && !(origin || '').trim()) return json(400, { error: 'Enter the city you travel from' });
       if (category === 'visa' && !(iso(from) && iso(to))) return json(400, { error: 'Choose your passport country and destination country' });
       if ((category === 'passport' || category === 'id') && !iso(from)) return json(400, { error: 'Choose your country' });
-      if (!['visa', 'passport', 'id'].includes(category) && !(destination || '').trim()) return json(400, { error: 'Enter a destination' });
+      if (!['visa', 'passport', 'id'].includes(category) && !(category === 'religious' && sub !== 'other') && !(destination || '').trim()) return json(400, { error: 'Enter a destination' });
       if (!process.env.SERPAPI_KEY && category !== 'visa') return json(200, { success: true, service, results: [], total: 0, error: 'Search is not available right now' });
       try {
-        const { visa = null, results } = await searchTourism({ category, from, to, destination, purpose });
+        const { visa = null, results } = await searchTourism({ category, sub, from, to, origin, destination, purpose });
         return json(200, { success: true, service, visa, results, total: results.length, source: 'serpapi' });
       } catch (err) {
         console.error('Tourism search error:', err.message);
@@ -3159,6 +3184,7 @@ async function handleAdmin(event) {
   try {
     if (String(body.action ?? '').startsWith('studyapps.')) return (await studyAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('eventtix.')) return (await eventTicketsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
+    if (String(body.action ?? '').startsWith('tourreqs.')) return (await tourRequestsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     switch (body.action) {
       case 'me':
         return json(200, { email: actor.email, role: actor.role });
@@ -6122,6 +6148,589 @@ async function eventTicketsAdmin(db, body) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Tour packages and travel services (Tourism tab): Lyrtrip sells them itself. Visitors never see the
+// agencies' or official sites' links; they send a request with everything the trip needs (travellers,
+// ID documents, the category's own questions and document copies), an admin quotes the price, and the
+// customer pays it plus Lyrtrip's 5%. Once paid, the admin books it; if they can't, the payment is
+// refunded. Document copies share the private JOB_PROFILE_BUCKET under tours/.
+// ---------------------------------------------------------------------------
+
+const TOUR_SERVICE_RATE = 0.05;
+const TOUR_QUOTE_HOURS = 72;
+const TOUR_MAX_TRAVELLERS = 20;
+const TOUR_DOC_MAX = 10 * 1024 * 1024;
+const TOUR_STATUS = {
+  submitted: 'Received by Lyrtrip', info_needed: 'More details or documents needed', quoted: 'Price to pay',
+  processing: 'Paid: Lyrtrip is booking', confirmed: 'Booked', unavailable: 'Not available',
+  refunded: 'Refunded', cancelled: 'Cancelled',
+};
+const TOUR_CANCELLABLE = ['submitted', 'info_needed', 'quoted'];
+const tourTotals = amount => {
+  const service = Math.round(amount * TOUR_SERVICE_RATE * 100) / 100;
+  return { amount, service, total: Math.round((amount + service) * 100) / 100 };
+};
+
+// Every document a request can carry; categories say which are required
+const TOUR_DOCS = {
+  passport:    { label: 'Passport copy (photo page) for each traveller' },
+  photo:       { label: 'Passport-size photo for each traveller (white background)', images: true },
+  nationalId:  { label: 'National ID copy for each traveller' },
+  meningitis:  { label: 'Meningitis ACYW vaccination certificate' },
+  vaccination: { label: 'Other vaccination certificates' },
+  medical:     { label: 'Medical fitness certificate' },
+  mahram:      { label: 'Proof of relationship with mahram (marriage or birth certificate)' },
+  bank:        { label: 'Bank statements (last 3–6 months)' },
+  employment:  { label: 'Employment letter, business registration or student letter' },
+  itr:         { label: 'Income tax returns' },
+  invitation:  { label: 'Invitation letter' },
+  currentDoc:  { label: 'Current passport or ID (front and back)' },
+  address:     { label: 'Proof of address' },
+  birth:       { label: 'Birth certificate' },
+  other:       { label: 'Other supporting document' },
+};
+
+// Questions every category can add on top of the shared trip and traveller details.
+// type: text | textarea | select | number | date | checkbox | multi (checkbox list)
+const tf = (id, label, type, extra = {}) => ({ id, label, type, ...extra });
+const MEAL_PLANS = ['Breakfast only', 'Breakfast and dinner', 'All meals', 'No meals'];
+const HOTEL_STANDARDS = ['Budget', '3 star', '4 star', '5 star', 'Luxury'];
+const ROOM_SHARING = ['Quad (4 per room)', 'Triple (3 per room)', 'Double / twin (2 per room)', 'Single'];
+const PILGRIM_CLASS = ['Economy', 'Standard', 'Premium', 'VIP'];
+const HARAM_DISTANCE = ['Walking distance (under 500 m)', 'Up to 1 km', 'Shuttle bus is fine'];
+const FITNESS = ['Easy: little walking', 'Moderate: a few hours of walking', 'Fit: long hikes or treks', 'Very fit: high altitude or strenuous'];
+
+const MECCA_COMMON = [
+  tf('packageClass', 'Package class', 'select', { options: PILGRIM_CLASS, required: true }),
+  tf('haramDistance', 'Hotel distance from the Haram', 'select', { options: HARAM_DISTANCE, required: true }),
+  tf('makkahNights', 'Nights in Makkah', 'number', { min: 0, max: 40, required: true }),
+  tf('madinahNights', 'Nights in Madinah', 'number', { min: 0, max: 40, required: true }),
+  tf('meningitisVaccine', 'Meningitis ACYW vaccine (required by Saudi Arabia)', 'select', { options: ['All travellers have the certificate', 'We will get it before travel'], required: true }),
+  tf('mahram', 'Women travelling: mahram name and relationship, or "organised group"', 'text', { max: 200 }),
+  tf('ziyarah', 'Include ziyarah (guided visits) in Makkah and Madinah', 'checkbox'),
+];
+
+const PILGRIMAGES = {
+  hajj: { label: 'Hajj', icon: '🕋', destination: 'Makkah and Madinah, Saudi Arabia', query: from => `Hajj packages ${new Date().getFullYear() + 1} from ${from}`, passport: true,
+    docs: ['passport', 'photo', 'meningitis'], fields: [
+      tf('hajjRoute', 'How are you registered for Hajj?', 'select', { options: ["My country's Hajj quota (Hajj committee or approved operator)", 'Nusuk Hajj (Europe, Americas, Australia)', 'Not registered yet: Lyrtrip to advise'], required: true }),
+      tf('previousHajj', 'Year of your last Hajj (if any)', 'text', { max: 10 }),
+      tf('shifting', 'Package type', 'select', { options: ['Non-shifting (same hotel throughout)', 'Shifting (Aziziyah before and after Hajj days)', 'No preference'] }),
+      ...MECCA_COMMON,
+    ] },
+  umrah: { label: 'Umrah', icon: '🕋', destination: 'Makkah and Madinah, Saudi Arabia', query: from => `Umrah packages from ${from}`, passport: true,
+    docs: ['passport', 'photo', 'meningitis'], fields: [
+      tf('umrahVisa', 'Visa', 'select', { options: ['Need an Umrah visa', 'I have a Saudi tourist or Umrah visa', 'GCC resident or citizen'], required: true }),
+      tf('season', 'Season', 'select', { options: ['Regular', 'Ramadan', 'Last 10 nights of Ramadan', 'School holidays'] }),
+      ...MECCA_COMMON,
+    ] },
+  ziyarat: { label: 'Ziyarat (Karbala, Najaf, Mashhad)', icon: '🕌', destination: 'Iraq and Iran', query: from => `Ziyarat tour packages Karbala Najaf Mashhad from ${from}`, passport: true,
+    docs: ['passport', 'photo'], fields: [
+      tf('cities', 'Cities to visit', 'multi', { options: ['Karbala', 'Najaf', 'Kadhimiya (Baghdad)', 'Samarra', 'Kufa', 'Mashhad', 'Qom', 'Damascus (Sayyida Zaynab)'], required: true }),
+      tf('occasion', 'Occasion', 'select', { options: ['Any time', 'Arbaeen', 'Ashura', 'Ramadan'] }),
+      tf('packageClass', 'Package class', 'select', { options: PILGRIM_CLASS }),
+    ] },
+  holyland: { label: 'Holy Land (Jerusalem, Bethlehem, Nazareth)', icon: '✝️', destination: 'Israel and Palestine', query: from => `Holy Land Christian pilgrimage tour from ${from}`, passport: true,
+    docs: ['passport'], fields: [
+      tf('denomination', 'Church or denomination (optional)', 'text', { max: 60 }),
+      tf('jordanExtension', 'Add Jordan (Baptism Site, Mount Nebo, Petra)', 'checkbox'),
+      tf('dailyMass', 'Daily Mass or service arranged', 'checkbox'),
+    ] },
+  vatican: { label: 'Rome and Vatican', icon: '⛪', destination: 'Rome and Vatican City', query: from => `Rome Vatican Catholic pilgrimage tour from ${from}`,
+    docs: ['passport'], fields: [
+      tf('papalAudience', 'Try for tickets to a Papal Audience', 'checkbox'),
+      tf('assisi', 'Add Assisi', 'checkbox'),
+    ] },
+  marian: { label: 'Lourdes, Fátima and Medjugorje', icon: '⛪', destination: 'Lourdes, Fátima, Medjugorje', query: from => `Lourdes Fatima Medjugorje pilgrimage tour from ${from}`,
+    docs: ['passport'], fields: [
+      tf('shrines', 'Shrines', 'multi', { options: ['Lourdes', 'Fátima', 'Medjugorje', 'Santiago de Compostela'], required: true }),
+      tf('mobility', 'Mobility or medical needs (assistance at the Sanctuary)', 'text', { max: 200 }),
+    ] },
+  camino: { label: 'Camino de Santiago', icon: '🥾', destination: 'Camino de Santiago, Spain', query: from => `Camino de Santiago guided walking package`,
+    docs: ['passport'], fields: [
+      tf('route', 'Route', 'select', { options: ['French Way: last 100 km from Sarria', 'French Way: full', 'Portuguese Way', 'Northern Way', 'Not sure'], required: true }),
+      tf('kmPerDay', 'Kilometres per day you are comfortable walking', 'number', { min: 5, max: 40 }),
+      tf('bagTransfer', 'Luggage transfer between stops', 'checkbox'),
+    ] },
+  chardham: { label: 'Char Dham Yatra', icon: '🛕', destination: 'Yamunotri, Gangotri, Kedarnath, Badrinath (Uttarakhand, India)', query: from => `Char Dham Yatra package from ${from}`,
+    docs: ['nationalId', 'photo', 'medical'], fields: [
+      tf('dhams', 'Dhams', 'select', { options: ['All four (Char Dham)', 'Do Dham: Kedarnath and Badrinath', 'Kedarnath only', 'Badrinath only'], required: true }),
+      tf('helicopter', 'Helicopter for Kedarnath', 'select', { options: ['Yes', 'No: trek, pony or palki', 'If available'] }),
+      tf('registration', 'Uttarakhand yatra registration (required)', 'select', { options: ['Done: will share the registration numbers', 'Lyrtrip to do it'], required: true }),
+      tf('ponyPalki', 'Pony or palki needed for anyone', 'checkbox'),
+    ] },
+  kashi: { label: 'Varanasi, Ayodhya and Prayagraj', icon: '🛕', destination: 'Varanasi, Ayodhya, Prayagraj (India)', query: from => `Varanasi Ayodhya Prayagraj pilgrimage tour package from ${from}`,
+    docs: ['nationalId'], fields: [
+      tf('darshan', 'Special darshan or aarti bookings (e.g. Kashi Vishwanath Sugam Darshan, Ganga Aarti boat)', 'text', { max: 200 }),
+    ] },
+  vaishno: { label: 'Vaishno Devi', icon: '🛕', destination: 'Katra, Jammu and Kashmir (India)', query: from => `Vaishno Devi yatra package from ${from}`,
+    docs: ['nationalId', 'photo'], fields: [
+      tf('helicopter', 'Helicopter Katra to Sanjhichhat', 'select', { options: ['Yes', 'No: walk, pony or battery car', 'If available'] }),
+      tf('yatraSlip', 'Yatra registration (RFID card)', 'select', { options: ['Lyrtrip to book it', 'Will book it myself'] }),
+    ] },
+  tirupati: { label: 'Tirupati Balaji', icon: '🛕', destination: 'Tirumala, Andhra Pradesh (India)', query: from => `Tirupati Balaji darshan package from ${from}`,
+    docs: ['nationalId'], fields: [
+      tf('darshanType', 'Darshan', 'select', { options: ['Special Entry Darshan (₹300)', 'Sarva (free) darshan', 'VIP break darshan if possible'], required: true }),
+    ] },
+  amarnath: { label: 'Amarnath Yatra', icon: '🏔️', destination: 'Amarnath Cave, Jammu and Kashmir (India)', query: from => `Amarnath Yatra package from ${from}`,
+    docs: ['nationalId', 'photo', 'medical'], fields: [
+      tf('route', 'Route', 'select', { options: ['Baltal (short, steep)', 'Pahalgam (longer, gentler)', 'Helicopter'], required: true }),
+      tf('shrineRegistration', 'Shrine Board registration and Compulsory Health Certificate', 'select', { options: ['Done: will share them', 'Lyrtrip to help register'], required: true }),
+    ] },
+  kailash: { label: 'Kailash Mansarovar', icon: '🏔️', destination: 'Mount Kailash and Lake Mansarovar (Tibet)', query: from => `Kailash Mansarovar yatra package via Nepal from ${from}`, passport: true,
+    docs: ['passport', 'photo', 'medical'], fields: [
+      tf('route', 'Route', 'select', { options: ['Via Nepal: Kathmandu overland', 'Via Nepal: Lhasa by air', 'Government yatra (MEA, Indian citizens)', 'Not sure'], required: true }),
+      tf('parikrama', 'Do the Kailash parikrama (3-day trek)', 'checkbox'),
+      tf('altitudeExperience', 'High-altitude experience', 'select', { options: ['None', 'Some (above 3,500 m)', 'A lot'] }),
+    ] },
+  buddhist: { label: 'Buddhist circuit (Bodh Gaya, Sarnath, Lumbini)', icon: '☸️', destination: 'Bodh Gaya, Rajgir, Nalanda, Sarnath, Kushinagar, Lumbini', query: from => `Buddhist circuit pilgrimage tour Bodh Gaya Lumbini from ${from}`,
+    docs: ['passport'], fields: [
+      tf('sites', 'Sites', 'multi', { options: ['Bodh Gaya', 'Rajgir and Nalanda', 'Sarnath', 'Kushinagar', 'Lumbini (Nepal)', 'Sravasti'], required: true }),
+      tf('monastery', 'Monastery stay or meditation retreat', 'checkbox'),
+    ] },
+  sikh: { label: 'Sikh shrines (Golden Temple, Kartarpur, Hemkund Sahib)', icon: '🪯', destination: 'Amritsar, Kartarpur, Anandpur Sahib, Hemkund Sahib', query: from => `Sikh gurdwara yatra tour Amritsar Hemkund Sahib from ${from}`,
+    docs: ['nationalId'], fields: [
+      tf('gurdwaras', 'Gurdwaras', 'multi', { options: ['Harmandir Sahib (Golden Temple), Amritsar', 'Kartarpur Sahib (Pakistan corridor)', 'Anandpur Sahib', 'Hemkund Sahib', 'Patna Sahib', 'Hazur Sahib, Nanded', 'Nankana Sahib (Pakistan)'], required: true }),
+    ] },
+  jain: { label: 'Jain tirthas (Palitana, Shikharji)', icon: '🛕', destination: 'Palitana, Sammed Shikharji, Girnar, Ranakpur', query: from => `Jain tirth yatra package Palitana Shikharji from ${from}`,
+    docs: ['nationalId'], fields: [
+      tf('tirthas', 'Tirthas', 'multi', { options: ['Palitana (Shatrunjaya)', 'Sammed Shikharji', 'Girnar', 'Ranakpur', 'Dilwara (Mount Abu)', 'Shravanabelagola'], required: true }),
+      tf('jainFood', 'Jain food only', 'checkbox'),
+    ] },
+  jewish: { label: 'Jewish heritage (Jerusalem, Western Wall)', icon: '✡️', destination: 'Jerusalem, Safed, Tiberias', query: from => `Jewish heritage tour Israel from ${from}`, passport: true,
+    docs: ['passport'], fields: [
+      tf('kosher', 'Kosher food', 'select', { options: ['Kosher', 'Glatt kosher', 'Not needed'] }),
+      tf('shabbat', 'Shabbat-observant itinerary', 'checkbox'),
+    ] },
+  other: { label: 'Other pilgrimage', icon: '🙏', destination: null, query: (from, dest) => `${dest} pilgrimage tour package from ${from}`,
+    docs: [], fields: [tf('shrine', 'Shrine or temple', 'text', { max: 120, required: true })] },
+};
+
+const TRIP_FIELDS = {
+  family:      [tf('childrenAges', "Children's ages", 'text', { max: 60 }), tf('kidActivities', 'Interests (theme parks, beaches, wildlife…)', 'text', { max: 200 })],
+  honeymoon:   [tf('weddingDate', 'Wedding date', 'date'), tf('extras', 'Special touches (candle-lit dinner, private villa…)', 'text', { max: 200 })],
+  educational: [
+    tf('institution', 'School, college or organisation', 'text', { max: 120, required: true }),
+    tf('ageGroup', 'Students’ age or grade', 'text', { max: 60, required: true }),
+    tf('staff', 'Teachers or staff travelling', 'number', { min: 0, max: 50 }),
+    tf('learningGoals', 'What the trip should cover', 'textarea', { max: 1000, required: true }),
+  ],
+  adventure:   [
+    tf('activities', 'Activities (trekking, rafting, diving, safari…)', 'text', { max: 200, required: true }),
+    tf('fitness', 'Fitness level', 'select', { options: FITNESS, required: true }),
+    tf('experience', 'Experience or certificates (e.g. PADI)', 'text', { max: 200 }),
+  ],
+  govt:        [
+    tf('organisation', 'Department or organisation', 'text', { max: 120, required: true }),
+    tf('purpose', 'Purpose (study visit, delegation, official tour)', 'text', { max: 200, required: true }),
+    tf('protocol', 'Protocol or security needs', 'text', { max: 200 }),
+  ],
+  pack:        [tf('interests', 'Interests', 'text', { max: 200 })],
+  vacation:    [tf('interests', 'Interests', 'text', { max: 200 })],
+  regional:    [tf('interests', 'Places or interests around the region', 'text', { max: 200 })],
+  destination: [tf('interests', 'What you want to see and do', 'text', { max: 200 })],
+};
+
+// What each Tourism category asks for. trip: dates, hotel and meal questions; passport: passports only
+const TOUR_CATEGORIES = {
+  pack:        { label: 'Tour package', trip: true, docs: ['passport'] },
+  family:      { label: 'Family holiday', trip: true, docs: ['passport'] },
+  vacation:    { label: 'Vacation', trip: true, docs: ['passport'] },
+  regional:    { label: 'Regional tour', trip: true, docs: [] },
+  educational: { label: 'Educational tour', trip: true, docs: ['passport'] },
+  govt:        { label: 'Government tour', trip: true, docs: ['passport'] },
+  adventure:   { label: 'Adventure trip', trip: true, docs: ['passport', 'medical'] },
+  honeymoon:   { label: 'Honeymoon', trip: true, docs: ['passport'] },
+  destination: { label: 'Trip', trip: true, docs: [] },
+  religious:   { label: 'Pilgrimage', trip: true, docs: [] },
+  visa:        { label: 'Visa assistance', trip: true, passport: true, docs: ['passport', 'photo', 'bank', 'employment'], fields: [
+    tf('purpose', 'Purpose of travel', 'select', { options: ['Tourist', 'Business', 'Student', 'Work', 'Transit', 'Family visit', 'Medical'], required: true }),
+    tf('occupation', 'Occupation', 'text', { max: 80, required: true }),
+    tf('sponsor', 'Who pays for the trip (self, employer, family, host)', 'text', { max: 120, required: true }),
+    tf('refusals', 'Any visa refusals before?', 'select', { options: ['No', 'Yes (explain in notes)'], required: true }),
+    tf('travelHistory', 'Countries visited in the last 10 years', 'textarea', { max: 1000 }),
+    tf('host', 'Host or hotel at the destination', 'text', { max: 200 }),
+  ] },
+  passport:    { label: 'Passport assistance', trip: false, docs: ['currentDoc', 'photo', 'address', 'birth'], fields: [
+    tf('applicationType', 'Application', 'select', { options: ['New passport', 'Renewal', 'Lost or damaged', 'Name or details change', 'Child passport'], required: true }),
+    tf('urgency', 'How fast', 'select', { options: ['Normal', 'Urgent / Tatkal (extra fee)'], required: true }),
+    tf('currentNumber', 'Current passport number (if any)', 'text', { max: 20 }),
+    tf('residentialAddress', 'Residential address', 'textarea', { max: 400, required: true }),
+  ] },
+  id:          { label: 'ID card assistance', trip: false, docs: ['photo', 'address', 'birth'], fields: [
+    tf('applicationType', 'Application', 'select', { options: ['New ID card', 'Renewal', 'Lost or damaged', 'Update details'], required: true }),
+    tf('residentialAddress', 'Residential address', 'textarea', { max: 400, required: true }),
+  ] },
+  insurance:   { label: 'Travel insurance', trip: true, docs: [], fields: [
+    tf('coverage', 'Cover', 'select', { options: ['Medical only', 'Comprehensive (medical, cancellation, baggage)', 'Annual multi-trip'], required: true }),
+    tf('coverAmount', 'Medical cover wanted (USD, e.g. 50000; Schengen needs at least €30,000)', 'number', { min: 0, max: 5000000 }),
+    tf('preExisting', 'Pre-existing medical conditions', 'textarea', { max: 600 }),
+    tf('riskyActivities', 'Adventure sports or winter sports', 'checkbox'),
+  ] },
+};
+
+// The questions, documents and rules for one category (and pilgrimage), as the form renders them
+function tourSpec(category, sub) {
+  const c = TOUR_CATEGORIES[category];
+  if (!c) return null;
+  const pil = category === 'religious' ? PILGRIMAGES[sub] ?? PILGRIMAGES.other : null;
+  const fields = [...(c.fields ?? []), ...(TRIP_FIELDS[category] ?? []), ...(pil?.fields ?? [])];
+  const docs = [...new Set([...(c.docs ?? []), ...(pil?.docs ?? [])])];
+  return {
+    category, sub: pil ? (PILGRIMAGES[sub] ? sub : 'other') : null, label: pil ? pil.label : c.label,
+    trip: c.trip, passport: !!(c.passport || pil?.passport), fixedDestination: pil?.destination ?? null,
+    fields, requiredDocs: docs.map(id => ({ id, label: TOUR_DOCS[id].label })),
+    optionalDocs: Object.keys(TOUR_DOCS).filter(id => !docs.includes(id)).map(id => ({ id, label: TOUR_DOCS[id].label })),
+  };
+}
+
+function cleanTourRequest(b, spec, sub) {
+  const s = (v, max) => String(v ?? '').trim().slice(0, max);
+  const day = v => (/^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s(v, 10)) ? s(v, 10) : '');
+  const c = b.contact ?? {};
+  const name = s(c.name, 80), email = s(c.email, 120).toLowerCase(), country = s(c.country, 60);
+  if (name.length < 2) throw new JobError('Enter your full name');
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw new JobError('Enter a valid email: the quote and booking are sent there');
+  const phone = parsePhoneNumberFromString(s(c.phone, 30), 'US');
+  if (!phone?.isValid()) throw new JobError('Enter a valid phone number with the country code, e.g. +91 98765 43210');
+  if (!country) throw new JobError('Enter your country');
+
+  const trip = {};
+  if (spec.trip) {
+    trip.from = s(b.trip?.from, 80);
+    trip.destination = spec.fixedDestination ?? s(b.trip?.destination, 120);
+    trip.startDate = day(b.trip?.startDate);
+    trip.nights = Math.round(Number(b.trip?.nights));
+    trip.flexibleDays = Math.max(0, Math.min(30, Math.round(Number(b.trip?.flexibleDays) || 0)));
+    trip.hotel = HOTEL_STANDARDS.includes(b.trip?.hotel) ? b.trip.hotel : '';
+    trip.rooms = ROOM_SHARING.includes(b.trip?.rooms) ? b.trip.rooms : '';
+    trip.meals = MEAL_PLANS.includes(b.trip?.meals) ? b.trip.meals : '';
+    trip.flights = !!b.trip?.flights;
+    const budget = b.trip?.budgetPerPerson === '' || b.trip?.budgetPerPerson == null ? null : Math.round(Number(b.trip.budgetPerPerson));
+    if (budget != null && !(budget > 0 && budget <= 1_000_000)) throw new JobError('Budget per person must be a positive amount in USD');
+    trip.budgetPerPerson = budget;
+    if (!trip.from) throw new JobError('Enter the city you travel from');
+    if (!trip.destination) throw new JobError('Enter the destination');
+    if (!trip.startDate || Date.parse(trip.startDate) < Date.now() - 864e5) throw new JobError('Choose a travel date in the future');
+    if (!(trip.nights >= 1 && trip.nights <= 120)) throw new JobError('Enter how many nights (1 to 120)');
+  }
+
+  const list = Array.isArray(b.travellers) ? b.travellers.slice(0, TOUR_MAX_TRAVELLERS + 1) : [];
+  if (list.length < 1) throw new JobError('Add at least one traveller');
+  if (list.length > TOUR_MAX_TRAVELLERS) throw new JobError(`Up to ${TOUR_MAX_TRAVELLERS} travellers per request; send a group request for more`);
+  const until = spec.trip && trip.startDate ? Date.parse(trip.startDate) + (trip.nights + 180) * 864e5 : Date.now() + 180 * 864e5;
+  const travellers = list.map((t, i) => {
+    const row = {
+      fullName: s(t?.fullName, 80), dateOfBirth: day(t?.dateOfBirth), gender: ['Male', 'Female', 'Other'].includes(t?.gender) ? t.gender : '',
+      nationality: s(t?.nationality, 60), idType: ['Passport', 'National ID'].includes(t?.idType) ? t.idType : '',
+      idNumber: s(t?.idNumber, 30).toUpperCase(), idExpiry: day(t?.idExpiry),
+    };
+    const who = list.length > 1 ? `Traveller ${i + 1}: ` : '';
+    if (row.fullName.length < 2) throw new JobError(`${who}enter the full name as on the passport or ID`);
+    if (!row.dateOfBirth || Date.parse(row.dateOfBirth) > Date.now()) throw new JobError(`${who}enter a valid date of birth`);
+    if (!row.gender) throw new JobError(`${who}choose the gender`);
+    if (!row.nationality) throw new JobError(`${who}enter the nationality`);
+    if (spec.passport && row.idType !== 'Passport') throw new JobError(`${who}a passport is needed for this trip`);
+    if (!row.idType || row.idNumber.length < 3) throw new JobError(`${who}enter the passport or ID number`);
+    if (row.idType === 'Passport' && spec.trip) {
+      if (!row.idExpiry) throw new JobError(`${who}enter the passport expiry date`);
+      if (Date.parse(row.idExpiry) < until) throw new JobError(`${who}the passport must be valid for 6 months after the trip. Renew it first, or ask us for passport assistance.`);
+    }
+    return row;
+  });
+
+  const extras = {};
+  for (const fd of spec.fields) {
+    const v = b.extras?.[fd.id];
+    let out;
+    if (fd.type === 'checkbox') out = !!v;
+    else if (fd.type === 'number') out = v === '' || v == null ? null : Number(v);
+    else if (fd.type === 'select') out = fd.options.includes(v) ? v : '';
+    else if (fd.type === 'multi') out = [...new Set((Array.isArray(v) ? v : []).filter(x => fd.options.includes(x)))];
+    else if (fd.type === 'date') out = day(v);
+    else out = s(v, fd.max ?? 200);
+    if (fd.type === 'number' && out != null && !(Number.isFinite(out) && out >= (fd.min ?? 0) && out <= (fd.max ?? 1e9))) throw new JobError(`${fd.label}: enter a number from ${fd.min ?? 0} to ${fd.max}`);
+    const empty = out == null || out === '' || (Array.isArray(out) && !out.length);
+    if (fd.required && empty) throw new JobError(`Answer: ${fd.label}`);
+    if (!empty && out !== false) extras[fd.id] = out;
+  }
+
+  return {
+    contact: { name, email, phone: phone.number, country }, trip: spec.trip ? trip : null, travellers, extras,
+    specialNeeds: s(b.specialNeeds, 600), note: s(b.note, 2000), sub,
+  };
+}
+
+// The document copies sent with a request, checked to belong to this customer and to exist
+async function checkTourDocs(sub, docs, requiredDocs, { allowMissing = false } = {}) {
+  const rows = (Array.isArray(docs) ? docs : []).slice(0, 40).map(d => ({ kind: String(d?.kind ?? ''), key: String(d?.key ?? ''), name: String(d?.name ?? '').slice(0, 120) }))
+    .filter(d => TOUR_DOCS[d.kind] && d.key.startsWith(`tours/${sub}/${d.kind}-`));
+  const { s3, mod } = await jobS3();
+  const found = (await Promise.all(rows.map(async d => ((await s3.send(new mod.HeadObjectCommand({ Bucket: jobBucket(), Key: d.key })).catch(() => null)) ? d : null)))).filter(Boolean);
+  const missing = requiredDocs.filter(r => !found.some(d => d.kind === r.id));
+  if (missing.length && !allowMissing) throw new JobError(`Upload: ${missing.map(m => m.label).join('; ')}`);
+  return found;
+}
+
+const customerTourRequest = r => ({
+  id: r._id, category: r.category, sub: r.sub ?? null, label: r.label,
+  item: { name: r.item.name, placeType: r.item.placeType ?? null, address: r.item.address ?? '' },
+  contact: r.contact, trip: r.trip, travellers: r.travellers, extras: r.extras ?? {}, specialNeeds: r.specialNeeds ?? '', note: r.note ?? '',
+  docs: (r.docs ?? []).map(d => ({ kind: d.kind, name: d.name, label: TOUR_DOCS[d.kind]?.label ?? d.kind })),
+  status: r.status, statusLabel: TOUR_STATUS[r.status] ?? r.status, message: r.customerMessage ?? '',
+  quote: r.quote ? { ...tourTotals(r.quote.amount), details: r.quote.details ?? '', expiresAt: r.quote.expiresAt, paidAt: r.quote.paidAt ?? null } : null,
+  createdAt: r.createdAt, updatedAt: r.updatedAt,
+});
+
+const tourRows = r => [
+  ['Service', r.label], ['Package', scrubJobContacts(r.item.name)],
+  ['Trip', r.trip ? `${r.trip.from} → ${r.trip.destination}, ${r.trip.startDate}, ${r.trip.nights} nights` : ''],
+  ['Travellers', String(r.travellers.length)],
+].filter(([, v]) => v);
+
+async function settleTourPayment(db, r) {
+  if (r.status !== 'quoted' || !r.quote?.sessionId) return r;
+  const session = await mainStripe()?.checkout.sessions.retrieve(r.quote.sessionId).catch(() => null);
+  if (session?.payment_status !== 'paid' || session.metadata?.requestId !== r._id) return r;
+  const now = new Date().toISOString();
+  const set = { status: 'processing', 'quote.paidAt': now, 'quote.paymentIntent': session.payment_intent ?? null, 'quote.charged': (session.amount_total ?? 0) / 100, updatedAt: now, 'statusAt.processing': now };
+  const u = await db.collection('tour_requests').updateOne({ _id: r._id, status: 'quoted' }, { $set: set });
+  if (u.modifiedCount) {
+    await sendEmail({
+      to: superAdminEmail(), subject: `Tour paid: ${r.contact.name} for ${r.label}`,
+      html: jobAppEmail('Paid: book it', [...tourRows(r), ['Customer', r.contact.name], ['Paid', `USD ${set['quote.charged'].toFixed(2)}`]], `Open ${SITE_URL}/admin, Tour requests, to book it.`),
+      text: `${r.contact.name} paid for ${r.label}. See ${SITE_URL}/admin.`,
+    });
+  }
+  return { ...r, status: 'processing', quote: { ...r.quote, paidAt: now } };
+}
+
+async function handleTourRequests(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const db = await getDb();
+  const reqs = db.collection('tour_requests');
+  const user = await optionalUser(body.idToken);
+  const me = () => { if (!user) throw new JobError('Please sign in first.', 401); return user; };
+  const findMine = async id => {
+    const r = await reqs.findOne({ _id: String(id ?? ''), sub: me().sub });
+    if (!r) throw new JobError('Request not found', 404);
+    return r;
+  };
+
+  try {
+    switch (body.action) {
+      // The form for one listing: its category's questions and documents
+      case 'form': {
+        const item = openJob(body.token);
+        if (!item?.tourism) throw new JobError('This listing has expired. Please search again.');
+        const spec = tourSpec(item.category, item.sub);
+        return json(200, {
+          spec, serviceRate: TOUR_SERVICE_RATE, quoteHours: TOUR_QUOTE_HOURS, maxTravellers: TOUR_MAX_TRAVELLERS,
+          options: { hotels: HOTEL_STANDARDS, rooms: ROOM_SHARING, meals: MEAL_PLANS }, from: item.from ?? '', destination: item.destination ?? '',
+        });
+      }
+
+      case 'upload.start': {
+        const kind = TOUR_DOCS[body.kind] ? body.kind : null;
+        if (!kind) throw new JobError('Unknown document');
+        const ext = DOC_TYPES[body.contentType];
+        if (!ext || (TOUR_DOCS[kind].images && !body.contentType.startsWith('image/'))) {
+          throw new JobError(TOUR_DOCS[kind].images ? 'Upload a JPG, PNG or WebP photo' : 'Upload a PDF, Word document or a photo (JPG, PNG)');
+        }
+        if (!(Number(body.size) > 0 && Number(body.size) <= TOUR_DOC_MAX)) throw new JobError('The file must be under 10 MB');
+        const key = `tours/${me().sub}/${kind}-${Date.now()}-${randomBytes(4).toString('hex')}.${ext}`;
+        const { s3 } = await jobS3();
+        const { createPresignedPost } = await import('@aws-sdk/s3-presigned-post');
+        const post = await createPresignedPost(s3, {
+          Bucket: jobBucket(), Key: key, Expires: 600,
+          Conditions: [['content-length-range', 1, TOUR_DOC_MAX], ['eq', '$Content-Type', body.contentType]],
+          Fields: { 'Content-Type': body.contentType },
+        });
+        return json(200, { url: post.url, fields: post.fields, key });
+      }
+
+      case 'request': {
+        const item = openJob(body.token);
+        if (!item?.tourism) throw new JobError('This listing has expired. Please search again.');
+        if (Date.now() - (item.at ?? 0) > 30 * 864e5) throw new JobError('This listing is over 30 days old. Please search again.');
+        const spec = tourSpec(item.category, item.sub);
+        const clean = cleanTourRequest(body, spec, spec.sub);
+        const docs = await checkTourDocs(me().sub, body.docs, spec.requiredDocs);
+        if (!body.acceptTerms) throw new JobError('Please accept the booking terms');
+        const now = new Date().toISOString();
+        const r = {
+          _id: `tr_${randomBytes(9).toString('hex')}`, sub: me().sub, accountEmail: me().email, category: item.category, label: spec.label,
+          item, ...clean, docs, status: 'submitted', createdAt: now, updatedAt: now, statusAt: { submitted: now },
+        };
+        await reqs.insertOne(r);
+        await Promise.all([
+          sendEmail({
+            to: clean.contact.email, subject: `We have your request: ${spec.label}`,
+            html: jobAppEmail('We have your request', tourRows(r),
+              `Lyrtrip checks availability and your documents, then emails you the price: the package plus our ${TOUR_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/tours/requests.`),
+            text: `We received your ${spec.label} request. We will email you the price to pay. See ${SITE_URL}/tours/requests`,
+          }),
+          sendEmail({
+            to: superAdminEmail(), subject: `New tour request: ${clean.contact.name} for ${spec.label}`,
+            html: jobAppEmail('New tour request', [...tourRows(r), ['Customer', `${clean.contact.name} · ${clean.contact.email} · ${clean.contact.phone}`]],
+              `Open ${SITE_URL}/admin, Tour requests, to quote the price.`),
+            text: `New ${spec.label} request from ${clean.contact.name}. See ${SITE_URL}/admin.`,
+          }),
+        ]);
+        return json(200, { request: customerTourRequest(r) });
+      }
+
+      case 'requests.mine': {
+        const rows = await reqs.find({ sub: me().sub }).sort({ createdAt: -1 }).limit(200).toArray();
+        const settled = await Promise.all(rows.map(r => settleTourPayment(db, r).catch(() => r)));
+        return json(200, {
+          requests: settled.map(r => ({ ...customerTourRequest(r), spec: tourSpec(r.category, r.sub) })),
+          options: { hotels: HOTEL_STANDARDS, rooms: ROOM_SHARING, meals: MEAL_PLANS }, maxTravellers: TOUR_MAX_TRAVELLERS,
+        });
+      }
+
+      // Lyrtrip asked for more: the customer corrects the details and adds documents, then sends it again
+      case 'request.update': {
+        const r = await findMine(body.id);
+        if (r.status !== 'info_needed') throw new JobError('This request is not waiting for details');
+        const spec = tourSpec(r.category, r.sub);
+        const clean = cleanTourRequest(body, spec, r.sub);
+        const added = await checkTourDocs(me().sub, body.docs, [], { allowMissing: true });
+        const docs = [...(r.docs ?? []), ...added.filter(d => !(r.docs ?? []).some(o => o.key === d.key))].slice(0, 60);
+        const now = new Date().toISOString();
+        await reqs.updateOne({ _id: r._id }, { $set: { ...clean, docs, status: 'submitted', customerMessage: '', updatedAt: now, 'statusAt.submitted': now } });
+        await sendEmail({
+          to: superAdminEmail(), subject: `Tour request updated: ${clean.contact.name} for ${r.label}`,
+          html: jobAppEmail('Tour request updated', tourRows({ ...r, ...clean }), `${added.length} new document(s). See ${SITE_URL}/admin, Tour requests.`),
+          text: `${clean.contact.name} updated their ${r.label} request. See ${SITE_URL}/admin.`,
+        });
+        return json(200, { ok: true });
+      }
+
+      case 'pay': {
+        const stripe = mainStripe();
+        if (!stripe) throw new JobError('Payments are not configured', 500);
+        const r = await findMine(body.id);
+        if (r.status !== 'quoted' || !r.quote?.amount) throw new JobError('There is nothing to pay on this request');
+        if (Date.parse(r.quote.expiresAt) < Date.now()) throw new JobError('This price has expired because prices change. Ask us for a new one at support@lyrtrip.com.', 410);
+        const t = tourTotals(r.quote.amount);
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          line_items: [
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.amount * 100), product_data: { name: `${r.label}: ${scrubJobContacts(r.item.name)}`.slice(0, 250), description: (r.trip ? `${r.trip.destination}, ${r.trip.startDate}, ${r.travellers.length} traveller(s)` : `${r.travellers.length} applicant(s)`).slice(0, 250) } } },
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.service * 100), product_data: { name: `Lyrtrip service charge (${TOUR_SERVICE_RATE * 100}%)` } } },
+          ].filter(l => l.price_data.unit_amount > 0),
+          customer_email: r.contact.email || me().email,
+          client_reference_id: me().sub,
+          metadata: { type: 'tour_request', sub: me().sub, requestId: r._id },
+          payment_intent_data: { metadata: { type: 'tour_request', sub: me().sub, requestId: r._id } },
+          // Stripe needs 30 minutes to 24 hours; never past the quote's own expiry by more than that minimum
+          expires_at: Math.max(Math.floor(Date.now() / 1000) + 1860, Math.min(Math.floor(Date.parse(r.quote.expiresAt) / 1000), Math.floor(Date.now() / 1000) + 23 * 3600)),
+          success_url: `${SITE_URL}/tours/requests?pay_session={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${SITE_URL}/tours/requests?checkout=canceled`,
+        });
+        await reqs.updateOne({ _id: r._id }, { $set: { 'quote.sessionId': session.id } });
+        return json(200, { url: session.url });
+      }
+
+      case 'pay.confirm': {
+        const session = await mainStripe().checkout.sessions.retrieve(String(body.sessionId ?? '')).catch(() => null);
+        if (!session || session.metadata?.type !== 'tour_request' || session.metadata.sub !== me().sub) throw new JobError('This payment is not for your request', 403);
+        if (session.payment_status !== 'paid') throw new JobError('The payment was not completed', 402);
+        const r = await findMine(session.metadata.requestId);
+        if (r.status === 'quoted') await settleTourPayment(db, { ...r, quote: { ...r.quote, sessionId: session.id } });
+        return json(200, { ok: true });
+      }
+
+      case 'request.cancel': {
+        const u = await reqs.updateOne(
+          { _id: String(body.id ?? ''), sub: me().sub, status: { $in: TOUR_CANCELLABLE } },
+          { $set: { status: 'cancelled', updatedAt: new Date().toISOString() } },
+        );
+        if (!u.matchedCount) throw new JobError('This request can no longer be cancelled. Contact support@lyrtrip.com.');
+        return json(200, { ok: true });
+      }
+
+      default:
+        throw new JobError('Unknown action');
+    }
+  } catch (err) {
+    if (err instanceof JobError) return json(err.status, { error: err.message });
+    if (err.name === 'JwtExpiredError' || /jwt/i.test(err.name ?? '')) return json(401, { error: 'Please sign in again.' });
+    console.error('Tour request action failed:', body.action, err);
+    return json(500, { error: 'Something went wrong. Please try again.' });
+  }
+}
+
+// Admin side (called from handleAdmin): the real listing links, travellers, documents, quotes, refunds and status
+async function tourRequestsAdmin(db, body) {
+  const reqs = db.collection('tour_requests');
+  switch (body.action) {
+    case 'tourreqs.list': {
+      const rows = await reqs.find({}).sort({ createdAt: -1 }).limit(500).toArray();
+      return json(200, {
+        serviceRate: TOUR_SERVICE_RATE, quoteHours: TOUR_QUOTE_HOURS,
+        requests: await Promise.all(rows.map(async r => ({
+          ...customerTourRequest(r), accountEmail: r.accountEmail ?? '', adminNote: r.adminNote ?? '', itemFull: r.item,
+          fieldLabels: Object.fromEntries((tourSpec(r.category, r.sub)?.fields ?? []).map(fd => [fd.id, fd.label])),
+          docs: await Promise.all((r.docs ?? []).map(async d => ({ kind: d.kind, label: TOUR_DOCS[d.kind]?.label ?? d.kind, name: d.name, url: await signedFileUrl(d.key, d.name) }))),
+          charged: r.quote?.charged ?? null, refund: r.refund ?? null,
+        }))),
+      });
+    }
+
+    case 'tourreqs.update': {
+      let status = Object.keys(TOUR_STATUS).includes(body.status) && body.status !== 'cancelled' ? body.status : null;
+      if (!status) return json(400, { error: 'Unknown status' });
+      const r = await reqs.findOne({ _id: String(body.id ?? '') });
+      if (!r) return json(404, { error: 'Request not found' });
+      if (r.status === 'cancelled' || r.status === 'refunded') return json(409, { error: `This request is ${TOUR_STATUS[r.status].toLowerCase()}` });
+      const paid = !!r.quote?.paidAt;
+      const now = new Date().toISOString();
+      const set = { adminNote: String(body.note ?? r.adminNote ?? '').slice(0, 1000), updatedAt: now };
+      if (status === 'quoted') {
+        if (paid) return json(409, { error: 'This request has already been paid' });
+        const amount = Math.round(Number(body.price) * 100) / 100;
+        if (!(amount >= 1 && amount <= 500000)) return json(400, { error: 'Enter the total price in USD for everyone, with all fees (at least 1)' });
+        set.quote = { amount, details: String(body.quoteDetails ?? '').trim().slice(0, 1000), quotedAt: now, expiresAt: new Date(Date.now() + TOUR_QUOTE_HOURS * 3600e3).toISOString() };
+      }
+      if (['processing', 'confirmed'].includes(status) && !paid) return json(409, { error: 'The customer has not paid yet. Quote a price first.' });
+      if (status === 'refunded' && !paid) status = 'unavailable';
+      if (status === 'unavailable' && paid) status = 'refunded';
+      if (status === 'refunded') {
+        const stripe = mainStripe();
+        if (!r.quote.paymentIntent || !stripe) return json(409, { error: 'No card payment found to refund; refund it in Stripe' });
+        const refund = await stripe.refunds.create({ payment_intent: r.quote.paymentIntent, metadata: { type: 'tour_request', requestId: r._id } });
+        set.refund = { id: refund.id, amount: refund.amount / 100, at: now };
+      }
+      const message = String(body.message ?? '').trim().slice(0, 3000);
+      Object.assign(set, { status, customerMessage: message, [`statusAt.${status}`]: now });
+      await reqs.updateOne({ _id: r._id }, { $set: set });
+      if (status !== r.status || message) {
+        const rows = tourRows(r);
+        if (status === 'quoted') {
+          const t = tourTotals(set.quote.amount);
+          rows.push(['Package price', `USD ${t.amount.toFixed(2)}`], [`Lyrtrip service (${TOUR_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]);
+          if (set.quote.details) rows.push(['Includes', set.quote.details]);
+        }
+        if (status === 'refunded') rows.push(['Refunded', `USD ${set.refund.amount.toFixed(2)} to your card (allow 5 to 10 days)`]);
+        if (message) rows.push(['Message from Lyrtrip', message]);
+        const foot = status === 'quoted' ? `Pay within ${TOUR_QUOTE_HOURS} hours at ${SITE_URL}/tours/requests: prices and availability change.`
+          : status === 'info_needed' ? `Update your request and upload documents at ${SITE_URL}/tours/requests.` : `See ${SITE_URL}/tours/requests.`;
+        await sendEmail({
+          to: r.contact.email, subject: `${TOUR_STATUS[status]}: ${r.label}`,
+          html: jobAppEmail(TOUR_STATUS[status], rows, `${foot} Please keep all contact about this booking through Lyrtrip.`),
+          text: `${TOUR_STATUS[status]}: ${r.label}.${message ? `\n\n${message}` : ''} ${foot}`,
+        });
+      }
+      return json(200, { ok: true, status });
+    }
+
+    default:
+      return null;
+  }
+}
+
 // Errors from visitors' browsers (the site's error pages), written to the Lambda log for debugging
 async function handleClientError(event) {
   let b = {};
@@ -6170,6 +6779,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/jobs')                   && method === 'POST')         return handleJobs(event);
     if (path.endsWith('/api/study')                  && method === 'POST')         return handleStudy(event);
     if (path.endsWith('/api/events')                 && method === 'POST')         return handleEventTickets(event);
+    if (path.endsWith('/api/packages')               && method === 'POST')         return handleTourRequests(event);
     if (path.endsWith('/api/client-error')           && method === 'POST')         return handleClientError(event);
     if (path.endsWith('/api/ride/estimate')          && method === 'POST')         return handleRideEstimate(event);
     if (path.endsWith('/api/ride/checkout')          && method === 'POST')         return handleRideCheckout(event);

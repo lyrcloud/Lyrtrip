@@ -19,6 +19,7 @@ import JobProfilePromo from '@/components/JobProfilePromo';
 import JobApplyDialog, { type ApplyJob } from '@/components/JobApplyDialog';
 import StudyApplyDialog, { type ApplyStudy } from '@/components/StudyApplyDialog';
 import EventTicketDialog, { type TicketEvent } from '@/components/EventTicketDialog';
+import TourRequestDialog, { type TourItem } from '@/components/TourRequestDialog';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -425,6 +426,54 @@ const ICON_MOTION: Record<string, IconMotion> = {
   ] },
 };
 
+// Event types; the value is added to the search ("<keywords> <value> in <place>")
+const EVENT_CATEGORIES: { group: string; items: [string, string][] }[] = [
+  { group: 'Tech & IT', items: [
+    ['IT technology conferences', 'IT & tech conferences'], ['AI artificial intelligence summits', 'AI summits'], ['generative AI machine learning conferences', 'GenAI & ML'],
+    ['cloud computing DevOps conferences', 'Cloud & DevOps'], ['cybersecurity conferences', 'Cybersecurity'], ['data science analytics conferences', 'Data & analytics'],
+    ['developer meetups hackathons', 'Developer meetups & hackathons'], ['startup events pitch nights', 'Startups & pitch nights'], ['blockchain web3 events', 'Blockchain & Web3'],
+    ['fintech summits', 'Fintech'], ['semiconductor electronics expos', 'Semiconductors & electronics'],
+  ] },
+  { group: 'Summits & expos', items: [
+    ['infrastructure summits', 'Infrastructure summits'], ['energy renewable climate summits', 'Energy & climate'], ['smart cities urban development summits', 'Smart cities'],
+    ['real estate construction expos', 'Real estate & construction'], ['business leadership summits', 'Business & leadership'], ['investment finance summits', 'Investment & finance'],
+    ['healthcare medical conferences', 'Healthcare & medical'], ['pharma biotech conferences', 'Pharma & biotech'], ['education edtech summits', 'Education & EdTech'],
+    ['government policy summits', 'Government & policy'], ['automotive electric vehicle expos', 'Automotive & EV'], ['manufacturing industrial expos', 'Manufacturing & industry'],
+    ['agriculture food processing expos', 'Agriculture & food'], ['travel tourism hospitality expos', 'Travel & hospitality'], ['trade shows expos', 'Trade shows & expos'],
+    ['conferences', 'All conferences'],
+  ] },
+  { group: 'Sports', items: [
+    ['sports events', 'All sports'], ['cricket matches', 'Cricket'], ['football soccer matches', 'Football'], ['tennis tournaments', 'Tennis'],
+    ['basketball games', 'Basketball'], ['hockey matches', 'Hockey'], ['kabaddi matches', 'Kabaddi'], ['badminton tournaments', 'Badminton'],
+    ['motorsport F1 races', 'Motorsport & F1'], ['marathons running events', 'Marathons & runs'], ['cycling events', 'Cycling'], ['golf tournaments', 'Golf'],
+    ['boxing MMA wrestling fights', 'Boxing, MMA & wrestling'], ['esports gaming tournaments', 'Esports & gaming'], ['horse racing', 'Horse racing'],
+  ] },
+  { group: 'Entertainment', items: [
+    ['concerts', 'Concerts'], ['festivals', 'Festivals'], ['comedy shows', 'Comedy'], ['theatre', 'Theatre'], ['nightlife', 'Nightlife'],
+    ['food and drink events', 'Food & drink'], ['exhibitions', 'Exhibitions & art'], ['film screenings festivals', 'Film'],
+  ] },
+  { group: 'Local & community', items: [
+    ['local community events', 'Community events'], ['cultural festivals', 'Cultural festivals'], ['religious spiritual events', 'Religious & spiritual'],
+    ['workshops classes', 'Workshops & classes'], ['networking events', 'Networking'], ['family events', 'Family & kids'], ['charity fundraising events', 'Charity'],
+  ] },
+];
+const EVENT_QUICK: [string, string][] = [
+  ['IT technology conferences', '💻 IT'], ['AI artificial intelligence summits', '🤖 AI summits'], ['infrastructure summits', '🏗️ Infra summits'],
+  ['business leadership summits', '📈 Business summits'], ['sports events', '🏏 Sports'], ['concerts', '🎵 Concerts'], ['local community events', '📍 Local'],
+];
+
+// Pilgrimages under Religious Tours; ids match PILGRIMAGES in the search Lambda
+const PILGRIMAGE_GROUPS: { faith: string; items: [string, string, string][] }[] = [
+  { faith: 'Islam', items: [['hajj', '🕋', 'Hajj'], ['umrah', '🕋', 'Umrah'], ['ziyarat', '🕌', 'Ziyarat: Karbala, Najaf, Mashhad']] },
+  { faith: 'Christian', items: [['holyland', '✝️', 'Holy Land'], ['vatican', '⛪', 'Rome & Vatican'], ['marian', '⛪', 'Lourdes, Fátima, Medjugorje'], ['camino', '🥾', 'Camino de Santiago']] },
+  { faith: 'Hindu', items: [['chardham', '🛕', 'Char Dham'], ['kashi', '🛕', 'Varanasi & Ayodhya'], ['vaishno', '🛕', 'Vaishno Devi'], ['tirupati', '🛕', 'Tirupati'], ['amarnath', '🏔️', 'Amarnath'], ['kailash', '🏔️', 'Kailash Mansarovar']] },
+  { faith: 'Buddhist', items: [['buddhist', '☸️', 'Bodh Gaya & Lumbini']] },
+  { faith: 'Sikh', items: [['sikh', '🪯', 'Golden Temple, Kartarpur, Hemkund']] },
+  { faith: 'Jain', items: [['jain', '🛕', 'Palitana & Shikharji']] },
+  { faith: 'Jewish', items: [['jewish', '✡️', 'Jerusalem & Western Wall']] },
+  { faith: 'Other', items: [['other', '🙏', 'Another shrine or temple']] },
+];
+
 // Tourism categories, shown as animated option tiles inside the Tourism tab
 const TOUR_OPTIONS: { id: string; icon: string; label: string; motion: IconMotion }[] = [
   { id: 'tour-id', icon: '🪪', label: 'ID Card', motion: { duration: 900, easing: 'ease-in-out', frames: [
@@ -558,6 +607,7 @@ export default function Home() {
   const [applyJob, setApplyJob] = useState<ApplyJob | null>(null);
   const [applyStudy, setApplyStudy] = useState<ApplyStudy | null>(null);
   const [applyEvent, setApplyEvent] = useState<TicketEvent | null>(null);
+  const [bookTour, setBookTour] = useState<TourItem | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [showLocationMap, setShowLocationMap] = useState(false);
   const [flightSearchError, setFlightSearchError] = useState<string | null>(null);
@@ -969,7 +1019,7 @@ export default function Home() {
 
 
   type VisaInfo = { from: string; to: string; fromName: string; toName: string; status: string; days: number | null; label: string };
-  const [tourForm, setTourForm] = useState({ from: '', to: '', purpose: 'tourist', destination: '' });
+  const [tourForm, setTourForm] = useState({ from: '', to: '', purpose: 'tourist', destination: '', origin: '', sub: 'umrah' });
   const [tourVisa, setTourVisa] = useState<VisaInfo | null>(null);
   const [tourError, setTourError] = useState<string | null>(null);
   const tourChoice = TOUR_OPTIONS.find(o => o.label === formData.activityType) ?? TOUR_OPTIONS.find(o => o.id === 'tour-destination')!;
@@ -983,6 +1033,7 @@ export default function Home() {
   };
   const tourReady = tourSlug === 'visa' ? !!(tourForm.from && tourForm.to)
     : tourSlug === 'passport' || tourSlug === 'id' ? !!tourForm.from
+    : tourSlug === 'religious' ? !!tourForm.origin.trim() && (tourForm.sub !== 'other' || !!tourForm.destination.trim())
     : !!tourForm.destination.trim();
 
   const searchTourismViaApi = async (): Promise<SearchResult[]> => {
@@ -996,6 +1047,8 @@ export default function Home() {
         from:        tourForm.from || null,
         to:          tourForm.to || null,
         purpose:     tourForm.purpose,
+        sub:         tourSlug === 'religious' ? tourForm.sub : null,
+        origin:      tourForm.origin.trim() || null,
         destination: tourForm.destination.trim() || null,
       }),
     });
@@ -1600,51 +1653,41 @@ export default function Home() {
     );
   };
 
-  // Result cards shared by Study and Tourism: a place (Maps) or an info link (web)
-  const placeCard = (r: SearchResult) => (
+  // Tourism result card: sold through Lyrtrip, so no website, map, phone or source link is shown
+  const tourBookLabel: Record<string, string> = {
+    visa: 'Get visa help via Lyrtrip →', passport: 'Get passport help via Lyrtrip →', id: 'Get ID help via Lyrtrip →',
+    insurance: 'Get insured via Lyrtrip →', destination: 'Plan a trip here via Lyrtrip →',
+  };
+  const tourCard = (r: SearchResult) => (
         <div key={r.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition animate-[panelIn_250ms_ease-out]">
-          {/* Placeholder sits under the photo, so a missing, slow or broken image still shows something */}
-          <div className="relative w-24 sm:w-36 shrink-0 bg-brand-50 flex items-center justify-center text-4xl" aria-hidden>
-            🏫
-            {r.imageUrl && (
-              <img src={r.imageUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-            )}
-          </div>
+          {r.kind === 'place' && (
+            /* Placeholder sits under the photo, so a missing, slow or broken image still shows something */
+            <div className="relative w-24 sm:w-36 shrink-0 bg-brand-50 flex items-center justify-center text-4xl" aria-hidden>
+              {tourChoice.icon}
+              {r.imageUrl && (
+                <img src={r.imageUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              )}
+            </div>
+          )}
           <div className="flex-1 min-w-0 p-4">
-            <h3 className="font-bold text-gray-900 leading-tight">{r.name}</h3>
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+              {r.official && <span className="shrink-0 rounded-full bg-green-50 px-2 py-0.5 font-semibold text-green-700 ring-1 ring-green-200">Official information</span>}
               {r.placeType && <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-600">{r.placeType}</span>}
               {r.rating != null && <span className="text-yellow-600 font-semibold">★ {r.rating}</span>}
               {r.reviewCount != null && <span>({r.reviewCount.toLocaleString()} reviews)</span>}
-              {r.openState && <span>· {r.openState}</span>}
+              {r.postedAt && <span>{r.postedAt}</span>}
             </div>
+            <h3 className="mt-1 font-bold text-gray-900 leading-snug">{r.name}</h3>
             {r.address && <p className="mt-1 text-sm text-gray-600 line-clamp-2">{r.address}</p>}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {r.website && (
-                <a href={r.website} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition">Website</a>
-              )}
-              {r.mapsLink && (
-                <a href={r.mapsLink} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">Map</a>
-              )}
-              {r.phone && (
-                <a href={`tel:${r.phone}`} className="px-3 py-1.5 bg-white text-gray-700 text-sm font-semibold rounded-lg ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700 transition">{r.phone}</a>
-              )}
-            </div>
+            {r.description && <p className="mt-1 text-sm text-gray-600 line-clamp-3">{r.description}</p>}
+            {r.applyToken && (
+              <button type="button" onClick={() => setBookTour({ name: r.name, placeType: r.placeType, address: r.address, applyToken: r.applyToken! })}
+                className="mt-3 px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition">
+                {tourBookLabel[tourSlug] ?? 'Book via Lyrtrip →'}
+              </button>
+            )}
           </div>
         </div>
-  );
-  const linkCard = (r: SearchResult) => (
-        <a key={r.id} href={r.link} target="_blank" rel="noopener noreferrer" className="group block bg-white rounded-xl border border-gray-200 p-4 hover:shadow-md hover:border-brand-200 transition animate-[panelIn_250ms_ease-out]">
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            {r.favicon && <img src={r.favicon} alt="" className="h-4 w-4 rounded-sm" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
-            <span className="truncate">{r.source}</span>
-            {r.official && <span className="shrink-0 rounded-full bg-green-50 px-2 py-0.5 font-semibold text-green-700 ring-1 ring-green-200">Official</span>}
-            {r.postedAt && <span className="shrink-0">· {r.postedAt}</span>}
-          </div>
-          <h3 className="mt-1 font-bold text-gray-900 leading-snug group-hover:text-brand-700">{r.name}</h3>
-          {r.description && <p className="mt-1 text-sm text-gray-600 line-clamp-3">{r.description}</p>}
-          <span className="mt-2 inline-block text-sm font-semibold text-brand-600 group-hover:translate-x-0.5 transition-transform">Read more →</span>
-        </a>
   );
 
   const VISA_STYLE: Record<string, string> = {
@@ -1671,8 +1714,8 @@ export default function Home() {
             </p>
             {tourVisa.status !== 'domestic' && (
               <p className="mt-2 text-sm opacity-80">
-                Visa types, documents and fees for a {tourForm.purpose} trip are below, with official government and embassy sources first.
-                Rules and fees change, so always confirm on the official site before you travel.
+                Visa types, documents and fees for a {tourForm.purpose} trip are below, official sources first.
+                Lyrtrip can prepare and file the application for you: pick one below to get the documents checked and a quote.
               </p>
             )}
           </div>
@@ -1687,7 +1730,7 @@ export default function Home() {
             />
           )
         ) : (
-          results.map(r => r.kind === 'place' ? placeCard(r) : linkCard(r))
+          results.map(tourCard)
         )}
       </div>
     );
@@ -2604,6 +2647,35 @@ export default function Home() {
                         </select>
                       </div>
                     </>
+                  ) : tourSlug === 'religious' ? (
+                    <>
+                      <div className="md:col-span-4">
+                        <p className="block text-sm font-semibold text-gray-700 mb-2">Pilgrimage</p>
+                        <div className="space-y-2">
+                          {PILGRIMAGE_GROUPS.map(g => (
+                            <div key={g.faith} className="flex flex-wrap items-center gap-2">
+                              <span className="w-24 shrink-0 text-xs font-semibold uppercase tracking-wide text-gray-500">{g.faith}</span>
+                              {g.items.map(([id, icon, name]) => (
+                                <button key={id} type="button" onClick={() => { setTourForm(f => ({ ...f, sub: id })); setResults([]); setHasSearched(false); }}
+                                  aria-pressed={tourForm.sub === id} className={subPill(tourForm.sub === id)}>
+                                  <span aria-hidden>{icon}</span>{name}
+                                </button>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className={tourForm.sub === 'other' ? 'md:col-span-1' : 'md:col-span-3'}>
+                        <label htmlFor="tour-origin" className="block text-sm font-semibold text-gray-700 mb-2">Travelling from</label>
+                        <input id="tour-origin" type="text" value={tourForm.origin} onChange={e => setTourForm(f => ({ ...f, origin: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && tourReady) handleSearch('tourism'); }} placeholder="City or country, e.g. Hyderabad" className={inputClass} />
+                      </div>
+                      {tourForm.sub === 'other' && (
+                        <div className="md:col-span-2">
+                          <label htmlFor="tour-destination" className="block text-sm font-semibold text-gray-700 mb-2">Shrine or place</label>
+                          <input id="tour-destination" type="text" value={tourForm.destination} onChange={e => setTourForm(f => ({ ...f, destination: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && tourReady) handleSearch('tourism'); }} placeholder="e.g. Sabarimala, Ajmer Sharif, Shirdi" className={inputClass} />
+                        </div>
+                      )}
+                    </>
                   ) : tourSlug === 'passport' || tourSlug === 'id' ? (
                     <div className="md:col-span-3">
                       <label htmlFor="tour-from" className="block text-sm font-semibold text-gray-700 mb-2">Your country</label>
@@ -2631,7 +2703,9 @@ export default function Home() {
                   )}
                   {searchBtn('tourism', !tourReady)}
                 </div>
+                <p className="-mt-2 mb-2 text-sm text-gray-600">Book through Lyrtrip: send your details and documents once, get one price (plus 5% service), and we arrange the rest. <Link href="/tours/requests" className="font-semibold text-brand-600">My requests →</Link></p>
                 <TourismList />
+                {bookTour && <TourRequestDialog item={bookTour} onClose={() => setBookTour(null)} />}
               </div>
             )}
 
@@ -2683,22 +2757,23 @@ export default function Home() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
                   <div>
                     <label htmlFor="event-location" className="block text-sm font-semibold text-gray-700 mb-2">Location</label>
-                    <input id="event-location" type="text" value={eventForm.location} onChange={e => setEventForm(f => ({ ...f, location: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && eventForm.location.trim()) handleSearch('events'); }} placeholder="City, e.g. London" className={inputClass} />
+                    <div className="relative">
+                      <input id="event-location" type="text" value={eventForm.location} onChange={e => setEventForm(f => ({ ...f, location: e.target.value }))} onKeyDown={e => { if (e.key === 'Enter' && eventForm.location.trim()) handleSearch('events'); }} placeholder="City or area, e.g. Whitefield, Bengaluru" className={`${inputClass} pr-24`} />
+                      {uberCity && (
+                        <button type="button" onClick={() => setEventForm(f => ({ ...f, location: uberCity }))} title={`Use my location: ${uberCity}`}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg bg-brand-50 px-2 py-1 text-xs font-semibold text-brand-700 hover:bg-brand-100">📍 Near me</button>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <label htmlFor="event-category" className="block text-sm font-semibold text-gray-700 mb-2">Type</label>
                     <select id="event-category" value={eventForm.category} onChange={e => setEventForm(f => ({ ...f, category: e.target.value }))} className={inputClass}>
                       <option value="">All events</option>
-                      <option value="concerts">Concerts</option>
-                      <option value="festivals">Festivals</option>
-                      <option value="sports">Sports</option>
-                      <option value="comedy shows">Comedy</option>
-                      <option value="theatre">Theatre</option>
-                      <option value="nightlife">Nightlife</option>
-                      <option value="food and drink events">Food &amp; drink</option>
-                      <option value="exhibitions">Exhibitions</option>
-                      <option value="conferences">Conferences</option>
-                      <option value="family events">Family</option>
+                      {EVENT_CATEGORIES.map(g => (
+                        <optgroup key={g.group} label={g.group}>
+                          {g.items.map(([value, name]) => <option key={value} value={value}>{name}</option>)}
+                        </optgroup>
+                      ))}
                     </select>
                   </div>
                   <div>
@@ -2720,7 +2795,15 @@ export default function Home() {
                   </div>
                   {searchBtn('events', !eventForm.location.trim())}
                 </div>
-                <p className="-mt-2 mb-2 text-sm text-gray-600">Book tickets through Lyrtrip: we find them and send them to you. <Link href="/events/tickets" className="font-semibold text-brand-600">My tickets →</Link></p>
+                <div className="-mt-1 mb-3 flex flex-wrap gap-2" aria-label="Popular event types">
+                  {EVENT_QUICK.map(([value, name]) => (
+                    <button key={value} type="button" aria-pressed={eventForm.category === value} className={subPill(eventForm.category === value)}
+                      onClick={() => { const location = eventForm.location.trim() || uberCity; setEventForm(f => ({ ...f, category: f.category === value ? '' : value, location })); }}>
+                      {name}
+                    </button>
+                  ))}
+                </div>
+                <p className="mb-2 text-sm text-gray-600">Book tickets through Lyrtrip: we find them and send them to you. <Link href="/events/tickets" className="font-semibold text-brand-600">My tickets →</Link></p>
                 <EventList />
                 {applyEvent && <EventTicketDialog item={applyEvent} onClose={() => setApplyEvent(null)} />}
               </div>

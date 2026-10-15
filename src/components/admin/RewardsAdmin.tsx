@@ -1089,3 +1089,140 @@ export function EventTicketsPanel({ call }: { call: Call }) {
     </div>
   );
 }
+
+interface AdminTourRequest {
+  id: string; category: string; label: string; status: string; statusLabel: string; createdAt: string; accountEmail: string; adminNote: string;
+  item: { name: string; placeType: string | null; address: string };
+  itemFull: { link: string | null; website: string | null; phone: string | null; mapsLink: string | null; source: string | null; description: string; from?: string; destination?: string };
+  contact: { name: string; email: string; phone: string; country: string };
+  trip: { from: string; destination: string; startDate: string; nights: number; flexibleDays: number; hotel: string; rooms: string; meals: string; flights: boolean; budgetPerPerson: number | null } | null;
+  travellers: { fullName: string; dateOfBirth: string; gender: string; nationality: string; idType: string; idNumber: string; idExpiry: string }[];
+  extras: Record<string, unknown>; fieldLabels: Record<string, string>; specialNeeds: string; note: string;
+  docs: { kind: string; label: string; name: string; url: string | null }[];
+  quote: { amount: number; service: number; total: number; details: string; expiresAt: string; paidAt: string | null } | null;
+  charged: number | null; refund: { amount: number; at: string } | null;
+}
+
+const TOUR_STEPS: [string, string][] = [
+  ['submitted', 'Received'], ['info_needed', 'More details or documents needed'], ['quoted', 'Quote price (price to pay)'], ['processing', 'Paid: booking'],
+  ['confirmed', 'Booked'], ['unavailable', 'Not available (refunds if paid)'], ['refunded', 'Refund in full'],
+];
+
+// Tours, pilgrimages and travel services sold through Lyrtrip: check details and documents, quote (+ service), book or refund
+export function TourRequestsPanel({ call }: { call: Call }) {
+  const [data, setData] = useState<{ requests: AdminTourRequest[]; serviceRate: number; quoteHours: number } | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ status: '', message: '', note: '', price: '', quoteDetails: '' });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    call({ action: 'tourreqs.list' }).then(d => setData(d as unknown as NonNullable<typeof data>)).catch(() => setData({ requests: [], serviceRate: 0.05, quoteHours: 72 }));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+  const rows = data?.requests ?? null;
+  const expand = (r: AdminTourRequest) => {
+    setOpen(open === r.id ? null : r.id);
+    setDraft({ status: r.status === 'cancelled' ? 'submitted' : r.status, message: '', note: r.adminNote, price: r.quote ? String(r.quote.amount) : '', quoteDetails: r.quote?.details ?? '' });
+  };
+  const save = async (r: AdminTourRequest) => {
+    const paid = !!r.quote?.paidAt;
+    if (paid && ['unavailable', 'refunded'].includes(draft.status) && !confirm(`Refund ${usd(r.charged ?? r.quote!.total)} to ${r.contact.name}'s card?`)) return;
+    setBusy(true);
+    try {
+      await call({ action: 'tourreqs.update', id: r.id, status: draft.status, message: draft.message, note: draft.note, price: draft.price === '' ? undefined : Number(draft.price), quoteDetails: draft.quoteDetails });
+      setOpen(null);
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not update the request');
+    }
+    setBusy(false);
+  };
+  const count = (s: string) => (rows ?? []).filter(r => r.status === s).length;
+  const rate = data?.serviceRate ?? 0.05;
+  const priceNum = Number(draft.price) || 0;
+  const earned = (rows ?? []).filter(r => r.quote?.paidAt && !r.refund).reduce((s, r) => s + (r.quote?.service ?? 0), 0);
+  const show = (v: unknown) => (Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : v == null ? '' : String(v));
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['To quote', String(count('submitted'))], ['Awaiting payment', String(count('quoted'))],
+          ['Paid, to book', String(count('processing'))], ['Service earned', usd(earned)],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No tour requests yet.</p>}
+        {rows?.map(r => (
+          <div key={r.id} className="p-4 text-sm">
+            <button onClick={() => expand(r)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-900">{r.contact.name} · {r.label} · {r.travellers.length} {r.trip ? 'traveller' : 'applicant'}{r.travellers.length > 1 ? 's' : ''}</p>
+                <p className="text-gray-600">{r.item.name}{r.trip ? ` · ${r.trip.from} → ${r.trip.destination}, ${r.trip.startDate}, ${r.trip.nights}n` : ''}</p>
+                <p className="text-xs text-gray-400">Requested {new Date(r.createdAt).toLocaleString()} · {r.docs.length} docs{r.quote ? ` · ${usd(r.quote.total)}${r.quote.paidAt ? ' paid' : ' quoted'}` : ''}{r.refund ? ' · refunded' : ''}</p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{r.statusLabel}</span>
+            </button>
+            {open === r.id && (
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase text-gray-500">Listing (hidden from the customer)</p>
+                  {r.itemFull.link && <a href={r.itemFull.link} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">Page: {r.itemFull.source ?? r.itemFull.link}</a>}
+                  {r.itemFull.website && <a href={r.itemFull.website} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">Website: {r.itemFull.website}</a>}
+                  {r.itemFull.mapsLink && <a href={r.itemFull.mapsLink} target="_blank" rel="noopener noreferrer" className="block text-brand-600">Map</a>}
+                  {r.itemFull.phone && <p>Phone: {r.itemFull.phone}</p>}
+                  {r.itemFull.description && <p className="text-gray-600 whitespace-pre-line">{r.itemFull.description}</p>}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Customer</p>
+                  <p className="text-gray-700">{r.contact.name} · {r.contact.email} · {r.contact.phone} · {r.contact.country}</p>
+                  {r.accountEmail && r.accountEmail !== r.contact.email && <p className="text-xs text-gray-500">Account: {r.accountEmail}</p>}
+                  {r.trip && (<>
+                    <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Trip</p>
+                    <p className="text-gray-700">{r.trip.from} → {r.trip.destination} · {r.trip.startDate} (±{r.trip.flexibleDays || 0} days) · {r.trip.nights} nights</p>
+                    <p className="text-gray-700">{[r.trip.hotel, r.trip.rooms, r.trip.meals, r.trip.flights && 'with flights', r.trip.budgetPerPerson && `budget ${usd(r.trip.budgetPerPerson)}/person`].filter(Boolean).join(' · ') || 'No hotel or meal preferences'}</p>
+                  </>)}
+                  {Object.keys(r.extras).length > 0 && (<>
+                    <p className="text-xs font-semibold uppercase text-gray-500 pt-2">{r.label} details</p>
+                    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-gray-700">
+                      {Object.entries(r.extras).map(([k, v]) => <React.Fragment key={k}><dt className="text-gray-500">{r.fieldLabels[k] ?? k}</dt><dd>{show(v)}</dd></React.Fragment>)}
+                    </dl>
+                  </>)}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">{r.trip ? 'Travellers' : 'Applicants'}</p>
+                  {r.travellers.map((t, i) => <p key={i} className="text-gray-700">{i + 1}. {t.fullName} · {t.gender} · born {t.dateOfBirth} · {t.nationality} · {t.idType} {t.idNumber}{t.idExpiry ? ` (exp. ${t.idExpiry})` : ''}</p>)}
+                  {r.specialNeeds && <p className="text-gray-700">Needs: {r.specialNeeds}</p>}
+                  {r.note && <p className="whitespace-pre-line bg-gray-50 rounded-lg p-2">Customer note: {r.note}</p>}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Documents</p>
+                  {r.docs.length === 0 && <p className="text-gray-500">None uploaded</p>}
+                  {r.docs.map((d, i) => <a key={i} href={d.url ?? '#'} className="block text-brand-600 truncate">{d.label}: {d.name}</a>)}
+                </div>
+                <div className="space-y-2">
+                  {r.status === 'cancelled' || r.status === 'refunded' ? (
+                    <p className="text-gray-500">{r.status === 'cancelled' ? 'The customer cancelled this request.' : `Refunded ${usd(r.refund?.amount ?? 0)} on ${r.refund ? new Date(r.refund.at).toLocaleDateString() : ''}.`}</p>
+                  ) : (<>
+                    <label className="block text-xs font-semibold text-gray-600">Status</label>
+                    <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
+                      {TOUR_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    {draft.status === 'quoted' && !r.quote?.paidAt && (<>
+                      <label className="block text-xs font-semibold text-gray-600">Total for everyone, with all fees (USD)</label>
+                      <input type="number" min={1} step="0.01" value={draft.price} onChange={e => setDraft({ ...draft, price: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <label className="block text-xs font-semibold text-gray-600">What&apos;s included (shown to the customer)</label>
+                      <textarea value={draft.quoteDetails} maxLength={1000} rows={3} onChange={e => setDraft({ ...draft, quoteDetails: e.target.value })} placeholder="e.g. Return flights, 4-star hotels 600 m from Haram, visa, transport, ziyarah" className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <p className="text-xs text-gray-600">Customer pays {usd(priceNum)} + {Math.round(rate * 100)}% service {usd(Math.round(priceNum * rate * 100) / 100)} = <b>{usd(Math.round(priceNum * (1 + rate) * 100) / 100)}</b>, within {data?.quoteHours ?? 72} hours.</p>
+                    </>)}
+                    {r.quote?.paidAt && <p className="text-emerald-700">Paid {usd(r.charged ?? r.quote.total)} on {new Date(r.quote.paidAt).toLocaleDateString()}</p>}
+                    {r.quote?.paidAt && ['unavailable', 'refunded'].includes(draft.status) && <p className="text-red-700 text-xs">Saving refunds the card in full.</p>}
+                    <label className="block text-xs font-semibold text-gray-600">Message to the customer (emailed; no outside links)</label>
+                    <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={3000}
+                      placeholder={draft.status === 'confirmed' ? 'e.g. Booking ref, itinerary, hotel names, flight times' : draft.status === 'info_needed' ? 'What to add or upload' : ''} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <label className="block text-xs font-semibold text-gray-600">Internal note</label>
+                    <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <button onClick={() => save(r)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>
+                  </>)}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
