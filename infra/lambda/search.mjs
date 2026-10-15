@@ -6122,6 +6122,18 @@ async function eventTicketsAdmin(db, body) {
   }
 }
 
+// Errors from visitors' browsers (the site's error pages), written to the Lambda log for debugging
+async function handleClientError(event) {
+  let b = {};
+  try { b = JSON.parse(event.body || '{}'); } catch { /* not JSON */ }
+  const s = (v, max) => String(v ?? '').slice(0, max);
+  console.error('CLIENT_ERROR', JSON.stringify({
+    message: s(b.message, 500), name: s(b.name, 100), digest: s(b.digest, 100), stack: s(b.stack, 3000),
+    url: s(b.url, 300), userAgent: s(event.headers?.['user-agent'], 300), boundary: s(b.boundary, 20), at: new Date().toISOString(),
+  }));
+  return json(204, {});
+}
+
 async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
@@ -6149,6 +6161,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/jobs')                   && method === 'POST')         return handleJobs(event);
     if (path.endsWith('/api/study')                  && method === 'POST')         return handleStudy(event);
     if (path.endsWith('/api/events')                 && method === 'POST')         return handleEventTickets(event);
+    if (path.endsWith('/api/client-error')           && method === 'POST')         return handleClientError(event);
     if (path.endsWith('/api/ride/estimate')          && method === 'POST')         return handleRideEstimate(event);
     if (path.endsWith('/api/ride/checkout')          && method === 'POST')         return handleRideCheckout(event);
     if (path.endsWith('/api/ride/confirm')           && method === 'POST')         return handleRideConfirm(event);

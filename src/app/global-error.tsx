@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect } from 'react';
-import { isStaleBuildError, reloadForNewBuild } from '@/lib/staleBuild';
+import { isStaleBuildError, reloadForNewBuild, reportClientError } from '@/lib/staleBuild';
 
 // The whole app failed (the root layout included), so this renders its own page
 export default function GlobalError({ error }: { error: Error & { digest?: string } }) {
   useEffect(() => {
     console.error(error);
-    if (isStaleBuildError(error)) reloadForNewBuild();
+    if (!(isStaleBuildError(error) && reloadForNewBuild())) reportClientError(error, 'global');
   }, [error]);
   return (
     <html lang="en">
@@ -17,6 +17,7 @@ export default function GlobalError({ error }: { error: Error & { digest?: strin
         <button onClick={() => window.location.reload()} style={{ padding: '10px 20px', borderRadius: 12, border: 0, background: '#111', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
           Reload
         </button>
+        <pre style={{ marginTop: 32, fontSize: 11, color: '#777', whiteSpace: 'pre-wrap', textAlign: 'left', maxWidth: 560, marginInline: 'auto' }}>{`${error.name}: ${error.message}`}</pre>
       </body>
     </html>
   );

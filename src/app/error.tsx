@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect } from 'react';
-import { isStaleBuildError, reloadForNewBuild } from '@/lib/staleBuild';
+import { isStaleBuildError, reloadForNewBuild, reportClientError } from '@/lib/staleBuild';
 
 // A page failed: reload into the new build when that's the cause, otherwise offer a retry instead of a blank screen
 export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   useEffect(() => {
     console.error(error);
-    if (isStaleBuildError(error)) reloadForNewBuild();
+    if (!(isStaleBuildError(error) && reloadForNewBuild())) reportClientError(error, 'page');
   }, [error]);
   return (
     <div className="flex-1 bg-gray-50 py-16 px-4 text-center">
@@ -17,6 +17,10 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
         <button onClick={reset} className="px-5 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover">Try again</button>
         <button onClick={() => window.location.reload()} className="px-5 py-2.5 bg-white text-gray-700 rounded-xl font-semibold ring-1 ring-gray-200">Reload</button>
       </div>
+      <details className="mt-8 max-w-xl mx-auto text-left text-xs text-gray-500">
+        <summary className="cursor-pointer text-center">Error details</summary>
+        <pre className="mt-2 whitespace-pre-wrap break-words bg-white rounded-lg p-3 ring-1 ring-gray-200">{`${error.name}: ${error.message}${error.digest ? `\n${error.digest}` : ''}\n${(error.stack ?? '').split('\n').slice(0, 6).join('\n')}`}</pre>
+      </details>
     </div>
   );
 }

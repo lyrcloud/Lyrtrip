@@ -15,3 +15,14 @@ export function reloadForNewBuild(): boolean {
   window.location.reload();
   return true;
 }
+
+// Sends what failed to the server log, so errors visitors hit can be looked up
+export function reportClientError(error: Error & { digest?: string }, boundary: string) {
+  try {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    fetch(`${baseUrl}/api/client-error`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ message: error?.message, name: error?.name, digest: error?.digest, stack: error?.stack, url: window.location.href, boundary }),
+    }).catch(() => {});
+  } catch { /* reporting must never fail the error page */ }
+}
