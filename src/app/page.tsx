@@ -23,6 +23,7 @@ import TourRequestDialog, { type TourItem } from '@/components/TourRequestDialog
 import CharityPanel, { CHARITY_EVENT_TYPES } from '@/components/CharityPanel';
 import HelicopterPanel from '@/components/HelicopterPanel';
 import FreightPanel from '@/components/FreightPanel';
+import LegalPanel from '@/components/LegalPanel';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -426,6 +427,12 @@ const ICON_MOTION: Record<string, IconMotion> = {
     { transform: 'scale(0.95)', offset: 0.55 },
     { transform: 'scale(1.1)', offset: 0.75 },
     { transform: 'scale(1)' },
+  ] },
+  taxlegal: { duration: 1000, easing: 'ease-in-out', frames: [
+    { transform: 'rotate(0)' },
+    { transform: 'rotate(-12deg)', offset: 0.25 },
+    { transform: 'rotate(10deg)', offset: 0.6 },
+    { transform: 'rotate(0)' },
   ] },
   career: { duration: 800, easing: 'ease-in-out', frames: [
     { transform: 'rotate(0) scale(1)' },
@@ -1353,6 +1360,9 @@ export default function Home() {
     { id: 'tourism', icon: '🎒', label: t('Tourism'), sub: t('Tours & trips') },
     { id: 'study', icon: '🎓', label: t('Study'), sub: t('Study abroad') },
     { id: 'career', icon: '💼', label: t('Job'), sub: t('Find work') },
+    { id: 'tax', icon: '🧾', label: t('Tax services'), sub: t('Returns, GST/VAT & advice') },
+    { id: 'legal', icon: '📜', label: t('Legal services'), sub: t('Documents & registrations') },
+    { id: 'lawyer', icon: '👩‍⚖️', label: t('Lawyers'), sub: t('Advice & representation') },
     { id: 'events', icon: '🎟️', label: t('Events'), sub: t('Concerts & shows') },
     { id: 'charity', icon: '🤲', label: t('Charity'), sub: t('Donate & give') },
   ];
@@ -1370,11 +1380,12 @@ export default function Home() {
     bike: ['🚲', t('Bike rides')], ebike: ['⚡', t('E-bike rides')], scooter: ['🛴', t('Moped & scooter rides')],
   };
 
-  // The tiles: Transport, Stay, Shipping and Events group several tabs (shown as a row of options below)
+  // The tiles: Transport, Stay, Shipping, Tax & Legal and Events group several tabs (shown as a row of options below)
   const TAB_GROUPS = [
     { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, air charters, bus, train, cruise & rides'), items: ['flights', 'helicopter', 'seaplane', 'airambulance', 'bus', 'train', 'cruise', 'car', 'taxi', 'limo', 'ambulance', 'motorcycle', 'bike', 'ebike', 'scooter'] },
     { id: 'stay', icon: '🏨', motion: 'hotels', label: t('Stay'), sub: t('Hotels, homestays & more'), items: ['hotels'] },
     { id: 'shippinggroup', icon: '📦', motion: 'shipping', label: t('Shipping'), sub: t('Food, courier, parcels, trucks & cargo'), items: ['food', 'dash', 'shipping', 'truck', 'freight'] },
+    { id: 'taxlegal', icon: '⚖️', motion: 'taxlegal', label: t('Tax & Legal'), sub: t('Tax, legal & lawyers'), items: ['tax', 'legal', 'lawyer'] },
     { id: 'eventsgroup', icon: '🎟️', motion: 'events', label: t('Events'), sub: t('Shows, summits & charity'), items: ['events', 'charity'] },
   ];
   const tiles = [
@@ -2930,6 +2941,11 @@ export default function Home() {
             {activeTab === 'shipping' && (
               <ShippingTab user={user} />
             )}
+
+            {/* Tax, legal and lawyer services sold through Lyrtrip */}
+            {activeTab === 'tax' && <LegalPanel key="tax" service="tax" />}
+            {activeTab === 'legal' && <LegalPanel key="legal" service="legal" />}
+            {activeTab === 'lawyer' && <LegalPanel key="lawyer" service="lawyer" />}
 
             {/* Trucks, cargo and containers sold through Lyrtrip */}
             {activeTab === 'truck' && <FreightPanel key="truck" mode="truck" />}

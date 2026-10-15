@@ -2909,6 +2909,7 @@ What you know about Lyrtrip:
 - Rides: the car, taxi, limo and motorcycle options show fare estimates; booking rides, bikes, e-bikes and scooters on Lyrtrip opens soon.
 - Air charters and ambulances: helicopter, seaplane, air ambulance and ground ambulance (the Ambulance ride option) requests get a quote from Lyrtrip (the operator's price plus a 10% service charge), paid by card, and are followed at lyrtrip.com/helicopter/requests. Air and ground ambulance bookings are not an emergency service: for a life-threatening emergency, tell the traveller to call their local emergency number.
 - Trucks, cargo and containers: requests get a quote from Lyrtrip (the carrier's price plus a 10% service charge), paid by card, with booking and tracking updates at lyrtrip.com/freight/requests. Duties, taxes and port charges not in the quote are the customer's.
+- Tax & Legal (the tile after Job): tax services, legal services and lawyers. Lyrtrip finds a licensed professional and quotes their fee plus a 10% service charge, paid by card, with progress at lyrtrip.com/legal/requests. Lyrtrip arranges the service and does not give tax or legal advice itself.
 - Courier and food delivery: the Courier option books a same-day courier that picks up an item and delivers it across town, usually within the hour, paid on Lyrtrip with live status on the receipt page. Food delivery uses the same courier to collect a meal the traveller has already ordered and paid for at a restaurant.
 - Shipping: the Shipping tab compares courier rates (USPS, FedEx, UPS, DHL and more) for parcels worldwide and sells a printable label.
 - Never mention which company provides Lyrtrip's courier deliveries.
@@ -3190,6 +3191,7 @@ async function handleAdmin(event) {
     if (String(body.action ?? '').startsWith('studyapps.')) return (await studyAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('eventtix.')) return (await eventTicketsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('tourreqs.')) return (await tourRequestsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
+    if (String(body.action ?? '').startsWith('legal.')) return (await legalAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('freight.')) return (await freightAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('heli.')) return (await heliAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('donations.')) return (await donationsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
@@ -7678,6 +7680,327 @@ async function freightAdmin(db, body) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Tax & legal services (Tax & Legal tile after Job): Lyrtrip sells them itself, like air charters and
+// freight. The customer describes the matter (country, category, deadline, how they want to meet); an
+// admin finds a licensed accountant, tax adviser, notary or lawyer and quotes the fee, and the customer
+// pays it plus Lyrtrip's 10%. Once paid, the admin assigns the professional and posts updates; if no
+// one can take it, the payment is refunded. Lyrtrip arranges the service; it does not give advice.
+// ---------------------------------------------------------------------------
+
+const LEGAL_SERVICE_RATE = 0.10;
+const LEGAL_QUOTE_HOURS = 72;
+const LEGAL_SERVICES = {
+  tax: {
+    label: 'Tax services',
+    categories: {
+      personal:    'Personal income tax return',
+      business:    'Business / company tax return',
+      vat:         'GST / VAT / sales tax registration and filing',
+      expat:       'Expat & non-resident tax (NRI, FBAR, double tax)',
+      planning:    'Tax planning & advice',
+      notice:      'Tax notice, audit or dispute',
+      bookkeeping: 'Bookkeeping & payroll',
+      investments: 'Crypto, shares & property tax',
+    },
+  },
+  legal: {
+    label: 'Legal services',
+    categories: {
+      company:    'Company / LLC registration',
+      contract:   'Contract drafting or review',
+      ip:         'Trademark, copyright & patent',
+      will:       'Will, trust & estate planning',
+      poa:        'Power of attorney & affidavits',
+      notary:     'Notary, apostille & attestation',
+      property:   'Property documents & registration',
+      compliance: 'Business licences & compliance',
+    },
+  },
+  lawyer: {
+    label: 'Lawyers',
+    categories: {
+      immigration: 'Immigration & visa',
+      family:      'Family & divorce',
+      property:    'Property & tenancy disputes',
+      criminal:    'Criminal defence',
+      employment:  'Employment & workplace',
+      consumer:    'Consumer & debt',
+      injury:      'Accident & personal injury',
+      business:    'Business & commercial disputes',
+      court:       'Court case representation',
+    },
+  },
+};
+const legalService = r => LEGAL_SERVICES[r.service] ?? LEGAL_SERVICES.tax;
+const LEGAL_MEETING = ['Online video call', 'Phone call', 'In person', 'Documents only (no meeting)'];
+const LEGAL_URGENCY = ['Within 24 hours', 'This week', 'Within a month', 'No rush'];
+const LEGAL_STATUS = {
+  submitted: 'Received by Lyrtrip', info_needed: 'More details needed', quoted: 'Fee to pay',
+  processing: 'Paid: Lyrtrip is assigning your professional', in_progress: 'In progress', completed: 'Completed',
+  unavailable: 'Not available', refunded: 'Refunded', cancelled: 'Cancelled',
+};
+const LEGAL_CANCELLABLE = ['submitted', 'info_needed', 'quoted'];
+const legalTotals = amount => {
+  const service = Math.round(amount * LEGAL_SERVICE_RATE * 100) / 100;
+  return { amount, service, total: Math.round((amount + service) * 100) / 100 };
+};
+
+function cleanLegalRequest(b) {
+  const s = (v, max) => String(v ?? '').trim().slice(0, max);
+  const day = v => (/^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s(v, 10)) ? s(v, 10) : '');
+  const c = b.contact ?? {};
+  const name = s(c.name, 80), email = s(c.email, 120).toLowerCase(), country = s(c.country, 60);
+  if (name.length < 2) throw new JobError('Enter your full name');
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw new JobError('Enter a valid email: the quote is sent there');
+  const phone = parsePhoneNumberFromString(s(c.phone, 30), 'US');
+  if (!phone?.isValid()) throw new JobError('Enter a valid phone number with the country code, e.g. +91 98765 43210');
+  if (!country) throw new JobError('Enter your country');
+
+  const service = LEGAL_SERVICES[b.service] ? b.service : 'tax';
+  const spec = LEGAL_SERVICES[service];
+  const category = Object.keys(spec.categories).includes(b.category) ? b.category : '';
+  if (!category) throw new JobError('Choose what you need help with');
+  const jurisdiction = s(b.jurisdiction, 80);
+  if (jurisdiction.length < 2) throw new JobError('Enter the country whose law or tax applies');
+  const description = s(b.description, 3000);
+  if (description.length < 20) throw new JobError('Describe your matter in a few sentences (at least 20 characters)');
+  const deadline = day(b.deadline);
+  if (b.deadline && (!deadline || deadline < new Date().toISOString().slice(0, 10))) throw new JobError('The deadline must be a date from today on');
+  const budget = b.budget === '' || b.budget == null ? null : Math.round(Number(b.budget) * 100) / 100;
+  if (budget != null && !(budget > 0 && budget <= 500000)) throw new JobError('Your budget must be a positive amount in USD');
+  if (!b.acceptTerms) throw new JobError('Please accept the terms');
+  return {
+    service, category, jurisdiction, region: s(b.region, 80), description, deadline,
+    taxYear: service === 'tax' ? s(b.taxYear, 20) : '',
+    forBusiness: !!b.forBusiness, businessName: b.forBusiness ? s(b.businessName, 120) : '',
+    meeting: LEGAL_MEETING.includes(b.meeting) ? b.meeting : LEGAL_MEETING[0],
+    urgency: LEGAL_URGENCY.includes(b.urgency) ? b.urgency : LEGAL_URGENCY[2],
+    language: s(b.language, 40) || 'English', otherParty: s(b.otherParty, 120),
+    contact: { name, email, phone: phone.number, country }, budget,
+  };
+}
+
+const customerLegalRequest = r => ({
+  id: r._id, service: r.service, serviceLabel: legalService(r).label, category: r.category, categoryLabel: legalService(r).categories[r.category] ?? r.category,
+  jurisdiction: r.jurisdiction, region: r.region, description: r.description, deadline: r.deadline, taxYear: r.taxYear,
+  forBusiness: r.forBusiness, businessName: r.businessName, meeting: r.meeting, urgency: r.urgency, language: r.language, otherParty: r.otherParty,
+  contact: r.contact, budget: r.budget,
+  status: r.status, statusLabel: LEGAL_STATUS[r.status] ?? r.status, message: r.customerMessage ?? '',
+  quote: r.quote ? { ...legalTotals(r.quote.amount), details: r.quote.details ?? '', expiresAt: r.quote.expiresAt, paidAt: r.quote.paidAt ?? null } : null,
+  createdAt: r.createdAt, updatedAt: r.updatedAt,
+});
+
+const legalTitle = r => `${legalService(r).categories[r.category] ?? r.category} (${r.jurisdiction})`;
+const legalRows = r => [
+  ['Service', legalService(r).label], ['Matter', legalService(r).categories[r.category] ?? r.category],
+  ['Country', [r.region, r.jurisdiction].filter(Boolean).join(', ')], ['Tax year', r.taxYear],
+  ['For', r.forBusiness ? `Business${r.businessName ? `: ${r.businessName}` : ''}` : 'Personal'],
+  ['Meeting', r.meeting], ['Urgency', r.urgency], ['Deadline', r.deadline],
+].filter(([, v]) => v);
+
+// Paid, but the customer closed the tab before coming back: settle it from Stripe
+async function settleLegalPayment(db, r) {
+  if (r.status !== 'quoted' || !r.quote?.sessionId) return r;
+  const session = await mainStripe()?.checkout.sessions.retrieve(r.quote.sessionId).catch(() => null);
+  if (session?.payment_status !== 'paid' || session.metadata?.requestId !== r._id) return r;
+  const now = new Date().toISOString();
+  const set = { status: 'processing', 'quote.paidAt': now, 'quote.paymentIntent': session.payment_intent ?? null, 'quote.charged': (session.amount_total ?? 0) / 100, updatedAt: now, 'statusAt.processing': now };
+  const u = await db.collection('legal_requests').updateOne({ _id: r._id, status: 'quoted' }, { $set: set });
+  if (u.modifiedCount) {
+    await sendEmail({
+      to: superAdminEmail(), subject: `${legalService(r).label} paid: ${r.contact.name}, ${legalTitle(r)}`,
+      html: jobAppEmail('Paid: assign the professional', [...legalRows(r), ['Customer', r.contact.name], ['Paid', `USD ${set['quote.charged'].toFixed(2)}`]],
+        `Open ${SITE_URL}/admin, Tax & legal, to assign it.`),
+      text: `${r.contact.name} paid for ${legalTitle(r)}. See ${SITE_URL}/admin.`,
+    });
+  }
+  return { ...r, status: 'processing', quote: { ...r.quote, paidAt: now } };
+}
+
+async function handleLegal(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const db = await getDb();
+  const reqs = db.collection('legal_requests');
+  const user = await optionalUser(body.idToken);
+  const me = () => { if (!user) throw new JobError('Please sign in first.', 401); return user; };
+  const findMine = async id => {
+    const r = await reqs.findOne({ _id: String(id ?? ''), sub: me().sub });
+    if (!r) throw new JobError('Request not found', 404);
+    return r;
+  };
+  const options = { services: LEGAL_SERVICES, meeting: LEGAL_MEETING, urgency: LEGAL_URGENCY, serviceRate: LEGAL_SERVICE_RATE, quoteHours: LEGAL_QUOTE_HOURS };
+
+  try {
+    switch (body.action) {
+      case 'options':
+        return json(200, options);
+
+      case 'request': {
+        const clean = cleanLegalRequest(body);
+        const now = new Date().toISOString();
+        const r = { _id: `lg_${randomBytes(9).toString('hex')}`, sub: me().sub, accountEmail: me().email, ...clean, status: 'submitted', createdAt: now, updatedAt: now, statusAt: { submitted: now } };
+        await reqs.insertOne(r);
+        await Promise.all([
+          sendEmail({
+            to: clean.contact.email, subject: `We have your request: ${legalTitle(r)}`,
+            html: jobAppEmail('We have your request', legalRows(r),
+              `Lyrtrip finds a licensed professional and emails you the fee: their fee plus our ${LEGAL_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/legal/requests.`),
+            text: `We received your request: ${legalTitle(r)}. We will email you the fee to pay. See ${SITE_URL}/legal/requests`,
+          }),
+          sendEmail({
+            to: superAdminEmail(), subject: `New ${legalService(r).label.toLowerCase()} request: ${clean.contact.name}, ${legalTitle(r)}`,
+            html: jobAppEmail(`New ${legalService(r).label.toLowerCase()} request`, [...legalRows(r), ['Customer', `${clean.contact.name} · ${clean.contact.email} · ${clean.contact.phone}`], ['Budget', clean.budget ? `USD ${clean.budget}` : 'Not given']],
+              `Open ${SITE_URL}/admin, Tax & legal, to quote the fee.`),
+            text: `New request ${legalTitle(r)} from ${clean.contact.name}. See ${SITE_URL}/admin.`,
+          }),
+        ]);
+        return json(200, { request: customerLegalRequest(r) });
+      }
+
+      case 'requests.mine': {
+        const rows = await reqs.find({ sub: me().sub }).sort({ createdAt: -1 }).limit(200).toArray();
+        const settled = await Promise.all(rows.map(r => settleLegalPayment(db, r).catch(() => r)));
+        return json(200, { requests: settled.map(customerLegalRequest), ...options });
+      }
+
+      // Lyrtrip asked for more details: the customer corrects the request and sends it again
+      case 'request.update': {
+        const r = await findMine(body.id);
+        if (r.status !== 'info_needed') throw new JobError('This request is not waiting for details');
+        const clean = cleanLegalRequest({ ...body, acceptTerms: true });
+        const now = new Date().toISOString();
+        await reqs.updateOne({ _id: r._id }, { $set: { ...clean, status: 'submitted', customerMessage: '', updatedAt: now, 'statusAt.submitted': now } });
+        await sendEmail({
+          to: superAdminEmail(), subject: `Request updated: ${clean.contact.name}, ${legalTitle(clean)}`,
+          html: jobAppEmail('Request updated', legalRows(clean), `See ${SITE_URL}/admin, Tax & legal.`),
+          text: `${clean.contact.name} updated their request. See ${SITE_URL}/admin.`,
+        });
+        return json(200, { request: customerLegalRequest({ ...r, ...clean, status: 'submitted', customerMessage: '' }) });
+      }
+
+      // The quoted professional fee plus Lyrtrip's service charge, paid once by card
+      case 'pay': {
+        const stripe = mainStripe();
+        if (!stripe) throw new JobError('Payments are not configured', 500);
+        const r = await findMine(body.id);
+        if (r.status !== 'quoted' || !r.quote?.amount) throw new JobError('There is nothing to pay on this request');
+        if (Date.parse(r.quote.expiresAt) < Date.now()) throw new JobError('This fee quote has expired. Ask us for a new one at support@lyrtrip.com.', 410);
+        const t = legalTotals(r.quote.amount);
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          line_items: [
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.amount * 100), product_data: { name: `${legalService(r).label}: ${legalTitle(r)}`.slice(0, 250), description: (r.quote.details || r.meeting).slice(0, 250) } } },
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.service * 100), product_data: { name: `Lyrtrip service charge (${LEGAL_SERVICE_RATE * 100}%)` } } },
+          ].filter(l => l.price_data.unit_amount > 0),
+          customer_email: r.contact.email || me().email,
+          client_reference_id: me().sub,
+          metadata: { type: 'legal', sub: me().sub, requestId: r._id },
+          payment_intent_data: { metadata: { type: 'legal', sub: me().sub, requestId: r._id } },
+          // Stripe needs 30 minutes to 24 hours; never past the quote's own expiry by more than that minimum
+          expires_at: Math.max(Math.floor(Date.now() / 1000) + 1860, Math.min(Math.floor(Date.parse(r.quote.expiresAt) / 1000), Math.floor(Date.now() / 1000) + 23 * 3600)),
+          success_url: `${SITE_URL}/legal/requests?pay_session={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${SITE_URL}/legal/requests?checkout=canceled`,
+        });
+        await reqs.updateOne({ _id: r._id }, { $set: { 'quote.sessionId': session.id } });
+        return json(200, { url: session.url });
+      }
+
+      case 'pay.confirm': {
+        const session = await mainStripe().checkout.sessions.retrieve(String(body.sessionId ?? '')).catch(() => null);
+        if (!session || session.metadata?.type !== 'legal' || session.metadata.sub !== me().sub) throw new JobError('This payment is not for your request', 403);
+        if (session.payment_status !== 'paid') throw new JobError('The payment was not completed', 402);
+        const r = await findMine(session.metadata.requestId);
+        if (r.status === 'quoted') await settleLegalPayment(db, { ...r, quote: { ...r.quote, sessionId: session.id } });
+        return json(200, { ok: true });
+      }
+
+      case 'request.cancel': {
+        const u = await reqs.updateOne(
+          { _id: String(body.id ?? ''), sub: me().sub, status: { $in: LEGAL_CANCELLABLE } },
+          { $set: { status: 'cancelled', updatedAt: new Date().toISOString() } },
+        );
+        if (!u.matchedCount) throw new JobError('This request can no longer be cancelled. Contact support@lyrtrip.com.');
+        return json(200, { ok: true });
+      }
+
+      default:
+        throw new JobError('Unknown action');
+    }
+  } catch (err) {
+    if (err instanceof JobError) return json(err.status, { error: err.message });
+    if (err.name === 'JwtExpiredError' || /jwt/i.test(err.name ?? '')) return json(401, { error: 'Please sign in again.' });
+    console.error('Legal action failed:', body.action, err);
+    return json(500, { error: 'Something went wrong. Please try again.' });
+  }
+}
+
+// Admin side (called from handleAdmin): every detail, quotes, progress updates, refunds and status
+async function legalAdmin(db, body) {
+  const reqs = db.collection('legal_requests');
+  switch (body.action) {
+    case 'legal.list': {
+      const rows = await reqs.find({}).sort({ createdAt: -1 }).limit(500).toArray();
+      return json(200, {
+        serviceRate: LEGAL_SERVICE_RATE, quoteHours: LEGAL_QUOTE_HOURS,
+        requests: rows.map(r => ({ ...customerLegalRequest(r), sub: r.sub, accountEmail: r.accountEmail ?? '', adminNote: r.adminNote ?? '', charged: r.quote?.charged ?? null, refund: r.refund ?? null })),
+      });
+    }
+
+    // Moves a request along. A fee puts it at "Fee to pay"; marking a paid request unavailable or
+    // refunded refunds the card in full. The message is emailed to the customer.
+    case 'legal.update': {
+      let status = Object.keys(LEGAL_STATUS).includes(body.status) && body.status !== 'cancelled' ? body.status : null;
+      if (!status) return json(400, { error: 'Unknown status' });
+      const r = await reqs.findOne({ _id: String(body.id ?? '') });
+      if (!r) return json(404, { error: 'Request not found' });
+      if (r.status === 'cancelled' || r.status === 'refunded') return json(409, { error: `This request is ${LEGAL_STATUS[r.status].toLowerCase()}` });
+      const paid = !!r.quote?.paidAt;
+      const now = new Date().toISOString();
+      const set = { adminNote: String(body.note ?? r.adminNote ?? '').slice(0, 1000), updatedAt: now };
+      if (status === 'quoted') {
+        if (paid) return json(409, { error: 'This request has already been paid' });
+        const amount = Math.round(Number(body.price) * 100) / 100;
+        if (!(amount >= 1 && amount <= 500000)) return json(400, { error: "Enter the professional's total fee in USD, with government or filing fees (at least 1)" });
+        set.quote = { amount, details: String(body.quoteDetails ?? '').trim().slice(0, 500), quotedAt: now, expiresAt: new Date(Date.now() + LEGAL_QUOTE_HOURS * 3600e3).toISOString() };
+      }
+      if (['processing', 'in_progress', 'completed'].includes(status) && !paid) return json(409, { error: 'The customer has not paid yet. Quote a fee first.' });
+      if (status === 'refunded' && !paid) status = 'unavailable';
+      if (status === 'unavailable' && paid) status = 'refunded';
+      if (status === 'refunded') {
+        const stripe = mainStripe();
+        if (!r.quote.paymentIntent || !stripe) return json(409, { error: 'No card payment found to refund; refund it in Stripe' });
+        const refund = await stripe.refunds.create({ payment_intent: r.quote.paymentIntent, metadata: { type: 'legal', requestId: r._id } });
+        set.refund = { id: refund.id, amount: refund.amount / 100, at: now };
+      }
+      const message = String(body.message ?? '').trim().slice(0, 2000);
+      Object.assign(set, { status, customerMessage: message, [`statusAt.${status}`]: now });
+      await reqs.updateOne({ _id: r._id }, { $set: set });
+      if (status !== r.status || message) {
+        const rows = legalRows(r);
+        if (status === 'quoted') {
+          const t = legalTotals(set.quote.amount);
+          rows.push(['Professional fee', `USD ${t.amount.toFixed(2)}`], [`Lyrtrip service (${LEGAL_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]);
+          if (set.quote.details) rows.push(['Details', set.quote.details]);
+        }
+        if (status === 'refunded') rows.push(['Refunded', `USD ${set.refund.amount.toFixed(2)} to your card (allow 5 to 10 days)`]);
+        if (message) rows.push(['Message from Lyrtrip', message]);
+        const foot = status === 'quoted' ? `Pay within ${LEGAL_QUOTE_HOURS} hours at ${SITE_URL}/legal/requests.`
+          : status === 'info_needed' ? `Update your request at ${SITE_URL}/legal/requests.` : `See ${SITE_URL}/legal/requests.`;
+        await sendEmail({
+          to: r.contact.email, subject: `${LEGAL_STATUS[status]}: ${legalTitle(r)}`,
+          html: jobAppEmail(LEGAL_STATUS[status], rows, foot),
+          text: `${LEGAL_STATUS[status]}: ${legalTitle(r)}.${message ? `\n\n${message}` : ''} ${foot}`,
+        });
+      }
+      return json(200, { ok: true, status });
+    }
+
+    default:
+      return null;
+  }
+}
+
 // Errors from visitors' browsers (the site's error pages), written to the Lambda log for debugging
 async function handleClientError(event) {
   let b = {};
@@ -7727,6 +8050,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/study')                  && method === 'POST')         return handleStudy(event);
     if (path.endsWith('/api/events')                 && method === 'POST')         return handleEventTickets(event);
     if (path.endsWith('/api/packages')               && method === 'POST')         return handleTourRequests(event);
+    if (path.endsWith('/api/legal')                  && method === 'POST')         return handleLegal(event);
     if (path.endsWith('/api/freight')                && method === 'POST')         return handleFreight(event);
     if (path.endsWith('/api/helicopter')             && method === 'POST')         return handleHeliRequests(event);
     if (path.endsWith('/api/donations')              && method === 'POST')         return handleDonations(event);

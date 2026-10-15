@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { getSession } from '@/lib/auth';
 import {
-  AffiliatesPanel, BusinessPanel, CouponsPanel, GiftCardsPanel, RewardsPanel, SettingsPanel, ShipmentsPanel, DeliveriesPanel, RidesPanel, JobProfilesPanel, JobApplicationsPanel, StudyApplicationsPanel, EventTicketsPanel, TourRequestsPanel, DonationsPanel, HeliRequestsPanel, FreightRequestsPanel, TIER_STYLE,
+  AffiliatesPanel, BusinessPanel, CouponsPanel, GiftCardsPanel, RewardsPanel, SettingsPanel, ShipmentsPanel, DeliveriesPanel, RidesPanel, JobProfilesPanel, JobApplicationsPanel, StudyApplicationsPanel, EventTicketsPanel, TourRequestsPanel, DonationsPanel, HeliRequestsPanel, FreightRequestsPanel, LegalRequestsPanel, TIER_STYLE,
   type RewardsAccount, type RewardsSettings,
 } from '@/components/admin/RewardsAdmin';
 
@@ -50,7 +50,7 @@ interface AdminFlight {
   createdAt: string | null;
 }
 
-type Tab = 'users' | 'shipments' | 'deliveries' | 'rides' | 'jobs' | 'jobapps' | 'studyapps' | 'eventtix' | 'tourreqs' | 'heli' | 'freight' | 'donations' | 'rewards' | 'business' | 'affiliates' | 'coupons' | 'giftcards' | 'settings' | 'tours' | 'flights';
+type Tab = 'users' | 'shipments' | 'deliveries' | 'rides' | 'jobs' | 'jobapps' | 'studyapps' | 'eventtix' | 'tourreqs' | 'heli' | 'freight' | 'legal' | 'donations' | 'rewards' | 'business' | 'affiliates' | 'coupons' | 'giftcards' | 'settings' | 'tours' | 'flights';
 
 const ROLE_STYLE: Record<Role, string> = {
   superadmin: 'bg-purple-100 text-purple-800',
@@ -207,6 +207,7 @@ export default function AdminPage() {
                 ['tourreqs', 'Tour requests'],
                 ['heli', 'Air charters'],
                 ['freight', 'Freight & trucks'],
+                ['legal', 'Tax & legal'],
                 ['donations', 'Donations'],
               ] as const).map(([key, label]) => (
                 <button key={key} onClick={() => setTab(key)}
@@ -337,6 +338,7 @@ export default function AdminPage() {
             {tab === 'tourreqs' && <TourRequestsPanel call={call} />}
             {tab === 'heli' && <HeliRequestsPanel call={call} />}
             {tab === 'freight' && <FreightRequestsPanel call={call} />}
+            {tab === 'legal' && <LegalRequestsPanel call={call} />}
             {tab === 'donations' && <DonationsPanel call={call} />}
             {tab === 'coupons' && <CouponsPanel call={call} isSuper={isSuper} />}
             {tab === 'giftcards' && <GiftCardsPanel call={call} isSuper={isSuper} />}

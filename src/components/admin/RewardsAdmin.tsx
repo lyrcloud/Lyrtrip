@@ -1548,3 +1548,115 @@ export function FreightRequestsPanel({ call }: { call: Call }) {
     </div>
   );
 }
+
+interface AdminLegalRequest {
+  id: string; service: string; serviceLabel: string; category: string; categoryLabel: string; status: string; statusLabel: string;
+  jurisdiction: string; region: string; description: string; deadline: string; taxYear: string; forBusiness: boolean; businessName: string;
+  meeting: string; urgency: string; language: string; otherParty: string; budget: number | null; adminNote: string; accountEmail: string; createdAt: string;
+  contact: { name: string; email: string; phone: string; country: string };
+  quote: { amount: number; service: number; total: number; details: string; expiresAt: string; paidAt: string | null } | null;
+  charged: number | null; refund: { amount: number; at: string } | null;
+}
+
+const LEGAL_STEPS: [string, string][] = [
+  ['submitted', 'Received'], ['info_needed', 'More details needed'], ['quoted', 'Quote fee (fee to pay)'], ['processing', 'Paid: assigning professional'],
+  ['in_progress', 'In progress'], ['completed', 'Completed'], ['unavailable', 'Not available (refunds if paid)'], ['refunded', 'Refund in full'],
+];
+
+// Tax, legal and lawyer services sold through Lyrtrip: find a licensed professional, quote (+ service), assign once paid, or refund
+export function LegalRequestsPanel({ call }: { call: Call }) {
+  const [data, setData] = useState<{ requests: AdminLegalRequest[]; serviceRate: number; quoteHours: number } | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ status: '', message: '', note: '', price: '', quoteDetails: '' });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    call({ action: 'legal.list' }).then(d => setData(d as unknown as NonNullable<typeof data>)).catch(() => setData({ requests: [], serviceRate: 0.1, quoteHours: 72 }));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+  const rows = data?.requests ?? null;
+  const expand = (r: AdminLegalRequest) => {
+    setOpen(open === r.id ? null : r.id);
+    setDraft({ status: r.status === 'cancelled' ? 'submitted' : r.status, message: '', note: r.adminNote, price: r.quote ? String(r.quote.amount) : '', quoteDetails: r.quote?.details ?? '' });
+  };
+  const save = async (r: AdminLegalRequest) => {
+    const paid = !!r.quote?.paidAt;
+    if (paid && ['unavailable', 'refunded'].includes(draft.status) && !confirm(`Refund ${usd(r.charged ?? r.quote!.total)} to ${r.contact.name}'s card?`)) return;
+    setBusy(true);
+    try {
+      await call({ action: 'legal.update', id: r.id, status: draft.status, message: draft.message, note: draft.note, price: draft.price === '' ? undefined : Number(draft.price), quoteDetails: draft.quoteDetails });
+      setOpen(null);
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not update the request');
+    }
+    setBusy(false);
+  };
+  const count = (s: string) => (rows ?? []).filter(r => r.status === s).length;
+  const rate = data?.serviceRate ?? 0.1;
+  const priceNum = Number(draft.price) || 0;
+  const earned = (rows ?? []).filter(r => r.quote?.paidAt && !r.refund).reduce((s, r) => s + (r.quote?.service ?? 0), 0);
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['To quote', String(count('submitted'))], ['Awaiting payment', String(count('quoted'))],
+          ['Paid, to assign', String(count('processing'))], ['Service earned', usd(earned)],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No tax or legal requests yet.</p>}
+        {rows?.map(r => (
+          <div key={r.id} className="p-4 text-sm">
+            <button onClick={() => expand(r)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-900">{r.urgency === 'Within 24 hours' && ['submitted', 'quoted', 'processing'].includes(r.status) && <span className="mr-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white">URGENT</span>}{r.serviceLabel} · {r.contact.name} · {r.categoryLabel}</p>
+                <p className="text-gray-600">{[r.region, r.jurisdiction].filter(Boolean).join(', ')} · {r.meeting}{r.deadline ? ` · deadline ${r.deadline}` : ''}</p>
+                <p className="text-xs text-gray-400">Requested {new Date(r.createdAt).toLocaleString()}{r.budget ? ` · budget ${usd(r.budget)}` : ''}{r.quote ? ` · ${usd(r.quote.total)}${r.quote.paidAt ? ' paid' : ' quoted'}` : ''}{r.refund ? ' · refunded' : ''}</p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{r.statusLabel}</span>
+            </button>
+            {open === r.id && (
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase text-gray-500">Matter</p>
+                  <p className="text-gray-700 whitespace-pre-line bg-gray-50 rounded-lg p-2">{r.description}</p>
+                  <p className="text-gray-700">{[r.taxYear && `Tax year ${r.taxYear}`, r.forBusiness ? `Business${r.businessName ? `: ${r.businessName}` : ''}` : 'Personal', r.urgency, `Language: ${r.language}`].filter(Boolean).join(' · ')}</p>
+                  {r.otherParty && <p className="text-gray-700">Other party (conflict check): {r.otherParty}</p>}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Customer</p>
+                  <p className="text-gray-700">{r.contact.name} · {r.contact.email} · {r.contact.phone} · {r.contact.country}</p>
+                  {r.accountEmail && r.accountEmail !== r.contact.email && <p className="text-xs text-gray-500">Account: {r.accountEmail}</p>}
+                </div>
+                <div className="space-y-2">
+                  {r.status === 'cancelled' || r.status === 'refunded' ? (
+                    <p className="text-gray-500">{r.status === 'cancelled' ? 'The customer cancelled this request.' : `Refunded ${usd(r.refund?.amount ?? 0)} on ${r.refund ? new Date(r.refund.at).toLocaleDateString() : ''}.`}</p>
+                  ) : (<>
+                    <label className="block text-xs font-semibold text-gray-600">Status</label>
+                    <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
+                      {LEGAL_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    {draft.status === 'quoted' && !r.quote?.paidAt && (<>
+                      <label className="block text-xs font-semibold text-gray-600">Professional&apos;s total fee, with government and filing fees (USD)</label>
+                      <input type="number" min={1} step="0.01" value={draft.price} onChange={e => setDraft({ ...draft, price: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <label className="block text-xs font-semibold text-gray-600">What they get (shown to the customer)</label>
+                      <input value={draft.quoteDetails} maxLength={500} onChange={e => setDraft({ ...draft, quoteDetails: e.target.value })} placeholder="e.g. ITR-2 filing with DTAA relief by a chartered accountant, 1 video call" className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <p className="text-xs text-gray-600">Customer pays {usd(priceNum)} + {Math.round(rate * 100)}% service {usd(Math.round(priceNum * rate * 100) / 100)} = <b>{usd(Math.round(priceNum * (1 + rate) * 100) / 100)}</b>, within {data?.quoteHours ?? 72} hours.</p>
+                    </>)}
+                    {r.quote?.paidAt && <p className="text-emerald-700">Paid {usd(r.charged ?? r.quote.total)} on {new Date(r.quote.paidAt).toLocaleDateString()}</p>}
+                    {r.quote?.paidAt && ['unavailable', 'refunded'].includes(draft.status) && <p className="text-red-700 text-xs">Saving refunds the card in full.</p>}
+                    <label className="block text-xs font-semibold text-gray-600">Message to the customer (emailed)</label>
+                    <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000}
+                      placeholder={draft.status === 'in_progress' ? 'e.g. Your adviser, A. Mehta CA, will email you a secure upload link today' : ''} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <label className="block text-xs font-semibold text-gray-600">Internal note (professional, licence no., cost)</label>
+                    <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <button onClick={() => save(r)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>
+                  </>)}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
