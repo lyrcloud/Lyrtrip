@@ -516,10 +516,17 @@ async function handleWeChatAuth(event) {
   });
 }
 
-async function searchHotelsSerpApi({ destination, checkin, checkout, guests }) {
+// The Stay tab's property types, as Google Hotels understands them
+const STAY_QUERY = {
+  hotels: 'Hotels', homestays: 'Homestays', resorts: 'Resorts', hostels: 'Hostels with dorm beds', apartments: 'Serviced apartments',
+  villas: 'Villas', guesthouses: 'Guest houses', bnb: 'Bed and breakfasts',
+};
+
+async function searchHotelsSerpApi({ destination, checkin, checkout, guests, stayType }) {
+  const kind = STAY_QUERY[stayType] ?? STAY_QUERY.hotels;
   const params = new URLSearchParams({
     engine:   'google_hotels',
-    q:        destination ? `Hotels in ${destination}` : 'Hotels',
+    q:        destination ? `${kind} in ${destination}` : kind,
     currency: 'USD',
     gl:       'us',
     hl:       'en',
@@ -2302,10 +2309,10 @@ async function handleSearch(event) {
 
     // --- Hotel: try SerpAPI ---
     if (service === 'hotels' && process.env.SERPAPI_KEY) {
-      const { destination, checkin, checkout, guests } = body;
+      const { destination, checkin, checkout, guests, stayType } = body;
       if (destination) {
         try {
-          const results = await searchHotelsSerpApi({ destination, checkin, checkout, guests });
+          const results = await searchHotelsSerpApi({ destination, checkin, checkout, guests, stayType });
           if (results.length > 0) {
             return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
           }

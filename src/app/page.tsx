@@ -548,6 +548,8 @@ export default function Home() {
   const { t, money, original } = useLocale();
   const router = useRouter();
   const [activeTab, setActiveTab] = useState('flights');
+  // Stay tab: the kind of property to search for
+  const [stayType, setStayType] = useState('hotels');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
@@ -868,11 +870,11 @@ export default function Home() {
   const onTabKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
     e.preventDefault();
-    const i = tabs.findIndex(t => t.id === activeTab);
-    const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length].id;
-    switchTab(next);
-    tabRefs.current[next]?.focus();
-    playIcon(next, true);
+    const i = tiles.indexOf(activeTile);
+    const next = tiles[(i + (e.key === 'ArrowRight' ? 1 : tiles.length - 1)) % tiles.length];
+    switchTab(next.items[0]);
+    tabRefs.current[next.id]?.focus();
+    playIcon(next.motion, true);
   };
 
   // Ripple from the click point on buttons
@@ -923,6 +925,7 @@ export default function Home() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         service:     'hotels',
+        stayType,
         destination: formData.destination || formData.destinationLocation?.address || '',
         destinationLocation: formData.destinationLocation
           ? { lat: formData.destinationLocation.lat, lng: formData.destinationLocation.lng }
@@ -1258,6 +1261,7 @@ export default function Home() {
     { id: 'hotels', icon: '🏨', label: t('Hotels'), sub: t('Places to stay') },
     { id: 'car', icon: '🚗', label: t('Car'), sub: t('Book a ride') },
     { id: 'dash', icon: '🛵', label: t('Dash'), sub: t('Same-day courier') },
+    { id: 'bike', icon: '🚲', label: t('Bike'), sub: t('Bikes & scooters') },
     { id: 'bus', icon: '🚌', label: t('Bus'), sub: t('Intercity routes') },
     { id: 'train', icon: '🚂', label: t('Train'), sub: t('Rail journeys') },
     { id: 'cruise', icon: '🚢', label: t('Cruise'), sub: t('Sail away') },
@@ -1267,6 +1271,25 @@ export default function Home() {
     { id: 'events', icon: '🎟️', label: t('Events'), sub: t('Concerts & shows') },
     { id: 'shipping', icon: '📦', label: t('Shipping'), sub: t('Send parcels') },
   ];
+  const tabById = Object.fromEntries(tabs.map(tab => [tab.id, tab]));
+
+  // The tiles: Transport, Stay and Ride group several tabs (shown as a row of options below), then the rest
+  const TAB_GROUPS = [
+    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, bus, train & cruise'), items: ['flights', 'bus', 'train', 'cruise'] },
+    { id: 'stay', icon: '🏨', motion: 'hotels', label: t('Stay'), sub: t('Hotels, homestays & more'), items: ['hotels'] },
+    { id: 'ride', icon: '🚗', motion: 'car', label: t('Ride'), sub: t('Car, dash & bike'), items: ['car', 'dash', 'bike'] },
+  ];
+  const tiles = [
+    ...TAB_GROUPS,
+    ...tabs.filter(tab => !TAB_GROUPS.some(g => g.items.includes(tab.id))).map(tab => ({ ...tab, motion: tab.id, items: [tab.id] })),
+  ];
+  const activeTile = tiles.find(g => g.items.includes(activeTab)) ?? tiles[0];
+  const STAY_TYPES: [string, string, string][] = [
+    ['hotels', '🏨', t('Hotels')], ['homestays', '🏡', t('Homestays')], ['resorts', '🏝️', t('Resorts')], ['hostels', '🛏️', t('Hostels & dorms')],
+    ['apartments', '🏢', t('Apartments')], ['villas', '🏘️', t('Villas')], ['guesthouses', '🛖', t('Guesthouses')], ['bnb', '☕', t('B&Bs')],
+  ];
+  const subPill = (active: boolean) => `inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold whitespace-nowrap transition ${
+    active ? 'bg-btn text-white shadow-sm' : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700'}`;
 
   const inputClass = "w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border border-gray-200 rounded-xl shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-brand-300 hover:bg-white focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100";
   // Field box: icon + small label + borderless input, highlighted while any child has focus
@@ -2082,10 +2105,10 @@ export default function Home() {
             role="tablist"
             aria-label="Services"
             onKeyDown={onTabKeyDown}
-            className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 2xl:grid-cols-12 gap-2 sm:gap-3 border-b border-gray-100 p-3 sm:p-5"
+            className="grid grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3 border-b border-gray-100 p-3 sm:p-5"
           >
-            {tabs.map((tab, i) => {
-              const isActive = activeTab === tab.id;
+            {tiles.map((tab, i) => {
+              const isActive = activeTile.id === tab.id;
               return (
                 <button
                   key={tab.id}
@@ -2093,8 +2116,8 @@ export default function Home() {
                   role="tab"
                   aria-selected={isActive}
                   tabIndex={isActive ? 0 : -1}
-                  onClick={() => { switchTab(tab.id); playIcon(tab.id, true); }}
-                  onMouseEnter={() => playIcon(tab.id)}
+                  onClick={() => { if (!isActive) switchTab(tab.items[0]); playIcon(tab.motion, true); }}
+                  onMouseEnter={() => playIcon(tab.motion)}
                   style={{ animationDelay: `${i * 40}ms` }}
                   className={`group relative overflow-hidden flex flex-col items-center justify-center gap-2 rounded-2xl px-2 py-4 sm:py-5 text-center transition-all duration-300 ease-out animate-[tileIn_400ms_ease-out_backwards] focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-200 ${
                     isActive
@@ -2109,7 +2132,7 @@ export default function Home() {
                   >
                     <span
                       aria-hidden
-                      ref={el => { iconRefs.current[tab.id] = el; }}
+                      ref={el => { iconRefs.current[tab.motion] = el; }}
                       className="inline-block text-4xl sm:text-[2.6rem] leading-none will-change-transform"
                     >
                       {tab.icon}
@@ -2122,8 +2145,35 @@ export default function Home() {
             })}
           </div>
 
+          {/* Options inside a group: Transport and Ride pick a tab, Stay picks the property type */}
+          {(activeTile.items.length > 1 || activeTile.id === 'stay') && (
+            <div className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 sm:px-5 py-3 bg-gray-50/60">
+              {activeTile.id === 'stay'
+                ? STAY_TYPES.map(([id, icon, label]) => (
+                  <button key={id} onClick={() => { setStayType(id); setResults([]); setHasSearched(false); }} className={subPill(stayType === id)}>
+                    <span aria-hidden>{icon}</span>{label}
+                  </button>
+                ))
+                : activeTile.items.map(id => (
+                  <button key={id} onClick={() => switchTab(id)} className={subPill(activeTab === id)}>
+                    <span aria-hidden>{tabById[id].icon}</span>{tabById[id].label}
+                  </button>
+                ))}
+            </div>
+          )}
+
           {/* Forms */}
           <div key={activeTab} role="tabpanel" className="p-5 sm:p-8 animate-[panelIn_250ms_ease-out]">
+
+            {/* Bike: no booking partner yet */}
+            {activeTab === 'bike' && (
+              <div className="text-center py-10">
+                <p className="text-5xl mb-3" aria-hidden>🚲</p>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">{t('Bike & scooter rides')}</h3>
+                <p className="text-gray-600 max-w-md mx-auto mb-5">{t('Booking bikes, e-bikes and scooters on Lyrtrip opens soon. Need to get there now? Book a car.')}</p>
+                <button onClick={() => switchTab('car')} className="px-5 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover transition">{t('Book a car')}</button>
+              </div>
+            )}
 
             {/* Hotels */}
             {activeTab === 'hotels' && (
@@ -2133,7 +2183,7 @@ export default function Home() {
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Destination</label>
                     <LocationPicker
                       onLocationSelect={(loc) => handleLocationSelect('destinationLocation', loc)}
-                      placeholder="Select hotel location"
+                      placeholder={t('Where are you going?')}
                     />
                   </div>
                   <div>
