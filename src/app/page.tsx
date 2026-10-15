@@ -1342,15 +1342,20 @@ export default function Home() {
   ];
   const tabById = Object.fromEntries(tabs.map(tab => [tab.id, tab]));
 
-  // The tiles: Transport, Stay and Ride group several tabs (shown as a row of options below), then the rest
+  // The tiles: Transport, Stay, Ride and Events group several tabs (shown as a row of options below)
   const TAB_GROUPS = [
     { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, bus, train & cruise'), items: ['flights', 'bus', 'train', 'cruise'] },
     { id: 'stay', icon: '🏨', motion: 'hotels', label: t('Stay'), sub: t('Hotels, homestays & more'), items: ['hotels'] },
     { id: 'ride', icon: '🚗', motion: 'car', label: t('Ride'), sub: t('Car, dash & bike'), items: ['car', 'dash', 'bike'] },
+    { id: 'eventsgroup', icon: '🎟️', motion: 'events', label: t('Events'), sub: t('Shows, summits & charity'), items: ['events', 'charity'] },
   ];
   const tiles = [
-    ...TAB_GROUPS,
-    ...tabs.filter(tab => !TAB_GROUPS.some(g => g.items.includes(tab.id))).map(tab => ({ ...tab, motion: tab.id, items: [tab.id] })),
+    // In tab order: a group sits where its first tab would be
+    ...tabs.flatMap(tab => {
+      const group = TAB_GROUPS.find(g => g.items.includes(tab.id));
+      if (!group) return [{ ...tab, motion: tab.id, items: [tab.id] }];
+      return group.items[0] === tab.id ? [group] : [];
+    }),
   ];
   const activeTile = tiles.find(g => g.items.includes(activeTab)) ?? tiles[0];
   const STAY_TYPES: [string, string, string][] = [
@@ -2231,7 +2236,7 @@ export default function Home() {
             })}
           </div>
 
-          {/* Options inside a group: Transport and Ride pick a tab, Stay picks the property type */}
+          {/* Options inside a group: Transport, Ride and Events pick a tab, Stay picks the property type */}
           {(activeTile.items.length > 1 || activeTile.id === 'stay') && (
             <div className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 sm:px-5 py-3 bg-gray-50/60">
               {activeTile.id === 'stay'
