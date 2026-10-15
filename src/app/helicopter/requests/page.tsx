@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import HelicopterForm from '@/components/HelicopterForm';
-import { heliCall, heliDraftFrom, HELI_STATUS_STYLE, type HeliDraft, type HeliOptions, type HeliRequest } from '@/lib/helicopter';
+import { heliCall, heliDraftFrom, HELI_ICON, HELI_STATUS_STYLE, type HeliDraft, type HeliOptions, type HeliRequest } from '@/lib/helicopter';
 import { rememberReturnTo } from '@/lib/returnTo';
 
 const card = 'bg-white rounded-2xl shadow-sm ring-1 ring-gray-100 p-5 sm:p-6';
@@ -12,7 +12,7 @@ const primary = 'px-5 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg
 const small = 'px-3 py-1.5 bg-btn text-white rounded-lg text-xs font-semibold disabled:bg-gray-300';
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
-// Helicopter charters requested through Lyrtrip: quotes to pay, details to fix, bookings confirmed
+// Air charters (helicopter, seaplane, air ambulance) requested through Lyrtrip: quotes to pay, details to fix, bookings confirmed
 export default function HelicopterRequestsPage() {
   const { user, loading } = useAuth();
   const [rows, setRows] = useState<HeliRequest[] | null>(null);
@@ -36,7 +36,7 @@ export default function HelicopterRequestsPage() {
       if (paySession) {
         try {
           await heliCall({ action: 'pay.confirm', sessionId: paySession });
-          setNotice('Paid. Lyrtrip is booking your helicopter now and will email you the confirmation.');
+          setNotice('Paid. Lyrtrip is booking your flight now and will email you the confirmation.');
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Could not confirm the payment.');
         }
@@ -56,7 +56,7 @@ export default function HelicopterRequestsPage() {
     window.location.href = url;
   });
   const cancel = (r: HeliRequest) => act(r.id, async () => {
-    if (!confirm(`Cancel your helicopter request for ${r.date}?`)) return;
+    if (!confirm(`Cancel your ${r.serviceLabel.toLowerCase()} request for ${r.date}?`)) return;
     await heliCall({ action: 'request.cancel', id: r.id });
   });
   const resend = () => editing && act(editing.id, async () => {
@@ -68,8 +68,8 @@ export default function HelicopterRequestsPage() {
   if (!loading && !user) {
     return (
       <div className="flex-1 bg-gray-50 py-16 px-4 text-center">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">My helicopter charters</h1>
-        <p className="text-gray-600 mb-6 max-w-lg mx-auto">Request a charter from the Helicopter tab. Lyrtrip finds an operator, tells you the price and books it for you.</p>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">My air charters</h1>
+        <p className="text-gray-600 mb-6 max-w-lg mx-auto">Request a helicopter, seaplane or air ambulance from the Transport tab. Lyrtrip finds an operator, tells you the price and books it for you.</p>
         <Link href="/login" onClick={() => rememberReturnTo('/helicopter/requests')} className={primary}>Sign in</Link>
       </div>
     );
@@ -80,20 +80,20 @@ export default function HelicopterRequestsPage() {
     <div className="flex-1 bg-gray-50 py-8 px-4">
       <div className="max-w-3xl mx-auto space-y-5">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">My helicopter charters</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">My air charters</h1>
           <p className="text-gray-600 text-sm">Lyrtrip finds the operator, quotes the price (charter plus a {pct}% service charge), and books it once you pay.</p>
         </div>
         {notice && <p role="status" className="rounded-xl bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800 ring-1 ring-emerald-200">{notice}</p>}
         {error && <p role="alert" className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-700 ring-1 ring-red-200">{error}</p>}
         <div className={card}>
           {rows === null && <p className="text-sm text-gray-500">Loading…</p>}
-          {rows?.length === 0 && <p className="text-sm text-gray-500">No charter requests yet. <Link href="/?tab=helicopter" className="text-brand-600 font-semibold">Charter a helicopter</Link></p>}
+          {rows?.length === 0 && <p className="text-sm text-gray-500">No charter requests yet. <Link href="/?tab=helicopter" className="text-brand-600 font-semibold">Charter a flight</Link></p>}
           <div className="divide-y divide-gray-100">
             {rows?.map(r => (
               <div key={r.id} className="py-4 first:pt-0 last:pb-0 text-sm">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <p className="font-semibold text-gray-900">🚁 {r.to ? `${r.from} → ${r.to}` : r.from}{r.roundTrip ? ' (return)' : ''}</p>
+                    <p className="font-semibold text-gray-900">{HELI_ICON[r.service] ?? '🚁'} {r.serviceLabel}: {r.to ? `${r.from} → ${r.to}` : r.from}{r.roundTrip ? ' (return)' : ''}</p>
                     <p className="text-gray-600">
                       {r.charterLabel.replace(/ \(.*\)$/, '')} · {r.date}{r.time ? ` ${r.time}` : ''}{r.roundTrip ? `, back ${r.returnDate}${r.returnTime ? ` ${r.returnTime}` : ''}` : ''}{r.hours ? ` · ${r.hours} h` : ''}
                     </p>

@@ -1328,6 +1328,8 @@ export default function Home() {
   const tabs = [
     { id: 'flights', icon: '✈️', label: t('Flights'), sub: t('Fly anywhere') },
     { id: 'helicopter', icon: '🚁', label: t('Helicopter'), sub: t('Charter a helicopter') },
+    { id: 'seaplane', icon: '🛩️', label: t('Seaplane'), sub: t('Island & water flights') },
+    { id: 'airambulance', icon: '🚑', label: t('Air ambulance'), sub: t('Medical flights') },
     { id: 'hotels', icon: '🏨', label: t('Hotels'), sub: t('Places to stay') },
     { id: 'car', icon: '🚗', label: t('Car'), sub: t('Book a ride') },
     { id: 'dash', icon: '🛵', label: t('Dash'), sub: t('Same-day courier') },
@@ -1346,7 +1348,7 @@ export default function Home() {
 
   // The tiles: Transport, Stay, Ride and Events group several tabs (shown as a row of options below)
   const TAB_GROUPS = [
-    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, helicopter, bus, train & cruise'), items: ['flights', 'helicopter', 'bus', 'train', 'cruise'] },
+    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, air charters, bus, train & cruise'), items: ['flights', 'helicopter', 'seaplane', 'airambulance', 'bus', 'train', 'cruise'] },
     { id: 'stay', icon: '🏨', motion: 'hotels', label: t('Stay'), sub: t('Hotels, homestays & more'), items: ['hotels'] },
     { id: 'ride', icon: '🚗', motion: 'car', label: t('Ride'), sub: t('Car, dash & bike'), items: ['car', 'dash', 'bike'] },
     { id: 'eventsgroup', icon: '🎟️', motion: 'events', label: t('Events'), sub: t('Shows, summits & charity'), items: ['events', 'charity'] },
@@ -2826,8 +2828,10 @@ export default function Home() {
               </div>
             )}
 
-            {/* Helicopter charters sold through Lyrtrip */}
-            {activeTab === 'helicopter' && <HelicopterPanel />}
+            {/* Air charters sold through Lyrtrip: helicopter, seaplane and air ambulance */}
+            {activeTab === 'helicopter' && <HelicopterPanel key="helicopter" service="helicopter" />}
+            {activeTab === 'seaplane' && <HelicopterPanel key="seaplane" service="seaplane" />}
+            {activeTab === 'airambulance' && <HelicopterPanel key="ambulance" service="ambulance" />}
 
             {/* Charity: donations to established charities, and charity events */}
             {activeTab === 'charity' && (

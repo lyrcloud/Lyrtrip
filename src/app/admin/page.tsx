@@ -205,7 +205,7 @@ export default function AdminPage() {
                 ['studyapps', 'Study applications'],
                 ['eventtix', 'Event tickets'],
                 ['tourreqs', 'Tour requests'],
-                ['heli', 'Helicopter charters'],
+                ['heli', 'Air charters'],
                 ['donations', 'Donations'],
               ] as const).map(([key, label]) => (
                 <button key={key} onClick={() => setTab(key)}

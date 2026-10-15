@@ -1306,7 +1306,9 @@ export function DonationsPanel({ call }: { call: Call }) {
 }
 
 interface AdminHeliRequest {
-  id: string; status: string; statusLabel: string; charter: string; charterLabel: string; roundTrip: boolean; from: string; to: string;
+  id: string; service: string; serviceLabel: string;
+  medical: { condition: string; mobility: string; oxygen: boolean; escort: string; urgency: string; bedConfirmed: boolean; doctor: string; insurance: string } | null;
+  status: string; statusLabel: string; charter: string; charterLabel: string; roundTrip: boolean; from: string; to: string;
   date: string; time: string; returnDate: string; returnTime: string; flexibleDates: boolean; hours: number | null; aircraft: string;
   luggageKg: number; budget: number | null; note: string; adminNote: string; accountEmail: string; createdAt: string;
   contact: { name: string; email: string; phone: string; country: string };
@@ -1317,10 +1319,10 @@ interface AdminHeliRequest {
 
 const HELI_STEPS: [string, string][] = [
   ['submitted', 'Received'], ['info_needed', 'More details needed'], ['quoted', 'Quote price (price to pay)'], ['processing', 'Paid: booking operator'],
-  ['confirmed', 'Helicopter booked'], ['unavailable', 'Not available (refunds if paid)'], ['refunded', 'Refund in full'],
+  ['confirmed', 'Booked'], ['unavailable', 'Not available (refunds if paid)'], ['refunded', 'Refund in full'],
 ];
 
-// Helicopter charters sold through Lyrtrip: find an operator, quote (+ service), book once paid, or refund
+// Air charters (helicopter, seaplane, air ambulance) sold through Lyrtrip: find an operator, quote (+ service), book once paid, or refund
 export function HeliRequestsPanel({ call }: { call: Call }) {
   const [data, setData] = useState<{ requests: AdminHeliRequest[]; serviceRate: number; quoteHours: number } | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -1363,12 +1365,12 @@ export function HeliRequestsPanel({ call }: { call: Call }) {
       </div>
       <div className={`${panel} divide-y divide-gray-100`}>
         {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
-        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No helicopter requests yet.</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No air charter requests yet.</p>}
         {rows?.map(r => (
           <div key={r.id} className="p-4 text-sm">
             <button onClick={() => expand(r)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
               <div className="min-w-0">
-                <p className="font-semibold text-gray-900">{r.contact.name} · {route(r)}</p>
+                <p className="font-semibold text-gray-900">{r.medical?.urgency.startsWith('As soon') && ['submitted', 'quoted', 'processing'].includes(r.status) && <span className="mr-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white">URGENT</span>}{r.serviceLabel} · {r.contact.name} · {route(r)}</p>
                 <p className="text-gray-600">{r.charterLabel} · {r.date}{r.time ? ` ${r.time}` : ''} · {r.passengers.length} pax</p>
                 <p className="text-xs text-gray-400">Requested {new Date(r.createdAt).toLocaleString()}{r.budget ? ` · budget ${usd(r.budget)}` : ''}{r.quote ? ` · ${usd(r.quote.total)}${r.quote.paidAt ? ' paid' : ' quoted'}` : ''}{r.refund ? ' · refunded' : ''}</p>
               </div>
@@ -1386,6 +1388,12 @@ export function HeliRequestsPanel({ call }: { call: Call }) {
                   {r.accountEmail && r.accountEmail !== r.contact.email && <p className="text-xs text-gray-500">Account: {r.accountEmail}</p>}
                   <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Passengers</p>
                   {r.passengers.map((p, i) => <p key={i} className="text-gray-700">{i + 1}. {p.fullName} · {p.weightKg} kg · born {p.dateOfBirth} · {p.nationality} · {p.idType} {p.idNumber}</p>)}
+                  {r.medical && (<>
+                    <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Medical</p>
+                    <p className="text-gray-700 whitespace-pre-line">{r.medical.condition}</p>
+                    <p className="text-gray-700">{r.medical.mobility}{r.medical.oxygen ? ' · oxygen' : ''} · escort: {r.medical.escort} · {r.medical.urgency}</p>
+                    <p className="text-gray-700">Receiving hospital accepted: {r.medical.bedConfirmed ? 'yes' : 'not yet'}{r.medical.doctor ? ` · doctor: ${r.medical.doctor}` : ''}{r.medical.insurance ? ` · insurer: ${r.medical.insurance}` : ''}</p>
+                  </>)}
                   {r.note && <p className="whitespace-pre-line bg-gray-50 rounded-lg p-2">Customer note: {r.note}</p>}
                 </div>
                 <div className="space-y-2">
