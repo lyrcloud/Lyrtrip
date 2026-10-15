@@ -15,6 +15,7 @@ import ShippingTab from '@/components/ShippingTab';
 import CourierDelivery from '@/components/CourierDelivery';
 import RideBooking from '@/components/RideBooking';
 import JobProfilePromo from '@/components/JobProfilePromo';
+import JobApplyDialog, { type ApplyJob } from '@/components/JobApplyDialog';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -158,8 +159,8 @@ interface SearchResult {
   jobType?: string;
   postedAt?: string;
   benefits?: string[];
-  applyLink?: string;
-  via?: string;
+  // sealed apply details: applicants apply through Lyrtrip, never straight to the employer
+  applyToken?: string;
   highlights?: { title: string; items: string[] }[];
 }
 
@@ -553,6 +554,7 @@ export default function Home() {
   const [stayType, setStayType] = useState('hotels');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [applyJob, setApplyJob] = useState<ApplyJob | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [showLocationMap, setShowLocationMap] = useState(false);
   const [flightSearchError, setFlightSearchError] = useState<string | null>(null);
@@ -1774,17 +1776,17 @@ export default function Home() {
               <div className="flex items-center justify-between mt-3">
                 <div className="flex items-center gap-3 text-xs text-gray-400">
                   {result.postedAt && <span>🕐 {result.postedAt}</span>}
-                  {result.via && <span>via {result.via}</span>}
                 </div>
-                {result.applyLink && (
-                  <a
-                    href={result.applyLink}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                {result.applyToken ? (
+                  <button
+                    type="button"
+                    onClick={() => setApplyJob({ name: result.name, company: result.company, jobLocation: result.jobLocation, applyToken: result.applyToken! })}
                     className="px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
                   >
-                    Apply Now →
-                  </a>
+                    Apply via Lyrtrip →
+                  </button>
+                ) : (
+                  <span className="text-xs text-gray-400">Example listing</span>
                 )}
               </div>
             </div>
@@ -2722,6 +2724,7 @@ export default function Home() {
                   {searchBtn('career')}
                 </div>
                 <JobList />
+                {applyJob && <JobApplyDialog job={applyJob} onClose={() => setApplyJob(null)} />}
               </div>
             )}
 

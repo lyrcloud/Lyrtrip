@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { jobsCall, uploadJobFile, PLAN_STYLE, type Education, type Experience, type JobPlans, type JobProfile, type OwnerView } from '@/lib/jobs';
+import { jobsCall, uploadJobFile, APP_STYLE, PLAN_STYLE, type Education, type JobApplication, type Experience, type JobPlans, type JobProfile, type OwnerView } from '@/lib/jobs';
 import { rememberReturnTo } from '@/lib/returnTo';
 
 const EMPTY: JobProfile = {
@@ -31,6 +31,44 @@ function ListInput({ value, onChange, placeholder }: { value: string[]; onChange
     <input className={input} value={text} placeholder={placeholder}
       onChange={e => setText(e.target.value)}
       onBlur={() => onChange(text.split(',').map(s => s.trim()).filter(Boolean))} />
+  );
+}
+
+// Jobs applied for through Lyrtrip, with where each one stands
+function MyApplications() {
+  const [apps, setApps] = useState<JobApplication[] | null>(null);
+  const load = () => jobsCall<{ applications: JobApplication[] }>({ action: 'applications.mine' }).then(d => setApps(d.applications)).catch(() => setApps([]));
+  useEffect(() => { load(); }, []);
+  const withdraw = async (a: JobApplication) => {
+    if (!confirm(`Withdraw your application for ${a.title}?`)) return;
+    await jobsCall({ action: 'application.withdraw', id: a.id }).catch(err => alert(err instanceof Error ? err.message : 'Could not withdraw'));
+    load();
+  };
+  return (
+    <div id="applications" className={card}>
+      <h2 className="font-bold text-gray-900">My applications</h2>
+      <p className="text-sm text-gray-600 mb-3">Apply from the Job tab and Lyrtrip sends your profile and CV to the employer. Replies come to you through Lyrtrip.</p>
+      {apps === null && <p className="text-sm text-gray-500">Loading…</p>}
+      {apps?.length === 0 && <p className="text-sm text-gray-500">No applications yet. <Link href="/" className="text-brand-600 font-semibold">Search jobs</Link></p>}
+      <div className="divide-y divide-gray-100">
+        {apps?.map(a => (
+          <div key={a.id} className="py-3 flex flex-wrap items-start justify-between gap-2 text-sm">
+            <div className="min-w-0">
+              <p className="font-semibold text-gray-900">{a.title}</p>
+              <p className="text-gray-600">{[a.company, a.location].filter(Boolean).join(' · ')}</p>
+              <p className="text-xs text-gray-400">Applied {new Date(a.createdAt).toLocaleDateString()}</p>
+              {a.message && <p className="mt-1 text-gray-700 whitespace-pre-line bg-gray-50 rounded-lg p-2">{a.message}</p>}
+            </div>
+            <div className="text-right space-y-1">
+              <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${APP_STYLE[a.status] ?? ''}`}>{a.statusLabel}</span>
+              {['submitted', 'forwarded', 'interview'].includes(a.status) && (
+                <button onClick={() => withdraw(a)} className="block ml-auto text-xs text-gray-500 underline">Withdraw</button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -117,7 +155,7 @@ export default function JobProfilePage() {
     apply(await jobsCall<OwnerView>({ action: cancel ? 'subscription.cancel' : 'subscription.resume' }));
   });
   const remove = () => run('delete', async () => {
-    if (!confirm('Delete your job profile, photo and CV? An active plan ends now and is not refunded.')) return;
+    if (!confirm('Delete your job profile, photo, CV and job applications? An active plan ends now and is not refunded.')) return;
     await jobsCall({ action: 'profile.delete' });
     setView({ ...view, profile: null, listed: false, subscription: null, live: false, hasPhoto: false, hasCv: false, photoUrl: null, cvUrl: null, missing: [] });
     setP(EMPTY);
@@ -323,6 +361,8 @@ export default function JobProfilePage() {
             {view.missing.length > 0 && <p className="text-xs text-gray-500">Finish the required fields above to choose a plan.</p>}
           </>)}
         </div>
+
+        <MyApplications />
 
         {view.profile && (
           <div className="text-center">

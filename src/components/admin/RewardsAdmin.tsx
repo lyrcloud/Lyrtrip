@@ -749,3 +749,97 @@ export function JobProfilesPanel({ call }: { call: Call }) {
     </div>
   );
 }
+
+interface AdminJobApplication {
+  id: string; sub: string; title: string; company: string; location: string; salary: string | null; jobType: string | null;
+  status: string; statusLabel: string; message: string; createdAt: string; updatedAt: string;
+  applicant: { name: string; email: string; phone: string; headline: string; city: string; country: string; yearsExperience: number | null; skills: string[]; cvName: string; cvUrl: string | null };
+  coverLetter: string; via: string; applyOptions: { title: string; link: string }[]; shareLink: string | null; description: string; adminNote: string;
+}
+
+const JOB_APP_STEPS: [string, string][] = [
+  ['submitted', 'Received'], ['forwarded', 'Sent to employer'], ['interview', 'Interview'], ['rejected', 'Not selected'], ['hired', 'Offer made'],
+];
+
+// Applications made through Lyrtrip: admins forward the CV to the employer and relay replies to the applicant
+export function JobApplicationsPanel({ call }: { call: Call }) {
+  const [rows, setRows] = useState<AdminJobApplication[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ status: string; message: string; note: string }>({ status: '', message: '', note: '' });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    call({ action: 'jobapps.list' }).then(d => setRows(d.applications as AdminJobApplication[])).catch(() => setRows([]));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+  const expand = (a: AdminJobApplication) => {
+    setOpen(open === a.id ? null : a.id);
+    setDraft({ status: a.status === 'withdrawn' ? 'submitted' : a.status, message: '', note: a.adminNote });
+  };
+  const save = async (a: AdminJobApplication) => {
+    setBusy(true);
+    try {
+      await call({ action: 'jobapps.update', id: a.id, status: draft.status, message: draft.message, note: draft.note });
+      setOpen(null);
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not update the application');
+    }
+    setBusy(false);
+  };
+  const count = (s: string) => (rows ?? []).filter(r => r.status === s).length;
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[['Applications', String(rows?.length ?? 0)], ['To forward', String(count('submitted'))], ['Sent to employer', String(count('forwarded'))], ['Interviews', String(count('interview'))]]
+          .map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No job applications yet.</p>}
+        {rows?.map(a => (
+          <div key={a.id} className="p-4 text-sm">
+            <button onClick={() => expand(a)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-900">{a.applicant.name} <span className="font-normal text-gray-500">for</span> {a.title}</p>
+                <p className="text-gray-600">{[a.company, a.location, a.via && `via ${a.via}`].filter(Boolean).join(' · ')}</p>
+                <p className="text-xs text-gray-400">Applied {new Date(a.createdAt).toLocaleString()}</p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{a.statusLabel}</span>
+            </button>
+            {open === a.id && (
+              <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase text-gray-500">Applicant</p>
+                  <p>{a.applicant.headline}</p>
+                  <p className="text-gray-600">{a.applicant.email} · {a.applicant.phone}</p>
+                  <p className="text-gray-600">{[a.applicant.city, a.applicant.country].filter(Boolean).join(', ')}{a.applicant.yearsExperience != null ? ` · ${a.applicant.yearsExperience} yrs` : ''}</p>
+                  {a.applicant.skills.length > 0 && <p className="text-gray-600">{a.applicant.skills.join(', ')}</p>}
+                  {a.applicant.cvUrl ? <a href={a.applicant.cvUrl} className="text-brand-600 font-semibold">Download CV ({a.applicant.cvName})</a> : <p className="text-red-600">CV unavailable</p>}
+                  {a.coverLetter && <p className="whitespace-pre-line bg-gray-50 rounded-lg p-2">{a.coverLetter}</p>}
+                  <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Employer apply links</p>
+                  {a.applyOptions.length === 0 && !a.shareLink && <p className="text-gray-500">None found; search the company site.</p>}
+                  {a.applyOptions.map(o => <a key={o.link} href={o.link} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">{o.title || o.link}</a>)}
+                  {a.shareLink && <a href={a.shareLink} target="_blank" rel="noopener noreferrer" className="block text-brand-600 truncate">Google Jobs listing</a>}
+                  {a.description && <details><summary className="cursor-pointer text-gray-500">Job description</summary><p className="whitespace-pre-line text-gray-700 mt-1">{a.description}</p></details>}
+                </div>
+                <div className="space-y-2">
+                  {a.status === 'withdrawn' ? <p className="text-gray-500">The applicant withdrew this application.</p> : (<>
+                    <label className="block text-xs font-semibold text-gray-600">Status</label>
+                    <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
+                      {JOB_APP_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    <label className="block text-xs font-semibold text-gray-600">Message to the applicant (emailed; no employer contact details)</label>
+                    <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <label className="block text-xs font-semibold text-gray-600">Internal note</label>
+                    <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+                    <button onClick={() => save(a)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>
+                  </>)}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

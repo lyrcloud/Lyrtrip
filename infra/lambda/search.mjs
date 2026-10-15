@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
 import Stripe from 'stripe';
 import Anthropic from '@anthropic-ai/sdk';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
@@ -2001,6 +2001,38 @@ function priceInsights(p) {
   };
 }
 
+// Applicants apply through Lyrtrip, so job results never show the employer's website, email or phone.
+// The real apply links travel inside a sealed token that only this Lambda can open.
+const JOB_CONTACT_NOTE = '[apply via Lyrtrip]';
+function scrubJobContacts(text) {
+  return String(text ?? '')
+    .replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, JOB_CONTACT_NOTE)
+    .replace(/\b(?:https?:\/\/|www\.)\S+/gi, JOB_CONTACT_NOTE)
+    .replace(/\b[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|co|in|uk|us|ca|au|de|jobs|careers|ai|biz|info)(?:\/\S*)?\b/gi, JOB_CONTACT_NOTE)
+    // Phone numbers: runs of digits and separators with at least 9 digits
+    .replace(/\+?\(?\d[\d\s().-]{7,}\d/g, m => (m.replace(/\D/g, '').length >= 9 ? JOB_CONTACT_NOTE : m))
+    .replace(/(?:\[apply via Lyrtrip\][\s,;/]*){2,}/g, `${JOB_CONTACT_NOTE} `)
+    .trim();
+}
+
+const jobTokenKey = () => createHash('sha256').update(process.env.JOB_APPLY_SECRET || `${process.env.STRIPE_SECRET_KEY}:job-apply`).digest();
+function sealJob(data) {
+  const iv = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', jobTokenKey(), iv);
+  const enc = Buffer.concat([c.update(JSON.stringify(data), 'utf8'), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), enc]).toString('base64url');
+}
+function openJob(token) {
+  try {
+    const buf = Buffer.from(String(token ?? ''), 'base64url');
+    const d = createDecipheriv('aes-256-gcm', jobTokenKey(), buf.subarray(0, 12));
+    d.setAuthTag(buf.subarray(12, 28));
+    return JSON.parse(Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
 async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
   let q = title || 'jobs';
 
@@ -2030,8 +2062,7 @@ async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
     name:        j.title,
     company:     j.company_name,
     jobLocation: j.location,
-    via:         j.via,
-    description: (j.description ?? '').slice(0, 400),
+    description: scrubJobContacts(j.description).slice(0, 400),
     salary:      j.detected_extensions?.salary ?? null,
     jobType:     j.detected_extensions?.schedule_type ?? null,
     postedAt:    j.detected_extensions?.posted_at ?? null,
@@ -2042,8 +2073,13 @@ async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
       j.detected_extensions?.vision_coverage  ? 'Vision'           : null,
     ].filter(Boolean),
     imageUrl:    j.thumbnail ?? null,
-    applyLink:   j.apply_options?.[0]?.link ?? j.share_link ?? null,
-    highlights:  (j.job_highlights ?? []).map(h => ({ title: h.title, items: (h.items ?? []).slice(0, 4) })),
+    applyToken:  sealJob({
+      jobId: j.job_id ?? null, title: j.title, company: j.company_name, location: j.location ?? '', via: j.via ?? '',
+      salary: j.detected_extensions?.salary ?? null, jobType: j.detected_extensions?.schedule_type ?? null,
+      applyOptions: (j.apply_options ?? []).slice(0, 5).map(o => ({ title: o.title, link: o.link })),
+      shareLink: j.share_link ?? null, description: (j.description ?? '').slice(0, 1500), at: Date.now(),
+    }),
+    highlights:  (j.job_highlights ?? []).map(h => ({ title: scrubJobContacts(h.title), items: (h.items ?? []).slice(0, 4).map(scrubJobContacts) })),
     rating:      null,
     price:       null,
   }));
@@ -3246,6 +3282,43 @@ async function handleAdmin(event) {
           }))),
           prices: Object.fromEntries(Object.entries(JOB_PERIODS).map(([id, per]) => [id, per.price])),
         });
+      }
+
+      // Applications made through Lyrtrip; admins see the employer's apply links and forward the CV
+      case 'jobapps.list': {
+        const rows = await db.collection('job_applications').find({}).sort({ createdAt: -1 }).limit(500).toArray();
+        return json(200, {
+          applications: await Promise.all(rows.map(async a => ({
+            ...applicantJobApp(a), sub: a.sub, applicant: { ...a.applicant, cvKey: undefined, cvUrl: await signedFileUrl(a.applicant?.cvKey, a.applicant?.cvName) },
+            coverLetter: a.coverLetter ?? '', via: a.job.via ?? '', applyOptions: a.job.applyOptions ?? [], shareLink: a.job.shareLink ?? null,
+            description: a.job.description ?? '', adminNote: a.adminNote ?? '',
+          }))),
+        });
+      }
+
+      // Moves an application along; the message (if any) is emailed to the applicant, without employer contact details
+      case 'jobapps.update': {
+        const status = ['submitted', 'forwarded', 'interview', 'rejected', 'hired'].includes(body.status) ? body.status : null;
+        if (!status) return json(400, { error: 'Unknown status' });
+        const apps = db.collection('job_applications');
+        const a = await apps.findOne({ _id: String(body.id ?? '') });
+        if (!a) return json(404, { error: 'Application not found' });
+        if (a.status === 'withdrawn') return json(409, { error: 'The applicant withdrew this application' });
+        const message = String(body.message ?? '').trim().slice(0, 2000);
+        const now = new Date().toISOString();
+        await apps.updateOne({ _id: a._id }, { $set: {
+          status, applicantMessage: message, adminNote: String(body.note ?? a.adminNote ?? '').slice(0, 1000), updatedAt: now,
+          [`statusAt.${status}`]: now,
+        } });
+        if (status !== a.status || message) {
+          await sendEmail({
+            to: a.applicant.email, subject: `${JOB_APP_STATUS[status]}: ${a.job.title} at ${a.job.company}`,
+            html: jobAppEmail(JOB_APP_STATUS[status], [['Job', a.job.title], ['Company', a.job.company], ...(message ? [['Message from Lyrtrip', message]] : [])],
+              `Reply to this email or see ${SITE_URL}/jobs/profile. Please keep all contact about this job through Lyrtrip.`),
+            text: `${JOB_APP_STATUS[status]}: ${a.job.title} at ${a.job.company}.${message ? `\n\n${message}` : ''}`,
+          });
+        }
+        return json(200, { ok: true });
       }
 
       // Hides a profile from the directory (e.g. an unsuitable photo); the subscription is untouched
@@ -4938,6 +5011,31 @@ async function ownerJobView(p) {
 
 const escapeRegex = v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// Job applications go through Lyrtrip: we keep the applicant's details and forward them to the employer
+const JOB_APP_STATUS = {
+  submitted: 'Received by Lyrtrip', forwarded: 'Sent to the employer', interview: 'Interview requested',
+  rejected: 'Not selected', hired: 'Offer made', withdrawn: 'Withdrawn',
+};
+function applyMissing(p) {
+  const m = [];
+  if (!p?.firstName || !p?.lastName) m.push('Full name');
+  if (!p?.email) m.push('Email');
+  if (!p?.phone) m.push('Phone');
+  if ((p?.headline ?? '').length < 5) m.push('Headline');
+  if (!p?.cvKey) m.push('CV');
+  return m;
+}
+const jobAppId = (sub, job) => `${sub}:${createHash('sha256').update(job.jobId || `${job.title}|${job.company}|${job.location}`).digest('hex').slice(0, 24)}`;
+// What the applicant sees: never the employer's links
+const applicantJobApp = a => ({
+  id: a._id, title: a.job.title, company: a.job.company, location: a.job.location, salary: a.job.salary ?? null, jobType: a.job.jobType ?? null,
+  status: a.status, statusLabel: JOB_APP_STATUS[a.status] ?? a.status, message: a.applicantMessage ?? '', createdAt: a.createdAt, updatedAt: a.updatedAt,
+});
+const jobAppEmail = (heading, rows, foot) => `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#111">
+  <h2 style="color:#0f766e">${heading}</h2>
+  <table style="border-collapse:collapse;width:100%">${rows.map(([k, v]) => `<tr><td style="padding:6px 8px;color:#555;vertical-align:top">${k}</td><td style="padding:6px 8px">${String(v ?? '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\n/g, '<br>')}</td></tr>`).join('')}</table>
+  <p style="color:#555;font-size:13px">${foot}</p></div>`;
+
 async function handleJobs(event) {
   const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
   const db = await getDb();
@@ -5004,7 +5102,9 @@ async function handleJobs(event) {
         p.updatedAt = new Date().toISOString();
         Object.assign(p, jobListingFields(p));
         await coll.replaceOne({ _id: p._id }, p, { upsert: true });
-        if (old && old !== key) await deleteJobFile(old);
+        // A replaced CV stays while an application still points at it
+        const inUse = kind === 'cv' && old && await db.collection('job_applications').findOne({ 'applicant.cvKey': old }, { projection: { _id: 1 } });
+        if (old && old !== key && !inUse) await deleteJobFile(old);
         return json(200, await ownerJobView(p));
       }
 
@@ -5066,9 +5166,12 @@ async function handleJobs(event) {
         if (p.subscription?.stripeSubscriptionId && subLive(p.subscription)) {
           await mainStripe().subscriptions.cancel(p.subscription.stripeSubscriptionId).catch(err => console.error('Cancelling a job plan failed:', err.message));
         }
-        await Promise.all([deleteJobFile(p.photoKey), deleteJobFile(p.cvKey)]);
+        const apps = await db.collection('job_applications').find({ sub: p._id }, { projection: { 'applicant.cvKey': 1 } }).toArray();
+        const keys = new Set([p.photoKey, p.cvKey, ...apps.map(a => a.applicant?.cvKey)].filter(Boolean));
+        await Promise.all([...keys].map(deleteJobFile));
         await coll.deleteOne({ _id: p._id });
         await db.collection('job_profile_views').deleteMany({ profileId: p._id });
+        await db.collection('job_applications').deleteMany({ sub: p._id });
         return json(200, { deleted: true });
       }
 
@@ -5110,6 +5213,70 @@ async function handleJobs(event) {
           if (r.upsertedCount) await coll.updateOne({ _id: id }, { $inc: { companyViews: 1 } });
         }
         return json(200, { profile: await talentProfile(p, { contact: company || own }), viewerIsCompany: company, own });
+      }
+
+      // Before applying: is the profile ready, and has this person applied to this job already?
+      case 'apply.check': {
+        const job = openJob(body.token);
+        if (!job) throw new JobError('This job listing has expired. Please search again.');
+        const p = await coll.findOne({ _id: me().sub });
+        const existing = await db.collection('job_applications').findOne({ _id: jobAppId(me().sub, job) });
+        return json(200, {
+          missing: applyMissing(p), name: p ? jobName(p) : '', email: p?.email ?? me().email, phone: p?.phone ?? '', headline: p?.headline ?? '',
+          cvName: p?.cvName ?? null, application: existing && existing.status !== 'withdrawn' ? applicantJobApp(existing) : null,
+        });
+      }
+
+      case 'apply': {
+        const job = openJob(body.token);
+        if (!job) throw new JobError('This job listing has expired. Please search again.');
+        if (Date.now() - (job.at ?? 0) > 30 * 86400_000) throw new JobError('This job listing is over 30 days old. Please search again.');
+        const p = await coll.findOne({ _id: me().sub });
+        const missing = applyMissing(p);
+        if (missing.length) throw new JobError(`Complete your job profile first: ${missing.join(', ')}`);
+        const apps = db.collection('job_applications');
+        const _id = jobAppId(me().sub, job);
+        const prior = await apps.findOne({ _id });
+        if (prior && prior.status !== 'withdrawn') throw new JobError('You have already applied for this job.', 409);
+        const now = new Date().toISOString();
+        const a = {
+          _id, sub: me().sub, job, status: 'submitted', createdAt: now, updatedAt: now,
+          coverLetter: String(body.coverLetter ?? '').trim().slice(0, 4000),
+          applicant: {
+            name: jobName(p), email: p.email, phone: p.phone, headline: p.headline, city: p.city ?? '', country: p.country ?? '',
+            yearsExperience: p.yearsExperience ?? null, skills: (p.skills ?? []).slice(0, 15), cvKey: p.cvKey, cvName: p.cvName ?? 'CV',
+          },
+        };
+        await apps.replaceOne({ _id }, a, { upsert: true });
+        await Promise.all([
+          sendEmail({
+            to: p.email, subject: `Application received: ${job.title} at ${job.company}`,
+            html: jobAppEmail('We have your application', [['Job', job.title], ['Company', job.company], ['Location', job.location]],
+              `Lyrtrip reviews your application and sends it to the employer for you. Employers reply through Lyrtrip, and we email you any update. You can follow it at ${SITE_URL}/jobs/profile.`),
+            text: `We received your application for ${job.title} at ${job.company}. Lyrtrip sends it to the employer and emails you any update.`,
+          }),
+          sendEmail({
+            to: superAdminEmail(), subject: `New job application: ${a.applicant.name} for ${job.title} (${job.company})`,
+            html: jobAppEmail('New job application to forward', [['Applicant', a.applicant.name], ['Job', job.title], ['Company', job.company], ['Location', job.location]],
+              `Open ${SITE_URL}/admin, Job applications, to see the CV and the employer's apply links.`),
+            text: `New job application from ${a.applicant.name} for ${job.title} at ${job.company}. See ${SITE_URL}/admin.`,
+          }),
+        ]);
+        return json(200, { application: applicantJobApp(a) });
+      }
+
+      case 'applications.mine': {
+        const rows = await db.collection('job_applications').find({ sub: me().sub }).sort({ createdAt: -1 }).limit(200).toArray();
+        return json(200, { applications: rows.map(applicantJobApp) });
+      }
+
+      case 'application.withdraw': {
+        const r = await db.collection('job_applications').updateOne(
+          { _id: String(body.id ?? ''), sub: me().sub, status: { $in: ['submitted', 'forwarded', 'interview'] } },
+          { $set: { status: 'withdrawn', updatedAt: new Date().toISOString() } },
+        );
+        if (!r.matchedCount) throw new JobError('This application can no longer be withdrawn');
+        return json(200, { ok: true });
       }
 
       default:

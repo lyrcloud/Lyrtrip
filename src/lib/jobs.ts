@@ -39,6 +39,22 @@ export interface TalentProfile extends TalentCard {
   contact: { email: string; phone: string; expectedSalary: string; cvUrl: string | null; cvName: string | null } | null;
 }
 
+// An application made through Lyrtrip; the employer's contact details stay with Lyrtrip
+export interface JobApplication {
+  id: string; title: string; company: string; location: string; salary: string | null; jobType: string | null;
+  status: 'submitted' | 'forwarded' | 'interview' | 'rejected' | 'hired' | 'withdrawn'; statusLabel: string; message: string;
+  createdAt: string; updatedAt: string;
+}
+
+export interface ApplyCheck {
+  missing: string[]; name: string; email: string; phone: string; headline: string; cvName: string | null; application: JobApplication | null;
+}
+
+export const APP_STYLE: Record<string, string> = {
+  submitted: 'bg-sky-100 text-sky-800', forwarded: 'bg-indigo-100 text-indigo-800', interview: 'bg-amber-100 text-amber-900',
+  hired: 'bg-emerald-100 text-emerald-800', rejected: 'bg-gray-200 text-gray-700', withdrawn: 'bg-gray-100 text-gray-500',
+};
+
 // Calls the job profile API, signed in when there is a session. Throws with the server's message.
 export async function jobsCall<T = Record<string, unknown>>(payload: Record<string, unknown>): Promise<T> {
   const session = await getSession();
