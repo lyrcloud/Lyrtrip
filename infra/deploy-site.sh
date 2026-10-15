@@ -61,6 +61,8 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       if (process.env.EASYSHIP_API_KEY) cur.EASYSHIP_API_KEY = process.env.EASYSHIP_API_KEY;
       // Dash courier delivery: Uber Direct
       for (const k of ["UBER_DIRECT_CUSTOMER_ID", "UBER_DIRECT_CLIENT_ID", "UBER_DIRECT_CLIENT_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
+      // Job profiles: photos and CVs in a private S3 bucket (created once by hand; see the commit notes)
+      if (process.env.JOB_PROFILE_BUCKET) cur.JOB_PROFILE_BUCKET = process.env.JOB_PROFILE_BUCKET;
       // Car tab ride booking (Guest Rides): off unless RIDES_ENABLED=true; the base URL can point at the sandbox or a mock
       for (const k of ["RIDES_ENABLED", "UBER_GUEST_RIDES_BASE_URL", "UBER_GUEST_RIDES_TOKEN", "UBER_GUEST_RIDES_CLIENT_ID", "UBER_GUEST_RIDES_CLIENT_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
       if (process.env.DUFFEL_STRIPE_SECRET_KEY) cur.DUFFEL_STRIPE_SECRET_KEY = process.env.DUFFEL_STRIPE_SECRET_KEY;
@@ -90,7 +92,7 @@ aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admi
 }"
 echo "admin policy on ${ROLE_ARN##*/}"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/delivery/{proxy+}" "POST /api/ride/{proxy+}" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n"; do
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/delivery/{proxy+}" "POST /api/ride/{proxy+}" "POST /api/jobs" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
     echo "exists: $ROUTE"
   else
