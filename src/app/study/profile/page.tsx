@@ -216,7 +216,7 @@ export default function StudyProfilePage() {
   const periodLabel = (id?: string) => plans.periods.find(x => x.id === id)?.label ?? id;
   const prices = plans.periods.find(x => x.id === period)?.price ?? {};
   const pct = Math.round(plans.serviceRate * 100);
-  const docNeed = (d: StudyPlans['docs'][number]) =>
+  const docNeed = (d: StudyPlans['docTypes'][number]) =>
     d.waivable && p.englishWaiver ? 'Not needed (English waiver)'
       : d.for.length === 2 ? 'Admission and scholarship' : d.for[0] === 'scholarship' ? 'Scholarship' : 'Optional';
 
