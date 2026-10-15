@@ -21,6 +21,7 @@ import StudyApplyDialog, { type ApplyStudy } from '@/components/StudyApplyDialog
 import EventTicketDialog, { type TicketEvent } from '@/components/EventTicketDialog';
 import TourRequestDialog, { type TourItem } from '@/components/TourRequestDialog';
 import CharityPanel, { CHARITY_EVENT_TYPES } from '@/components/CharityPanel';
+import HelicopterPanel from '@/components/HelicopterPanel';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -1326,6 +1327,7 @@ export default function Home() {
 
   const tabs = [
     { id: 'flights', icon: '✈️', label: t('Flights'), sub: t('Fly anywhere') },
+    { id: 'helicopter', icon: '🚁', label: t('Helicopter'), sub: t('Charter a helicopter') },
     { id: 'hotels', icon: '🏨', label: t('Hotels'), sub: t('Places to stay') },
     { id: 'car', icon: '🚗', label: t('Car'), sub: t('Book a ride') },
     { id: 'dash', icon: '🛵', label: t('Dash'), sub: t('Same-day courier') },
@@ -1344,7 +1346,7 @@ export default function Home() {
 
   // The tiles: Transport, Stay, Ride and Events group several tabs (shown as a row of options below)
   const TAB_GROUPS = [
-    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, bus, train & cruise'), items: ['flights', 'bus', 'train', 'cruise'] },
+    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, helicopter, bus, train & cruise'), items: ['flights', 'helicopter', 'bus', 'train', 'cruise'] },
     { id: 'stay', icon: '🏨', motion: 'hotels', label: t('Stay'), sub: t('Hotels, homestays & more'), items: ['hotels'] },
     { id: 'ride', icon: '🚗', motion: 'car', label: t('Ride'), sub: t('Car, dash & bike'), items: ['car', 'dash', 'bike'] },
     { id: 'eventsgroup', icon: '🎟️', motion: 'events', label: t('Events'), sub: t('Shows, summits & charity'), items: ['events', 'charity'] },
@@ -2823,6 +2825,9 @@ export default function Home() {
                 {applyEvent && <EventTicketDialog item={applyEvent} onClose={() => setApplyEvent(null)} />}
               </div>
             )}
+
+            {/* Helicopter charters sold through Lyrtrip */}
+            {activeTab === 'helicopter' && <HelicopterPanel />}
 
             {/* Charity: donations to established charities, and charity events */}
             {activeTab === 'charity' && (

@@ -3185,6 +3185,7 @@ async function handleAdmin(event) {
     if (String(body.action ?? '').startsWith('studyapps.')) return (await studyAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('eventtix.')) return (await eventTicketsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('tourreqs.')) return (await tourRequestsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
+    if (String(body.action ?? '').startsWith('heli.')) return (await heliAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('donations.')) return (await donationsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     switch (body.action) {
       case 'me':
@@ -6958,6 +6959,315 @@ async function donationsAdmin(db, body) {
 }
 
 // Errors from visitors' browsers (the site's error pages), written to the Lambda log for debugging
+// ---------------------------------------------------------------------------
+// Helicopter charters (Helicopter tab, next to Flights): Lyrtrip sells them itself. The customer
+// sends the route, date, passengers (with weights, which operators need for load planning) and
+// the charter type; an admin finds an operator and quotes the price, and the customer pays it plus
+// Lyrtrip's 10%. Once paid, the admin books the operator; if they can't, the payment is refunded.
+// ---------------------------------------------------------------------------
+
+const HELI_SERVICE_RATE = 0.10;
+const HELI_MAX_PASSENGERS = 20;
+const HELI_QUOTE_HOURS = 72;   // operator prices and slots move; a quote is payable for this long
+const HELI_CHARTERS = {
+  transfer:   'Point-to-point transfer',
+  airport:    'Airport transfer',
+  tour:       'Scenic / city tour',
+  hourly:     'Hourly charter',
+  pilgrimage: 'Pilgrimage (e.g. Kedarnath, Char Dham, Vaishno Devi, Amarnath)',
+  wedding:    'Wedding / event (arrival, flower drop)',
+  filming:    'Aerial filming & photography',
+  heliski:    'Heli-skiing / adventure',
+  corporate:  'Corporate / VIP',
+};
+const HELI_AIRCRAFT = ['Any (best value)', 'Light single-engine (up to 4 passengers)', 'Light twin-engine (up to 6)', 'Medium twin-engine (up to 8)', 'Large / VIP (9 or more)'];
+const HELI_ID_TYPES = ['Passport', 'National ID card', "Driver's licence", 'Other photo ID'];
+const HELI_STATUS = {
+  submitted: 'Received by Lyrtrip', info_needed: 'More details needed', quoted: 'Price to pay',
+  processing: 'Paid: Lyrtrip is booking your helicopter', confirmed: 'Helicopter booked', unavailable: 'Not available',
+  refunded: 'Refunded', cancelled: 'Cancelled',
+};
+const HELI_CANCELLABLE = ['submitted', 'info_needed', 'quoted'];
+const heliTotals = amount => {
+  const service = Math.round(amount * HELI_SERVICE_RATE * 100) / 100;
+  return { amount, service, total: Math.round((amount + service) * 100) / 100 };
+};
+
+function cleanHeliRequest(b) {
+  const s = (v, max) => String(v ?? '').trim().slice(0, max);
+  const day = v => (/^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s(v, 10)) ? s(v, 10) : '');
+  const born = v => (/^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s(v, 10)) ? s(v, 10) : '');
+  const time = v => (/^([01]\d|2[0-3]):[0-5]\d$/.test(s(v, 5)) ? s(v, 5) : '');
+  const c = b.contact ?? {};
+  const name = s(c.name, 80), email = s(c.email, 120).toLowerCase(), country = s(c.country, 60);
+  if (name.length < 2) throw new JobError('Enter your full name');
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw new JobError('Enter a valid email: the quote is sent there');
+  const phone = parsePhoneNumberFromString(s(c.phone, 30), 'US');
+  if (!phone?.isValid()) throw new JobError('Enter a valid phone number with the country code, e.g. +91 98765 43210');
+  if (!country) throw new JobError('Enter your country');
+
+  const charter = Object.keys(HELI_CHARTERS).includes(b.charter) ? b.charter : '';
+  if (!charter) throw new JobError('Choose the kind of charter');
+  const roundTrip = !!b.roundTrip;
+  const from = s(b.from, 160), to = s(b.to, 160);
+  if (from.length < 2) throw new JobError('Enter where the helicopter picks you up (helipad, airport, city or address)');
+  const loop = ['tour', 'hourly', 'filming'].includes(charter);
+  if (!loop && to.length < 2) throw new JobError('Enter where you are flying to');
+  const date = day(b.date);
+  const today = new Date().toISOString().slice(0, 10);
+  if (!date || date < today) throw new JobError('Choose a flight date from today on');
+  const returnDate = roundTrip ? day(b.returnDate) : '';
+  if (roundTrip && (!returnDate || returnDate < date)) throw new JobError('Choose a return date on or after the flight date');
+  const hours = loop ? Math.round(Number(b.hours) * 2) / 2 : null;
+  if (loop && !(hours >= 0.5 && hours <= 12)) throw new JobError('Enter the flying time you want, 0.5 to 12 hours');
+
+  const list = Array.isArray(b.passengers) ? b.passengers.slice(0, HELI_MAX_PASSENGERS + 1) : [];
+  if (list.length < 1) throw new JobError('Add at least one passenger');
+  if (list.length > HELI_MAX_PASSENGERS) throw new JobError(`Up to ${HELI_MAX_PASSENGERS} passengers per request; send another request for more`);
+  const passengers = list.map((p, i) => {
+    const row = {
+      fullName: s(p?.fullName, 80), dateOfBirth: born(p?.dateOfBirth), nationality: s(p?.nationality, 60),
+      weightKg: Math.round(Number(p?.weightKg)), idType: HELI_ID_TYPES.includes(p?.idType) ? p.idType : '', idNumber: s(p?.idNumber, 30).toUpperCase(),
+    };
+    const who = list.length > 1 ? `Passenger ${i + 1}: ` : '';
+    const fail = m => { throw new JobError(who ? who + m : m[0].toUpperCase() + m.slice(1)); };
+    if (row.fullName.length < 2) fail(`enter the full name as on their ID`);
+    if (!row.dateOfBirth || Date.parse(row.dateOfBirth) > Date.now()) fail(`enter a valid date of birth`);
+    if (!row.nationality) fail(`enter the nationality`);
+    if (!(row.weightKg >= 3 && row.weightKg <= 250)) fail(`enter the body weight in kg (operators need it to balance the helicopter)`);
+    if (!row.idType || row.idNumber.length < 3) fail(`choose the photo ID they will bring and enter its number`);
+    return row;
+  });
+  const luggageKg = Math.max(0, Math.min(1000, Math.round(Number(b.luggageKg) || 0)));
+  const budget = b.budget === '' || b.budget == null ? null : Math.round(Number(b.budget) * 100) / 100;
+  if (budget != null && !(budget > 0 && budget <= 500000)) throw new JobError('Your budget must be a positive amount in USD');
+  if (!b.acceptTerms) throw new JobError('Please accept the charter terms');
+  return {
+    contact: { name, email, phone: phone.number, country }, charter, roundTrip, from, to,
+    date, time: time(b.time), returnDate, returnTime: roundTrip ? time(b.returnTime) : '', flexibleDates: !!b.flexibleDates,
+    hours, aircraft: HELI_AIRCRAFT.includes(b.aircraft) ? b.aircraft : HELI_AIRCRAFT[0],
+    passengers, luggageKg, budget, note: s(b.note, 2000),
+  };
+}
+
+const customerHeliRequest = r => ({
+  id: r._id, charter: r.charter, charterLabel: HELI_CHARTERS[r.charter] ?? r.charter, roundTrip: r.roundTrip,
+  from: r.from, to: r.to, date: r.date, time: r.time, returnDate: r.returnDate, returnTime: r.returnTime, flexibleDates: r.flexibleDates,
+  hours: r.hours, aircraft: r.aircraft, contact: r.contact, passengers: r.passengers, luggageKg: r.luggageKg, budget: r.budget, note: r.note ?? '',
+  status: r.status, statusLabel: HELI_STATUS[r.status] ?? r.status, message: r.customerMessage ?? '',
+  quote: r.quote ? { ...heliTotals(r.quote.amount), details: r.quote.details ?? '', expiresAt: r.quote.expiresAt, paidAt: r.quote.paidAt ?? null } : null,
+  createdAt: r.createdAt, updatedAt: r.updatedAt,
+});
+
+const heliRoute = r => (r.to ? `${r.from} → ${r.to}` : r.from);
+const heliRows = r => [
+  ['Charter', HELI_CHARTERS[r.charter] ?? r.charter], ['Route', heliRoute(r) + (r.roundTrip ? ' (return)' : '')],
+  ['Date', `${r.date}${r.time ? ` ${r.time}` : ''}${r.roundTrip ? `, back ${r.returnDate}${r.returnTime ? ` ${r.returnTime}` : ''}` : ''}${r.flexibleDates ? ' (flexible)' : ''}`],
+  ['Flying time', r.hours ? `${r.hours} h` : ''], ['Passengers', String(r.passengers.length)],
+].filter(([, v]) => v);
+
+// Paid, but the customer closed the tab before coming back: settle it from Stripe
+async function settleHeliPayment(db, r) {
+  if (r.status !== 'quoted' || !r.quote?.sessionId) return r;
+  const session = await mainStripe()?.checkout.sessions.retrieve(r.quote.sessionId).catch(() => null);
+  if (session?.payment_status !== 'paid' || session.metadata?.requestId !== r._id) return r;
+  const now = new Date().toISOString();
+  const set = { status: 'processing', 'quote.paidAt': now, 'quote.paymentIntent': session.payment_intent ?? null, 'quote.charged': (session.amount_total ?? 0) / 100, updatedAt: now, 'statusAt.processing': now };
+  const u = await db.collection('heli_requests').updateOne({ _id: r._id, status: 'quoted' }, { $set: set });
+  if (u.modifiedCount) {
+    await sendEmail({
+      to: superAdminEmail(), subject: `Helicopter paid: ${r.contact.name}, ${heliRoute(r)}`,
+      html: jobAppEmail('Paid: book the helicopter', [...heliRows(r), ['Customer', r.contact.name], ['Paid', `USD ${set['quote.charged'].toFixed(2)}`]],
+        `Open ${SITE_URL}/admin, Helicopter charters, to book the operator.`),
+      text: `${r.contact.name} paid for a helicopter charter ${heliRoute(r)} on ${r.date}. See ${SITE_URL}/admin.`,
+    });
+  }
+  return { ...r, status: 'processing', quote: { ...r.quote, paidAt: now } };
+}
+
+async function handleHeliRequests(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const db = await getDb();
+  const reqs = db.collection('heli_requests');
+  const user = await optionalUser(body.idToken);
+  const me = () => { if (!user) throw new JobError('Please sign in first.', 401); return user; };
+  const findMine = async id => {
+    const r = await reqs.findOne({ _id: String(id ?? ''), sub: me().sub });
+    if (!r) throw new JobError('Charter request not found', 404);
+    return r;
+  };
+  const options = { charters: HELI_CHARTERS, aircraft: HELI_AIRCRAFT, idTypes: HELI_ID_TYPES, maxPassengers: HELI_MAX_PASSENGERS, serviceRate: HELI_SERVICE_RATE, quoteHours: HELI_QUOTE_HOURS };
+
+  try {
+    switch (body.action) {
+      case 'options':
+        return json(200, options);
+
+      case 'request': {
+        const clean = cleanHeliRequest(body);
+        const now = new Date().toISOString();
+        const r = { _id: `hc_${randomBytes(9).toString('hex')}`, sub: me().sub, accountEmail: me().email, ...clean, status: 'submitted', createdAt: now, updatedAt: now, statusAt: { submitted: now } };
+        await reqs.insertOne(r);
+        await Promise.all([
+          sendEmail({
+            to: clean.contact.email, subject: `We have your helicopter request: ${heliRoute(r)}`,
+            html: jobAppEmail('We have your helicopter request', heliRows(r),
+              `Lyrtrip finds an operator and emails you the price: the charter plus our ${HELI_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/helicopter/requests.`),
+            text: `We received your helicopter request ${heliRoute(r)} on ${r.date}. We will email you the price to pay. See ${SITE_URL}/helicopter/requests`,
+          }),
+          sendEmail({
+            to: superAdminEmail(), subject: `New helicopter request: ${clean.contact.name}, ${heliRoute(r)}`,
+            html: jobAppEmail('New helicopter request', [...heliRows(r), ['Customer', `${clean.contact.name} · ${clean.contact.email} · ${clean.contact.phone}`], ['Budget', clean.budget ? `USD ${clean.budget}` : 'Not given']],
+              `Open ${SITE_URL}/admin, Helicopter charters, to quote the price.`),
+            text: `New helicopter request ${heliRoute(r)} on ${r.date} from ${clean.contact.name}. See ${SITE_URL}/admin.`,
+          }),
+        ]);
+        return json(200, { request: customerHeliRequest(r) });
+      }
+
+      case 'requests.mine': {
+        const rows = await reqs.find({ sub: me().sub }).sort({ createdAt: -1 }).limit(200).toArray();
+        const settled = await Promise.all(rows.map(r => settleHeliPayment(db, r).catch(() => r)));
+        return json(200, { requests: settled.map(customerHeliRequest), ...options });
+      }
+
+      // Lyrtrip asked for more details: the customer corrects the request and sends it again
+      case 'request.update': {
+        const r = await findMine(body.id);
+        if (r.status !== 'info_needed') throw new JobError('This request is not waiting for details');
+        const clean = cleanHeliRequest({ ...body, acceptTerms: true });
+        const now = new Date().toISOString();
+        await reqs.updateOne({ _id: r._id }, { $set: { ...clean, status: 'submitted', customerMessage: '', updatedAt: now, 'statusAt.submitted': now } });
+        await sendEmail({
+          to: superAdminEmail(), subject: `Helicopter request updated: ${clean.contact.name}, ${heliRoute(clean)}`,
+          html: jobAppEmail('Helicopter request updated', heliRows({ ...r, ...clean }), `See ${SITE_URL}/admin, Helicopter charters.`),
+          text: `${clean.contact.name} updated their helicopter request. See ${SITE_URL}/admin.`,
+        });
+        return json(200, { request: customerHeliRequest({ ...r, ...clean, status: 'submitted', customerMessage: '' }) });
+      }
+
+      // The quoted charter price plus Lyrtrip's service charge, paid once by card
+      case 'pay': {
+        const stripe = mainStripe();
+        if (!stripe) throw new JobError('Payments are not configured', 500);
+        const r = await findMine(body.id);
+        if (r.status !== 'quoted' || !r.quote?.amount) throw new JobError('There is nothing to pay on this request');
+        if (Date.parse(r.quote.expiresAt) < Date.now()) throw new JobError('This price has expired because operator prices change. Ask us for a new one at support@lyrtrip.com.', 410);
+        const t = heliTotals(r.quote.amount);
+        const session = await stripe.checkout.sessions.create({
+          mode: 'payment',
+          line_items: [
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.amount * 100), product_data: { name: `Helicopter charter: ${heliRoute(r)}`.slice(0, 250), description: `${HELI_CHARTERS[r.charter]} · ${r.date} · ${r.passengers.length} passenger(s)`.slice(0, 250) } } },
+            { quantity: 1, price_data: { currency: 'usd', unit_amount: Math.round(t.service * 100), product_data: { name: `Lyrtrip service charge (${HELI_SERVICE_RATE * 100}%)` } } },
+          ].filter(l => l.price_data.unit_amount > 0),
+          customer_email: r.contact.email || me().email,
+          client_reference_id: me().sub,
+          metadata: { type: 'helicopter', sub: me().sub, requestId: r._id },
+          payment_intent_data: { metadata: { type: 'helicopter', sub: me().sub, requestId: r._id } },
+          // Stripe needs 30 minutes to 24 hours; never past the quote's own expiry by more than that minimum
+          expires_at: Math.max(Math.floor(Date.now() / 1000) + 1860, Math.min(Math.floor(Date.parse(r.quote.expiresAt) / 1000), Math.floor(Date.now() / 1000) + 23 * 3600)),
+          success_url: `${SITE_URL}/helicopter/requests?pay_session={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${SITE_URL}/helicopter/requests?checkout=canceled`,
+        });
+        await reqs.updateOne({ _id: r._id }, { $set: { 'quote.sessionId': session.id } });
+        return json(200, { url: session.url });
+      }
+
+      case 'pay.confirm': {
+        const session = await mainStripe().checkout.sessions.retrieve(String(body.sessionId ?? '')).catch(() => null);
+        if (!session || session.metadata?.type !== 'helicopter' || session.metadata.sub !== me().sub) throw new JobError('This payment is not for your charter', 403);
+        if (session.payment_status !== 'paid') throw new JobError('The payment was not completed', 402);
+        const r = await findMine(session.metadata.requestId);
+        if (r.status === 'quoted') await settleHeliPayment(db, { ...r, quote: { ...r.quote, sessionId: session.id } });
+        return json(200, { ok: true });
+      }
+
+      case 'request.cancel': {
+        const u = await reqs.updateOne(
+          { _id: String(body.id ?? ''), sub: me().sub, status: { $in: HELI_CANCELLABLE } },
+          { $set: { status: 'cancelled', updatedAt: new Date().toISOString() } },
+        );
+        if (!u.matchedCount) throw new JobError('This request can no longer be cancelled. Contact support@lyrtrip.com.');
+        return json(200, { ok: true });
+      }
+
+      default:
+        throw new JobError('Unknown action');
+    }
+  } catch (err) {
+    if (err instanceof JobError) return json(err.status, { error: err.message });
+    if (err.name === 'JwtExpiredError' || /jwt/i.test(err.name ?? '')) return json(401, { error: 'Please sign in again.' });
+    console.error('Helicopter action failed:', body.action, err);
+    return json(500, { error: 'Something went wrong. Please try again.' });
+  }
+}
+
+// Admin side (called from handleAdmin): every passenger, quotes, refunds and status
+async function heliAdmin(db, body) {
+  const reqs = db.collection('heli_requests');
+  switch (body.action) {
+    case 'heli.list': {
+      const rows = await reqs.find({}).sort({ createdAt: -1 }).limit(500).toArray();
+      return json(200, {
+        serviceRate: HELI_SERVICE_RATE, quoteHours: HELI_QUOTE_HOURS,
+        requests: rows.map(r => ({ ...customerHeliRequest(r), sub: r.sub, accountEmail: r.accountEmail ?? '', adminNote: r.adminNote ?? '', charged: r.quote?.charged ?? null, refund: r.refund ?? null })),
+      });
+    }
+
+    // Moves a request along. A price puts it at "Price to pay"; marking a paid request unavailable or
+    // refunded refunds the card in full. The message is emailed to the customer.
+    case 'heli.update': {
+      let status = Object.keys(HELI_STATUS).includes(body.status) && body.status !== 'cancelled' ? body.status : null;
+      if (!status) return json(400, { error: 'Unknown status' });
+      const r = await reqs.findOne({ _id: String(body.id ?? '') });
+      if (!r) return json(404, { error: 'Request not found' });
+      if (r.status === 'cancelled' || r.status === 'refunded') return json(409, { error: `This request is ${HELI_STATUS[r.status].toLowerCase()}` });
+      const paid = !!r.quote?.paidAt;
+      const now = new Date().toISOString();
+      const set = { adminNote: String(body.note ?? r.adminNote ?? '').slice(0, 1000), updatedAt: now };
+      if (status === 'quoted') {
+        if (paid) return json(409, { error: 'This request has already been paid' });
+        const amount = Math.round(Number(body.price) * 100) / 100;
+        if (!(amount >= 1 && amount <= 500000)) return json(400, { error: "Enter the operator's total price in USD, with landing and positioning fees (at least 1)" });
+        set.quote = { amount, details: String(body.quoteDetails ?? '').trim().slice(0, 500), quotedAt: now, expiresAt: new Date(Date.now() + HELI_QUOTE_HOURS * 3600e3).toISOString() };
+      }
+      if (['processing', 'confirmed'].includes(status) && !paid) return json(409, { error: 'The customer has not paid yet. Quote a price first.' });
+      if (status === 'refunded' && !paid) status = 'unavailable';
+      if (status === 'unavailable' && paid) status = 'refunded';
+      if (status === 'refunded') {
+        const stripe = mainStripe();
+        if (!r.quote.paymentIntent || !stripe) return json(409, { error: 'No card payment found to refund; refund it in Stripe' });
+        const refund = await stripe.refunds.create({ payment_intent: r.quote.paymentIntent, metadata: { type: 'helicopter', requestId: r._id } });
+        set.refund = { id: refund.id, amount: refund.amount / 100, at: now };
+      }
+      const message = String(body.message ?? '').trim().slice(0, 2000);
+      Object.assign(set, { status, customerMessage: message, [`statusAt.${status}`]: now });
+      await reqs.updateOne({ _id: r._id }, { $set: set });
+      if (status !== r.status || message) {
+        const rows = heliRows(r);
+        if (status === 'quoted') {
+          const t = heliTotals(set.quote.amount);
+          rows.push(['Charter', `USD ${t.amount.toFixed(2)}`], [`Lyrtrip service (${HELI_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]);
+          if (set.quote.details) rows.push(['Details', set.quote.details]);
+        }
+        if (status === 'refunded') rows.push(['Refunded', `USD ${set.refund.amount.toFixed(2)} to your card (allow 5 to 10 days)`]);
+        if (message) rows.push(['Message from Lyrtrip', message]);
+        const foot = status === 'quoted' ? `Pay within ${HELI_QUOTE_HOURS} hours at ${SITE_URL}/helicopter/requests: operator prices and slots change.`
+          : status === 'info_needed' ? `Update your request at ${SITE_URL}/helicopter/requests.` : `See ${SITE_URL}/helicopter/requests.`;
+        await sendEmail({
+          to: r.contact.email, subject: `${HELI_STATUS[status]}: helicopter ${heliRoute(r)}`,
+          html: jobAppEmail(HELI_STATUS[status], rows, `${foot} Please keep all contact about this charter through Lyrtrip.`),
+          text: `${HELI_STATUS[status]}: helicopter ${heliRoute(r)}.${message ? `\n\n${message}` : ''} ${foot}`,
+        });
+      }
+      return json(200, { ok: true, status });
+    }
+
+    default:
+      return null;
+  }
+}
+
 async function handleClientError(event) {
   let b = {};
   try { b = JSON.parse(event.body || '{}'); } catch { /* not JSON */ }
@@ -7006,6 +7316,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/study')                  && method === 'POST')         return handleStudy(event);
     if (path.endsWith('/api/events')                 && method === 'POST')         return handleEventTickets(event);
     if (path.endsWith('/api/packages')               && method === 'POST')         return handleTourRequests(event);
+    if (path.endsWith('/api/helicopter')             && method === 'POST')         return handleHeliRequests(event);
     if (path.endsWith('/api/donations')              && method === 'POST')         return handleDonations(event);
     if (path.endsWith('/api/client-error')           && method === 'POST')         return handleClientError(event);
     if (path.endsWith('/api/ride/estimate')          && method === 'POST')         return handleRideEstimate(event);
