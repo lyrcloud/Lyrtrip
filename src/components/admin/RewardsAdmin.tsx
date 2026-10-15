@@ -675,3 +675,77 @@ export function RidesPanel({ call }: { call: Call }) {
     </div>
   );
 }
+
+// ── Job profiles (talent directory subscriptions) ─────────────────────────────
+
+interface AdminJobProfile {
+  id: string; name: string; email: string; headline: string; city: string; country: string; photoUrl: string | null;
+  missing: number; hidden: boolean; listed: boolean; companyViews: number; updatedAt: string;
+  subscription: { plan: string; period: string; status: string; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean } | null;
+}
+
+export function JobProfilesPanel({ call }: { call: Call }) {
+  const [rows, setRows] = useState<AdminJobProfile[] | null>(null);
+  const [prices, setPrices] = useState<Record<string, Record<string, number>>>({});
+  const load = useCallback(() => {
+    call({ action: 'jobprofiles.list' })
+      .then(d => { setRows(d.profiles as AdminJobProfile[]); setPrices(d.prices as Record<string, Record<string, number>>); })
+      .catch(() => setRows([]));
+  }, [call]);
+  useEffect(() => { load(); }, [load]);
+  const hide = async (r: AdminJobProfile) => {
+    if (!r.hidden && !confirm(`Hide ${r.name || r.email} from the talent directory? Their plan keeps running.`)) return;
+    await call({ action: 'jobprofiles.hide', id: r.id, hidden: !r.hidden });
+    load();
+  };
+  const paying = (rows ?? []).filter(r => r.subscription && ['active', 'trialing', 'past_due'].includes(r.subscription.status));
+  // Recurring revenue, as a monthly figure
+  const perMonth: Record<string, number> = { week: 52 / 12, month: 1, month3: 1 / 3, month6: 1 / 6, year: 1 / 12 };
+  const mrr = paying.filter(r => !r.subscription!.cancelAtPeriodEnd)
+    .reduce((s, r) => s + (prices[r.subscription!.period]?.[r.subscription!.plan] ?? 0) * (perMonth[r.subscription!.period] ?? 0), 0);
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['Profiles', String(rows?.length ?? 0)],
+          ['Listed now', String((rows ?? []).filter(r => r.listed).length)],
+          ['Paying', String(paying.length)],
+          ['Monthly recurring', usd(mrr)],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No job profiles yet.</p>}
+        {rows?.map(r => (
+          <div key={r.id} className="p-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+            <div className="flex items-center gap-3 min-w-0">
+              {r.photoUrl
+                // eslint-disable-next-line @next/next/no-img-element
+                ? <img src={r.photoUrl} alt="" className="w-10 h-10 rounded-full object-cover" />
+                : <span className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center">🧑</span>}
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-900">
+                  {r.name || '(no name)'}
+                  <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${r.hidden ? 'bg-red-100 text-red-800' : r.listed ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-700'}`}>
+                    {r.hidden ? 'hidden' : r.listed ? 'listed' : r.missing ? `${r.missing} fields missing` : 'not paid'}
+                  </span>
+                </p>
+                <p className="text-gray-600 truncate">{r.headline}{r.city ? ` · ${r.city}, ${r.country}` : ''}</p>
+                <p className="text-xs text-gray-400">{r.email} · {r.companyViews} company views · updated {new Date(r.updatedAt).toLocaleDateString()}</p>
+              </div>
+            </div>
+            <div className="text-right space-y-1">
+              {r.subscription
+                ? <p className="text-gray-700">{r.subscription.plan} · {r.subscription.period} · {r.subscription.status}{r.subscription.cancelAtPeriodEnd ? ' (ending)' : ''}{r.subscription.currentPeriodEnd ? ` · to ${r.subscription.currentPeriodEnd.slice(0, 10)}` : ''}</p>
+                : <p className="text-gray-400">No plan</p>}
+              <div className="flex gap-3 justify-end">
+                <a href={`/talent?id=${r.id}`} target="_blank" rel="noopener noreferrer" className="text-brand-600 font-semibold">View</a>
+                <button onClick={() => hide(r)} className="text-red-600 font-semibold">{r.hidden ? 'Unhide' : 'Hide'}</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

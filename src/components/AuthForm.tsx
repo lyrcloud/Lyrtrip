@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { takeReturnTo } from '@/lib/returnTo';
 import { useRouter } from 'next/navigation';
 import {
   confirmResetPassword,
@@ -129,7 +130,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           return;
         }
         if (error) throw error;
-        router.push('/dashboard');
+        router.push(takeReturnTo());
       }
     } catch (err) {
       setError((err as Error).message || 'An error occurred');
@@ -153,7 +154,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
       // to the sign-in form.
       const { error: signInError } = await signIn(email, password);
       if (!signInError) {
-        router.push('/dashboard');
+        router.push(takeReturnTo());
         return;
       }
       switchMode('signin');
@@ -202,7 +203,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
 
       const { error: signInError } = await signIn(email, newPassword);
       if (!signInError) {
-        router.push('/dashboard');
+        router.push(takeReturnTo());
         return;
       }
       switchMode('signin');

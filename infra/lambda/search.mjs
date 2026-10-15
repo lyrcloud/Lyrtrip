@@ -3233,6 +3233,31 @@ async function handleAdmin(event) {
         });
       }
 
+      case 'jobprofiles.list': {
+        const coll = db.collection('job_profiles');
+        await refreshDueJobSubs(coll, 50).catch(err => console.error('Job subscription sweep failed:', err.message));
+        const rows = await coll.find({}).sort({ updatedAt: -1 }).limit(500).toArray();
+        return json(200, {
+          profiles: await Promise.all(rows.map(async p => ({
+            id: String(p._id), name: jobName(p), email: p.email, headline: p.headline ?? '', city: p.city ?? '', country: p.country ?? '',
+            photoUrl: await signedFileUrl(p.photoKey), missing: jobProfileMissing(p).length, hidden: !!p.hidden,
+            listed: !!p.listedUntil && Date.parse(p.listedUntil) > Date.now(), subscription: p.subscription ?? null,
+            companyViews: p.companyViews ?? 0, updatedAt: p.updatedAt ?? p.createdAt,
+          }))),
+          prices: Object.fromEntries(Object.entries(JOB_PERIODS).map(([id, per]) => [id, per.price])),
+        });
+      }
+
+      // Hides a profile from the directory (e.g. an unsuitable photo); the subscription is untouched
+      case 'jobprofiles.hide': {
+        const coll = db.collection('job_profiles');
+        const p = await coll.findOne({ _id: String(body.id ?? '') });
+        if (!p) return json(404, { error: 'Profile not found' });
+        const next = { ...p, hidden: !!body.hidden };
+        await coll.updateOne({ _id: p._id }, { $set: { hidden: next.hidden, ...jobListingFields(next) } });
+        return json(200, { ok: true });
+      }
+
       case 'rides.list': {
         if (ridesEnabled()) await sweepRides(db).catch(err => console.error('Ride sweep failed:', err.message));
         const rows = await db.collection('rides').find({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] } }).sort({ createdAt: -1 }).limit(200).toArray();
@@ -4710,6 +4735,394 @@ async function sweepRides(db) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Job profiles (Job tab): travellers build a LinkedIn-style profile with a photo and CV, and a
+// subscription (Basic $5, Plus $9, Premium $15 a month, billed weekly to yearly) lists it in the
+// talent directory companies browse, higher plans first. Contact details and CVs are shown to
+// approved business accounts and admins only. Files live in the private JOB_PROFILE_BUCKET.
+// ---------------------------------------------------------------------------
+
+const JOB_PLANS = {
+  basic:   { name: 'Basic',   rank: 1, monthly: 5,  perks: ['Listed in the Lyrtrip talent directory', 'Companies can see your contact details and CV'] },
+  plus:    { name: 'Plus',    rank: 2, monthly: 9,  perks: ['Everything in Basic', 'Placed above Basic profiles', 'Highlighted card'] },
+  premium: { name: 'Premium', rank: 3, monthly: 15, perks: ['Everything in Plus', 'Top placement in the directory', 'Featured on the Job tab'] },
+};
+// USD per billing period; the longer periods are discounted (3 months 5%, 6 months 10%, 12 months 20%)
+const JOB_PERIODS = {
+  week:   { label: 'Weekly',    interval: 'week',  count: 1, price: { basic: 1.49,  plus: 2.49,  premium: 3.99 } },
+  month:  { label: 'Monthly',   interval: 'month', count: 1, price: { basic: 5,     plus: 9,     premium: 15 } },
+  month3: { label: '3 months',  interval: 'month', count: 3, price: { basic: 14.25, plus: 25.65, premium: 42.75 } },
+  month6: { label: '6 months',  interval: 'month', count: 6, price: { basic: 27,    plus: 48.6,  premium: 81 } },
+  year:   { label: '12 months', interval: 'year',  count: 1, price: { basic: 48,    plus: 86.4,  premium: 144 } },
+};
+const JOB_UPLOADS = {
+  photo: { maxBytes: 5 * 1024 * 1024, types: { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } },
+  cv:    { maxBytes: 8 * 1024 * 1024, types: { 'application/pdf': 'pdf', 'application/msword': 'doc', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx' } },
+};
+const JOB_TYPES = ['Full-time', 'Part-time', 'Contract', 'Internship', 'Temporary', 'Freelance'];
+const WORK_MODES = ['On-site', 'Hybrid', 'Remote'];
+const AVAILABILITY = ['Immediately', 'Within 2 weeks', 'Within 1 month', 'In 3 months or more'];
+const LIVE_SUB = new Set(['active', 'trialing', 'past_due']);  // past_due: Stripe is still retrying the card
+const TALENT_PAGE = 24;
+
+class JobError extends Error {
+  constructor(message, status = 400) { super(message); this.status = status; }
+}
+
+let s3Client;
+const jobBucket = () => process.env.JOB_PROFILE_BUCKET;
+async function jobS3() {
+  if (!jobBucket()) throw new JobError('File uploads are not configured', 500);
+  const mod = await import('@aws-sdk/client-s3');
+  s3Client ??= new mod.S3Client({});
+  return { s3: s3Client, mod };
+}
+
+// A one-hour link to a private file; CVs download under their original name
+async function signedFileUrl(key, fileName) {
+  if (!key || !jobBucket()) return null;
+  const { s3, mod } = await jobS3();
+  const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
+  const disposition = fileName ? { ResponseContentDisposition: `attachment; filename="${fileName.replace(/[^\w.\- ]/g, '_')}"` } : {};
+  return getSignedUrl(s3, new mod.GetObjectCommand({ Bucket: jobBucket(), Key: key, ...disposition }), { expiresIn: 3600 });
+}
+
+async function deleteJobFile(key) {
+  if (!key || !jobBucket()) return;
+  const { s3, mod } = await jobS3();
+  await s3.send(new mod.DeleteObjectCommand({ Bucket: jobBucket(), Key: key })).catch(err => console.error('Deleting a profile file failed:', err.message));
+}
+
+// Checks formats and lengths; required fields are reported by jobProfileMissing so drafts can be saved
+function cleanJobProfile(b) {
+  const s = (v, max) => String(v ?? '').trim().slice(0, max);
+  const list = (v, max, each) => (Array.isArray(v) ? v : []).map(x => s(x, each)).filter(Boolean).slice(0, max);
+  const pick = (v, allowed) => [...new Set((Array.isArray(v) ? v : []).filter(x => allowed.includes(x)))];
+  const url = v => {
+    const u = s(v, 200);
+    if (!u) return '';
+    const full = /^https?:\/\//i.test(u) ? u : `https://${u}`;
+    try { return new URL(full).protocol.startsWith('http') ? full : ''; } catch { throw new JobError(`"${u}" isn't a valid link`); }
+  };
+  const month = v => (/^\d{4}-(0[1-9]|1[0-2])$/.test(s(v, 7)) ? s(v, 7) : '');
+  const year = v => (/^(19|20)\d{2}$/.test(s(v, 4)) ? s(v, 4) : '');
+  const phoneRaw = s(b.phone, 30);
+  const phone = phoneRaw ? parsePhoneNumberFromString(phoneRaw, 'US') : null;
+  if (phoneRaw && !phone?.isValid()) throw new JobError("The phone number isn't valid. Include the country code, e.g. +1 415 555 2671");
+  const email = s(b.email, 120).toLowerCase();
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new JobError("The email address isn't valid");
+  const years = b.yearsExperience === '' || b.yearsExperience == null ? null : Number(b.yearsExperience);
+  if (years != null && !(years >= 0 && years <= 60)) throw new JobError('Years of experience must be 0 to 60');
+  return {
+    firstName: s(b.firstName, 40), lastName: s(b.lastName, 40), headline: s(b.headline, 120),
+    city: s(b.city, 60), country: s(b.country, 60), email, phone: phone?.number ?? '',
+    about: s(b.about, 2000), desiredRoles: list(b.desiredRoles, 5, 60), jobTypes: pick(b.jobTypes, JOB_TYPES), workModes: pick(b.workModes, WORK_MODES),
+    yearsExperience: years, skills: list(b.skills, 30, 40), languages: list(b.languages, 10, 40),
+    availability: AVAILABILITY.includes(b.availability) ? b.availability : '',
+    willingToRelocate: !!b.willingToRelocate, openToWork: b.openToWork !== false, firstJob: !!b.firstJob,
+    workAuthorization: s(b.workAuthorization, 120), expectedSalary: s(b.expectedSalary, 60),
+    links: { linkedin: url(b.links?.linkedin), portfolio: url(b.links?.portfolio), github: url(b.links?.github) },
+    experience: (Array.isArray(b.experience) ? b.experience : []).slice(0, 15).map(e => ({
+      title: s(e?.title, 80), company: s(e?.company, 80), location: s(e?.location, 80),
+      start: month(e?.start), end: e?.current ? '' : month(e?.end), current: !!e?.current, description: s(e?.description, 1000),
+    })).filter(e => e.title || e.company),
+    education: (Array.isArray(b.education) ? b.education : []).slice(0, 10).map(e => ({
+      school: s(e?.school, 100), degree: s(e?.degree, 80), field: s(e?.field, 80), start: year(e?.start), end: year(e?.end),
+    })).filter(e => e.school),
+  };
+}
+
+// The required fields still empty, as the form labels them
+function jobProfileMissing(p) {
+  const m = [];
+  if (!p.firstName || !p.lastName) m.push('Full name');
+  if (!p.photoKey) m.push('Profile photo');
+  if (!p.cvKey) m.push('CV');
+  if ((p.headline ?? '').length < 5) m.push('Headline');
+  if (!p.city || !p.country) m.push('City and country');
+  if (!p.email) m.push('Email');
+  if (!p.phone) m.push('Phone');
+  if ((p.about ?? '').length < 50) m.push('About you (at least 50 characters)');
+  if (!p.desiredRoles?.length) m.push('Roles you want');
+  if (!p.jobTypes?.length) m.push('Job types');
+  if (!p.workModes?.length) m.push('Work arrangement');
+  if (p.yearsExperience == null) m.push('Years of experience');
+  if ((p.skills?.length ?? 0) < 3) m.push('At least 3 skills');
+  if (!p.languages?.length) m.push('Languages');
+  if (!p.availability) m.push('Availability');
+  if (!p.firstJob && !p.experience?.some(e => e.title && e.company && e.start)) m.push('Work experience (or tick "Looking for my first job")');
+  if (!p.education?.some(e => e.school)) m.push('Education');
+  return m;
+}
+
+const subLive = sub => !!sub && LIVE_SUB.has(sub.status) && Date.parse(sub.currentPeriodEnd) > Date.now() - 864e5;
+
+// Listed while complete, not hidden by an admin, and paid up (with a day's grace for the renewal)
+function jobListingFields(p) {
+  const listed = !p.hidden && jobProfileMissing(p).length === 0 && subLive(p.subscription);
+  return {
+    listedUntil: listed ? new Date(Date.parse(p.subscription.currentPeriodEnd) + 864e5).toISOString() : null,
+    planRank: listed ? JOB_PLANS[p.subscription.plan]?.rank ?? 0 : 0,
+  };
+}
+
+function stripeSubFields(s, plan, period) {
+  const end = s.current_period_end ?? s.items?.data?.[0]?.current_period_end;
+  return {
+    plan, period, status: s.status, stripeSubscriptionId: s.id, stripeCustomerId: typeof s.customer === 'string' ? s.customer : s.customer?.id,
+    currentPeriodEnd: end ? new Date(end * 1000).toISOString() : null, cancelAtPeriodEnd: !!s.cancel_at_period_end,
+  };
+}
+
+// Picks up renewals, failed payments and cancellations from Stripe
+async function refreshJobSub(coll, p) {
+  const sub = p.subscription;
+  if (!sub?.stripeSubscriptionId) return p;
+  const stripe = mainStripe();
+  const s = stripe && await stripe.subscriptions.retrieve(sub.stripeSubscriptionId).catch(() => null);
+  if (!s) return p;
+  const next = { ...p, subscription: { ...sub, ...stripeSubFields(s, sub.plan, sub.period) } };
+  const set = { subscription: next.subscription, ...jobListingFields(next), subscriptionCheckedAt: new Date().toISOString() };
+  await coll.updateOne({ _id: p._id }, { $set: set });
+  return { ...next, ...set };
+}
+
+// Subscriptions whose paid period has passed are checked once an hour
+async function refreshDueJobSubs(coll, limit = 25) {
+  const now = new Date().toISOString(), hourAgo = new Date(Date.now() - 3600e3).toISOString();
+  const due = await coll.find({
+    'subscription.stripeSubscriptionId': { $exists: true }, 'subscription.currentPeriodEnd': { $lt: now },
+    'subscription.status': { $in: [...LIVE_SUB] }, $or: [{ subscriptionCheckedAt: { $exists: false } }, { subscriptionCheckedAt: { $lt: hourAgo } }],
+  }).limit(limit).toArray();
+  for (const p of due) await refreshJobSub(coll, p).catch(err => console.error('Job subscription refresh failed:', err.message));
+}
+
+function jobPlansReply() {
+  return {
+    plans: Object.entries(JOB_PLANS).map(([id, p]) => ({ id, name: p.name, monthly: p.monthly, perks: p.perks })),
+    periods: Object.entries(JOB_PERIODS).map(([id, p]) => ({ id, label: p.label, price: p.price })),
+    options: { jobTypes: JOB_TYPES, workModes: WORK_MODES, availability: AVAILABILITY },
+  };
+}
+
+const jobName = p => `${p.firstName} ${p.lastName}`.trim();
+
+async function talentCard(p) {
+  return {
+    id: String(p._id), name: jobName(p), headline: p.headline, city: p.city, country: p.country,
+    photoUrl: await signedFileUrl(p.photoKey), skills: (p.skills ?? []).slice(0, 8), desiredRoles: p.desiredRoles ?? [],
+    jobTypes: p.jobTypes ?? [], workModes: p.workModes ?? [], yearsExperience: p.yearsExperience, availability: p.availability,
+    openToWork: p.openToWork !== false, plan: p.subscription?.plan ?? null, featured: p.subscription?.plan === 'premium',
+  };
+}
+
+// The full profile; contact details and the CV only for companies, admins and the owner
+async function talentProfile(p, { contact }) {
+  return {
+    ...(await talentCard(p)),
+    skills: p.skills ?? [], about: p.about, languages: p.languages ?? [], experience: p.experience ?? [], education: p.education ?? [],
+    links: p.links ?? {}, willingToRelocate: !!p.willingToRelocate, workAuthorization: p.workAuthorization ?? '', firstJob: !!p.firstJob,
+    contact: contact ? { email: p.email, phone: p.phone, expectedSalary: p.expectedSalary ?? '', cvUrl: await signedFileUrl(p.cvKey, p.cvName), cvName: p.cvName ?? null } : null,
+  };
+}
+
+async function ownerJobView(p) {
+  const { _id, photoKey, cvKey, hidden, subscriptionCheckedAt, ...fields } = p;
+  return {
+    profile: { ...fields, id: String(_id) },
+    photoUrl: await signedFileUrl(photoKey), cvUrl: await signedFileUrl(cvKey, p.cvName), hasPhoto: !!photoKey, hasCv: !!cvKey,
+    missing: jobProfileMissing(p), listed: !!p.listedUntil && Date.parse(p.listedUntil) > Date.now(), hidden: !!hidden,
+    subscription: p.subscription ?? null, live: subLive(p.subscription), companyViews: p.companyViews ?? 0,
+  };
+}
+
+const escapeRegex = v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+async function handleJobs(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const db = await getDb();
+  const coll = db.collection('job_profiles');
+  const user = await optionalUser(body.idToken);
+  const me = () => { if (!user) throw new JobError('Please sign in first.', 401); return user; };
+  const mine = async () => (await coll.findOne({ _id: me().sub })) ?? { _id: me().sub, email: me().email, createdAt: new Date().toISOString() };
+  // Companies (approved business accounts) and admins see contact details and CVs
+  const isCompany = async () => {
+    if (!user) return false;
+    if (await roleForEmail(user.email) !== 'user') return true;
+    return rw.isApprovedBusiness(await rw.getAccount(db, user));
+  };
+
+  try {
+    switch (body.action) {
+      case 'plans':
+        return json(200, jobPlansReply());
+
+      case 'profile.get': {
+        let p = await coll.findOne({ _id: me().sub });
+        if (p && p.subscription && Date.parse(p.subscription.currentPeriodEnd) < Date.now()) p = await refreshJobSub(coll, p);
+        return json(200, { ...jobPlansReply(), ...(p ? await ownerJobView(p) : { profile: null, missing: jobProfileMissing({}) }), signedInEmail: me().email, signedInName: me().name });
+      }
+
+      case 'profile.save': {
+        const p = { ...(await mine()), ...cleanJobProfile(body.profile ?? {}), updatedAt: new Date().toISOString() };
+        Object.assign(p, jobListingFields(p));
+        await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        return json(200, await ownerJobView(p));
+      }
+
+      // Step 1 of an upload: a short-lived form that lets the browser post one file straight to S3
+      case 'upload.start': {
+        const kind = JOB_UPLOADS[body.kind] ? body.kind : null;
+        if (!kind) throw new JobError('Unknown upload');
+        const rule = JOB_UPLOADS[kind];
+        const ext = rule.types[body.contentType];
+        if (!ext) throw new JobError(kind === 'photo' ? 'Upload a JPG, PNG or WebP photo' : 'Upload your CV as a PDF or Word document');
+        if (!(Number(body.size) > 0 && Number(body.size) <= rule.maxBytes)) throw new JobError(`The file must be under ${rule.maxBytes / 1024 / 1024} MB`);
+        const key = `profiles/${me().sub}/${kind}-${Date.now()}.${ext}`;
+        const { s3 } = await jobS3();
+        const { createPresignedPost } = await import('@aws-sdk/s3-presigned-post');
+        const post = await createPresignedPost(s3, {
+          Bucket: jobBucket(), Key: key, Expires: 600,
+          Conditions: [['content-length-range', 1, rule.maxBytes], ['eq', '$Content-Type', body.contentType]],
+          Fields: { 'Content-Type': body.contentType },
+        });
+        return json(200, { url: post.url, fields: post.fields, key });
+      }
+
+      // Step 2: the file is in S3; attach it to the profile and remove the one it replaces
+      case 'upload.finish': {
+        const kind = JOB_UPLOADS[body.kind] ? body.kind : null;
+        const key = String(body.key ?? '');
+        if (!kind || !key.startsWith(`profiles/${me().sub}/${kind}-`)) throw new JobError('Unknown upload');
+        const { s3, mod } = await jobS3();
+        const head = await s3.send(new mod.HeadObjectCommand({ Bucket: jobBucket(), Key: key })).catch(() => null);
+        if (!head) throw new JobError('The upload did not finish. Please try again.');
+        const p = await mine();
+        const old = kind === 'photo' ? p.photoKey : p.cvKey;
+        if (kind === 'photo') p.photoKey = key;
+        else { p.cvKey = key; p.cvName = String(body.fileName ?? 'CV').slice(0, 120); }
+        p.updatedAt = new Date().toISOString();
+        Object.assign(p, jobListingFields(p));
+        await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        if (old && old !== key) await deleteJobFile(old);
+        return json(200, await ownerJobView(p));
+      }
+
+      case 'subscribe': {
+        const stripe = mainStripe();
+        if (!stripe) throw new JobError('Payments are not configured', 500);
+        const p = await coll.findOne({ _id: me().sub });
+        const missing = p ? jobProfileMissing(p) : ['Your profile'];
+        if (missing.length) throw new JobError(`Finish your profile first: ${missing.join(', ')}`);
+        const plan = JOB_PLANS[body.plan] ? body.plan : null, period = JOB_PERIODS[body.period] ? body.period : null;
+        if (!plan || !period) throw new JobError('Choose a plan and how often to pay');
+        if (subLive(p.subscription) && !p.subscription.cancelAtPeriodEnd) {
+          throw new JobError(`You already have the ${JOB_PLANS[p.subscription.plan].name} plan. To change it, cancel it first; it stays active until ${p.subscription.currentPeriodEnd.slice(0, 10)}.`, 409);
+        }
+        const per = JOB_PERIODS[period];
+        const session = await stripe.checkout.sessions.create({
+          mode: 'subscription',
+          line_items: [{ quantity: 1, price_data: {
+            currency: 'usd', unit_amount: Math.round(per.price[plan] * 100),
+            recurring: { interval: per.interval, interval_count: per.count },
+            product_data: { name: `Lyrtrip job profile: ${JOB_PLANS[plan].name}`, description: `${JOB_PLANS[plan].perks.join(' · ')}. Billed ${per.label.toLowerCase()}; cancel any time.` },
+          } }],
+          ...(p.subscription?.stripeCustomerId ? { customer: p.subscription.stripeCustomerId } : { customer_email: p.email || me().email }),
+          client_reference_id: me().sub,
+          metadata: { type: 'job_profile', sub: me().sub, plan, period },
+          subscription_data: { metadata: { type: 'job_profile', sub: me().sub, plan, period } },
+          success_url: `${SITE_URL}/jobs/profile?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${SITE_URL}/jobs/profile?checkout=canceled`,
+        });
+        return json(200, { url: session.url });
+      }
+
+      case 'subscribe.confirm': {
+        const stripe = mainStripe();
+        const session = await stripe.checkout.sessions.retrieve(String(body.sessionId ?? ''), { expand: ['subscription'] }).catch(() => null);
+        if (!session || session.metadata?.type !== 'job_profile' || session.metadata.sub !== me().sub) throw new JobError('This payment is not for your profile', 403);
+        if (session.status !== 'complete' || !session.subscription) throw new JobError('The payment was not completed', 402);
+        const p = await mine();
+        p.subscription = stripeSubFields(session.subscription, session.metadata.plan, session.metadata.period);
+        p.promotedAt = new Date().toISOString();
+        p.subscriptionCheckedAt = p.promotedAt;
+        Object.assign(p, jobListingFields(p));
+        await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        return json(200, await ownerJobView(p));
+      }
+
+      case 'subscription.cancel':
+      case 'subscription.resume': {
+        const p = await coll.findOne({ _id: me().sub });
+        if (!p?.subscription?.stripeSubscriptionId || !subLive(p.subscription)) throw new JobError('You have no active plan');
+        await mainStripe().subscriptions.update(p.subscription.stripeSubscriptionId, { cancel_at_period_end: body.action === 'subscription.cancel' });
+        return json(200, await ownerJobView(await refreshJobSub(coll, p)));
+      }
+
+      // Removes the profile and its files; an active plan ends now (no refund for the rest of the period)
+      case 'profile.delete': {
+        const p = await coll.findOne({ _id: me().sub });
+        if (!p) return json(200, { deleted: true });
+        if (p.subscription?.stripeSubscriptionId && subLive(p.subscription)) {
+          await mainStripe().subscriptions.cancel(p.subscription.stripeSubscriptionId).catch(err => console.error('Cancelling a job plan failed:', err.message));
+        }
+        await Promise.all([deleteJobFile(p.photoKey), deleteJobFile(p.cvKey)]);
+        await coll.deleteOne({ _id: p._id });
+        await db.collection('job_profile_views').deleteMany({ profileId: p._id });
+        return json(200, { deleted: true });
+      }
+
+      // The directory: paid, complete profiles, Premium first; anyone may browse
+      case 'talent.list': {
+        await refreshDueJobSubs(coll).catch(err => console.error('Job subscription sweep failed:', err.message));
+        const q = String(body.q ?? '').trim().slice(0, 80), where = String(body.location ?? '').trim().slice(0, 80);
+        const filter = { listedUntil: { $gt: new Date().toISOString() }, hidden: { $ne: true } };
+        const and = [];
+        if (q) {
+          const rx = { $regex: escapeRegex(q), $options: 'i' };
+          and.push({ $or: [{ headline: rx }, { skills: rx }, { desiredRoles: rx }, { firstName: rx }, { lastName: rx }, { about: rx }] });
+        }
+        if (where) {
+          const rx = { $regex: escapeRegex(where), $options: 'i' };
+          and.push({ $or: [{ city: rx }, { country: rx }, ...(/remote/i.test(where) ? [{ workModes: 'Remote' }] : [])] });
+        }
+        if (body.featured) filter.planRank = 3;
+        if (and.length) filter.$and = and;
+        const page = Math.max(0, Math.min(50, Number(body.page) || 0));
+        const rows = await coll.find(filter).sort({ planRank: -1, promotedAt: -1 }).skip(page * TALENT_PAGE).limit(TALENT_PAGE + 1).toArray();
+        return json(200, {
+          talent: await Promise.all(rows.slice(0, TALENT_PAGE).map(talentCard)), more: rows.length > TALENT_PAGE,
+          viewerIsCompany: await isCompany(),
+        });
+      }
+
+      case 'talent.get': {
+        const id = String(body.id ?? '');
+        const p = await coll.findOne({ _id: id });
+        const own = user?.sub === id;
+        const listed = p && !p.hidden && Date.parse(p.listedUntil) > Date.now();
+        const company = await isCompany();
+        if (!p || (!listed && !own && !company)) throw new JobError('This profile is not available', 404);
+        // Count each company's first look, so the owner sees their reach
+        if (company && !own) {
+          const r = await db.collection('job_profile_views').updateOne({ _id: `${id}:${user.sub}` },
+            { $setOnInsert: { profileId: id, viewer: user.sub, at: new Date().toISOString() } }, { upsert: true });
+          if (r.upsertedCount) await coll.updateOne({ _id: id }, { $inc: { companyViews: 1 } });
+        }
+        return json(200, { profile: await talentProfile(p, { contact: company || own }), viewerIsCompany: company, own });
+      }
+
+      default:
+        throw new JobError('Unknown action');
+    }
+  } catch (err) {
+    if (err instanceof JobError) return json(err.status, { error: err.message });
+    if (err.name === 'JwtExpiredError' || /jwt/i.test(err.name ?? '')) return json(401, { error: 'Please sign in again.' });
+    console.error('Job profile action failed:', body.action, err);
+    return json(500, { error: 'Something went wrong. Please try again.' });
+  }
+}
+
 async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
@@ -4734,6 +5147,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/delivery/quote')         && method === 'POST')         return handleDeliveryQuote(event);
     if (path.endsWith('/api/delivery/checkout')      && method === 'POST')         return handleDeliveryCheckout(event);
     if (path.endsWith('/api/delivery/confirm')       && method === 'POST')         return handleDeliveryConfirm(event);
+    if (path.endsWith('/api/jobs')                   && method === 'POST')         return handleJobs(event);
     if (path.endsWith('/api/ride/estimate')          && method === 'POST')         return handleRideEstimate(event);
     if (path.endsWith('/api/ride/checkout')          && method === 'POST')         return handleRideCheckout(event);
     if (path.endsWith('/api/ride/confirm')           && method === 'POST')         return handleRideConfirm(event);

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { takeReturnTo } from '@/lib/returnTo';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { completeFederatedSignIn } from '@/lib/auth';
@@ -34,7 +35,7 @@ export default function AuthCallbackPage() {
       }
       await refresh();
       const hasPending = !!sessionStorage.getItem('lyrtrip_pending_booking');
-      router.replace(hasPending ? '/?booking=pending' : '/dashboard');
+      router.replace(hasPending ? '/?booking=pending' : takeReturnTo());
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

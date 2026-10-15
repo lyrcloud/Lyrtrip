@@ -86,6 +86,13 @@ export default function Navigation() {
                     >
                       {t('Rewards & gift cards')}
                     </Link>
+                    <Link
+                      href="/jobs/profile"
+                      onClick={() => setMenuOpen(false)}
+                      className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      {t('Job profile')}
+                    </Link>
                     <button
                       onClick={handleSignOut}
                       className="block w-full text-start px-4 py-2 text-sm text-red-600 hover:bg-red-50"

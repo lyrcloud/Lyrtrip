@@ -50,6 +50,11 @@ export default function PrivacyPolicyPage() {
                 order or booking a ride.
               </li>
               <li>
+                <span className="font-semibold">Job profile:</span> if you create one, your
+                photo, CV, contact details, work history, education, skills and job
+                preferences.
+              </li>
+              <li>
                 <span className="font-semibold">Location data:</span> if you grant
                 permission, your device location, and addresses you search for or select,
                 used to show nearby results on the map and prefill pickup locations.
@@ -101,6 +106,15 @@ export default function PrivacyPolicyPage() {
               <li>
                 <span className="font-semibold">Stripe</span> &mdash; payment processing
                 and refunds.
+              </li>
+              <li>
+                <span className="font-semibold">Companies that are hiring</span> &mdash; while
+                you have a paid job profile plan, your profile (photo, name, headline,
+                location, experience, education and skills) is shown in the Lyrtrip talent
+                directory, which anyone can browse. Your email, phone, CV and expected salary
+                are shown only to companies with an approved Lyrtrip business account. Cancel
+                your plan to stop being listed, or delete your job profile to remove it and
+                its files.
               </li>
               <li>
                 <span className="font-semibold">Courier and shipping partners</span> &mdash; when

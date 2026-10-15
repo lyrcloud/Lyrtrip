@@ -14,6 +14,7 @@ import CheckoutExtras from '@/components/CheckoutExtras';
 import ShippingTab from '@/components/ShippingTab';
 import CourierDelivery from '@/components/CourierDelivery';
 import RideBooking from '@/components/RideBooking';
+import JobProfilePromo from '@/components/JobProfilePromo';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -2688,6 +2689,7 @@ export default function Home() {
             {/* Jobs (Career) */}
             {activeTab === 'career' && (
               <div>
+                <JobProfilePromo />
                 <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Job Title / Keywords</label>
