@@ -4,16 +4,17 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import HelicopterForm from '@/components/HelicopterForm';
-import { heliCall, HELI_ICON, HELI_STATUS_STYLE, NEW_MEDICAL, NEW_PASSENGER, type HeliDraft, type HeliOptions, type HeliRequest, type HeliService } from '@/lib/helicopter';
+import { heliCall, HELI_ICON, HELI_MEDICAL, HELI_STATUS_STYLE, NEW_MEDICAL, NEW_PASSENGER, type HeliDraft, type HeliOptions, type HeliRequest, type HeliService } from '@/lib/helicopter';
 import { rememberReturnTo } from '@/lib/returnTo';
 
 const primary = 'px-5 py-3 bg-btn text-white rounded-xl font-bold hover:bg-btn-hover disabled:bg-gray-300 transition';
 
-const NAME: Record<HeliService, string> = { helicopter: 'helicopter', seaplane: 'seaplane', ambulance: 'air ambulance' };
+const NAME: Record<HeliService, string> = { helicopter: 'helicopter', seaplane: 'seaplane', ambulance: 'air ambulance', roadambulance: 'ambulance' };
 const INTRO: Record<HeliService, [string, string]> = {
   helicopter: ['Helicopter charters through Lyrtrip', 'Transfers, airport hops, scenic tours, pilgrimages, weddings and filming.'],
   seaplane: ['Seaplane flights through Lyrtrip', 'Resort and island transfers, island hopping, scenic flights and remote lodges.'],
   ambulance: ['Air ambulance through Lyrtrip', 'Air ambulance jets and helicopters, airline stretcher escorts and medical repatriation, with doctors or nurses on board.'],
+  roadambulance: ['Ambulance service through Lyrtrip', 'Booked ambulance transfers: hospital to hospital, discharge home, dialysis and scan trips, ICU ambulances, long-distance transfers and event standby.'],
 };
 
 // Helicopter, Seaplane and Air ambulance tabs: charter through Lyrtrip. Lyrtrip finds the operator,
@@ -67,14 +68,16 @@ export default function HelicopterPanel({ service }: { service: HeliService }) {
       <div className="rounded-2xl bg-gradient-to-r from-sky-50 to-indigo-50 ring-1 ring-sky-100 p-4">
         <p className="font-bold text-gray-900">{HELI_ICON[service]} {INTRO[service][0]}</p>
         <p className="text-sm text-gray-600">
-          {INTRO[service][1]} Tell us the route and {service === 'ambulance' ? 'the patient' : 'passengers'}: we find a licensed operator,
+          {INTRO[service][1]} Tell us the route and {HELI_MEDICAL.includes(service) ? 'the patient' : 'passengers'}: we find a licensed operator,
           send you one all-in price (plus our {pct}% service charge), and book it once you pay. <Link href="/helicopter/requests" className="font-semibold text-brand-600">My charters →</Link>
         </p>
       </div>
-      {service === 'ambulance' && (
+      {HELI_MEDICAL.includes(service) && (
         <p role="note" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-800 ring-1 ring-red-200">
-          <b>Not for emergencies.</b> If someone&apos;s life is in danger, call your local emergency number now (112, 911, 999 or 108).
-          Air ambulance flights are arranged with the treating doctor and need the operator&apos;s medical team to confirm the patient is fit to fly.
+          <b>Not for emergencies.</b> If someone&apos;s life is in danger, call your local emergency number now (112, 911, 999 or 108).{' '}
+          {service === 'roadambulance'
+            ? 'This books planned ambulance transfers; a crew is arranged with the hospital and the treating doctor.'
+            : 'Air ambulance flights are arranged with the treating doctor and need the operator\'s medical team to confirm the patient is fit to fly.'}
         </p>
       )}
 

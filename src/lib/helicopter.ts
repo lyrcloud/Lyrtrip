@@ -6,7 +6,10 @@ export interface HeliContact { name: string; email: string; phone: string; count
 // Air ambulance only: the patient (passenger 1) and the care they need on board
 export interface HeliMedical { condition: string; mobility: string; oxygen: boolean; escort: string; urgency: string; bedConfirmed: boolean; doctor: string; insurance: string }
 
-export type HeliService = 'helicopter' | 'seaplane' | 'ambulance';
+export type HeliService = 'helicopter' | 'seaplane' | 'ambulance' | 'roadambulance';
+
+// Services that carry a patient and ask for their medical needs
+export const HELI_MEDICAL: string[] = ['ambulance', 'roadambulance'];
 
 export type HeliStatus = 'submitted' | 'info_needed' | 'quoted' | 'processing' | 'confirmed' | 'unavailable' | 'refunded' | 'cancelled';
 
@@ -16,7 +19,7 @@ export interface HeliDraft {
   flexibleDates: boolean; hours: string; aircraft: string; contact: HeliContact; passengers: HeliPassenger[]; luggageKg: string; budget: string; note: string;
 }
 
-// An air charter (helicopter, seaplane or air ambulance) requested through Lyrtrip
+// An air charter or ambulance (helicopter, seaplane, air or ground ambulance) requested through Lyrtrip
 export interface HeliRequest {
   id: string; service: HeliService; serviceLabel: string; medical: HeliMedical | null; charter: string; charterLabel: string; roundTrip: boolean; from: string; to: string;
   date: string; time: string; returnDate: string; returnTime: string; flexibleDates: boolean; hours: number | null; aircraft: string;
@@ -29,7 +32,7 @@ export interface HeliRequest {
 export interface HeliServiceSpec { label: string; charters: Record<string, string>; aircraft: string[]; loop: string[] }
 export interface HeliOptions { services: Record<HeliService, HeliServiceSpec>; mobility: string[]; escorts: string[]; urgency: string[]; idTypes: string[]; maxPassengers: number; serviceRate: number; quoteHours: number }
 
-export const HELI_ICON: Record<string, string> = { helicopter: '🚁', seaplane: '🛩️', ambulance: '🚑' };
+export const HELI_ICON: Record<string, string> = { helicopter: '🚁', seaplane: '🛩️', ambulance: '🚑', roadambulance: '🚨' };
 
 export const HELI_STATUS_STYLE: Record<string, string> = {
   submitted: 'bg-sky-100 text-sky-800', info_needed: 'bg-orange-100 text-orange-800', quoted: 'bg-amber-100 text-amber-900',

@@ -1,6 +1,6 @@
 'use client';
 
-import { NEW_PASSENGER, type HeliContact, type HeliDraft, type HeliMedical, type HeliOptions, type HeliPassenger } from '@/lib/helicopter';
+import { HELI_MEDICAL, NEW_PASSENGER, type HeliContact, type HeliDraft, type HeliMedical, type HeliOptions, type HeliPassenger } from '@/lib/helicopter';
 
 const input = 'w-full px-3 py-2.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100';
 const label = 'block text-xs font-semibold text-gray-600 mb-1';
@@ -19,7 +19,8 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
     set('passengers', Array.from({ length: count }, (_, i) => draft.passengers[i] ?? { ...NEW_PASSENGER }));
   };
   const svc = opts.services[draft.service];
-  const ambulance = draft.service === 'ambulance';
+  const ambulance = HELI_MEDICAL.includes(draft.service);
+  const road = draft.service === 'roadambulance';
   const loop = svc.loop.includes(draft.charter);
   const today = new Date().toISOString().slice(0, 10);
   return (
@@ -35,9 +36,9 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
       {draft.service === 'helicopter' && draft.charter === 'pilgrimage' && <p className="text-xs text-gray-500">e.g. Kedarnath, Char Dham, Do Dham, Vaishno Devi, Amarnath, Kailash Mansarovar. Seasonal shuttles sell out early: send the request as soon as you know your dates.</p>}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label className={label}>{ambulance ? 'Patient is now at' : loop ? 'Take off from' : 'From'} {req}</label>
+        <div><label className={label}>{road && loop ? 'Event venue' : ambulance ? 'Patient is now at' : loop ? 'Take off from' : 'From'} {req}</label>
           <input className={input} value={draft.from} maxLength={160} onChange={e => set('from', e.target.value)} placeholder={ambulance ? 'Hospital name and city' : draft.service === 'seaplane' ? 'Airport, jetty, resort or island' : 'Helipad, airport, city or address'} /></div>
-        <div><label className={label}>{ambulance ? 'Receiving hospital' : loop ? 'Fly over / route (optional)' : 'To'} {!loop && req}</label>
+        <div><label className={label}>{road && loop ? 'Event name (optional)' : ambulance ? 'Receiving hospital' : loop ? 'Fly over / route (optional)' : 'To'} {!loop && req}</label>
           <input className={input} value={draft.to} maxLength={160} onChange={e => set('to', e.target.value)} placeholder={ambulance ? 'Hospital name and city' : loop ? 'e.g. Grand Canyon, Manhattan skyline' : draft.service === 'seaplane' ? 'Resort, island or jetty' : 'Helipad, airport, city or address'} /></div>
       </div>
       {!loop && !ambulance && (
@@ -55,7 +56,7 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
           <div><label className={label}>Return date {req}</label><input className={input} type="date" min={draft.date || today} value={draft.returnDate} onChange={e => set('returnDate', e.target.value)} /></div>
           <div><label className={label}>Return time</label><input className={input} type="time" value={draft.returnTime} onChange={e => set('returnTime', e.target.value)} /></div>
         </>)}
-        {loop && <div><label className={label}>Flying time (hours) {req}</label><input className={input} type="number" min={0.5} max={12} step={0.5} value={draft.hours} onChange={e => set('hours', e.target.value)} placeholder="1" /></div>}
+        {loop && <div><label className={label}>{road ? 'Standby hours' : 'Flying time (hours)'} {req}</label><input className={input} type="number" min={0.5} max={12} step={0.5} value={draft.hours} onChange={e => set('hours', e.target.value)} placeholder="1" /></div>}
       </div>
       <label className="flex items-center gap-2 text-sm text-gray-700">
         <input type="checkbox" checked={draft.flexibleDates} onChange={e => set('flexibleDates', e.target.checked)} /> My dates are flexible (weather or a cheaper slot)
@@ -66,7 +67,7 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
           <select className={input} value={draft.passengers.length} onChange={e => setCount(Number(e.target.value))}>
             {Array.from({ length: opts.maxPassengers }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
           </select></div>
-        <div className="col-span-2 sm:col-span-1"><label className={label}>Aircraft</label>
+        <div className="col-span-2 sm:col-span-1"><label className={label}>{road ? 'Ambulance type' : 'Aircraft'}</label>
           <select className={input} value={draft.aircraft} onChange={e => set('aircraft', e.target.value)}>
             {svc.aircraft.map(a => <option key={a}>{a}</option>)}
           </select></div>
@@ -119,7 +120,7 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
       {draft.passengers.map((p, i) => (
         <fieldset key={i} className="space-y-3 rounded-xl ring-1 ring-gray-100 p-3">
           <legend className="px-1 text-sm font-bold text-gray-900">{ambulance ? (i === 0 ? 'Patient' : `Companion ${i}`) : `Passenger ${i + 1}`}</legend>
-          <p className="text-xs text-gray-500">As on the photo ID they will bring. The pilot needs each weight to balance the aircraft safely.</p>
+          <p className="text-xs text-gray-500">As on the photo ID they will bring. {road ? 'The crew needs each weight for the stretcher and safe loading.' : 'The pilot needs each weight to balance the aircraft safely.'}</p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="sm:col-span-2"><label className={label}>Full name as on ID {req}</label><input className={input} value={p.fullName} maxLength={80} onChange={e => setPassenger(i, 'fullName', e.target.value)} /></div>
             <div><label className={label}>Weight (kg) {req}</label><input className={input} type="number" min={3} max={250} value={p.weightKg} onChange={e => setPassenger(i, 'weightKg', e.target.value)} /></div>

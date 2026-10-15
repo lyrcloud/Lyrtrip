@@ -605,6 +605,8 @@ const STUDY_OPTIONS: { id: string; icon: string; label: string; blurb: string; m
   ] } },
 ];
 for (const o of STUDY_OPTIONS) ICON_MOTION[o.id] = o.motion;
+// Option tiles under a group tile reuse their tab's motion, keyed apart from the group tiles' own icons
+for (const k of Object.keys(ICON_MOTION)) ICON_MOTION[`sub-${k}`] = ICON_MOTION[k];
 
 export default function Home() {
   const { user } = useAuth();
@@ -1337,6 +1339,7 @@ export default function Home() {
     { id: 'car', icon: '🚗', label: t('Car'), sub: t('Book a ride') },
     { id: 'taxi', icon: '🚕', label: t('Taxi'), sub: t('Licensed taxis') },
     { id: 'limo', icon: '🥂', label: t('Limo'), sub: t('Luxury rides') },
+    { id: 'ambulance', icon: '🚨', label: t('Ambulance'), sub: t('Patient transfers') },
     { id: 'motorcycle', icon: '🏍️', label: t('Motorcycle'), sub: t('Bike taxis') },
     { id: 'bike', icon: '🚲', label: t('Bike'), sub: t('Shared bikes') },
     { id: 'ebike', icon: '⚡', label: t('E-bike'), sub: t('Electric bikes') },
@@ -1369,7 +1372,7 @@ export default function Home() {
 
   // The tiles: Transport, Stay, Shipping and Events group several tabs (shown as a row of options below)
   const TAB_GROUPS = [
-    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, air charters, bus, train, cruise & rides'), items: ['flights', 'helicopter', 'seaplane', 'airambulance', 'bus', 'train', 'cruise', 'car', 'taxi', 'limo', 'motorcycle', 'bike', 'ebike', 'scooter'] },
+    { id: 'transport', icon: '✈️', motion: 'flights', label: t('Transport'), sub: t('Flights, air charters, bus, train, cruise & rides'), items: ['flights', 'helicopter', 'seaplane', 'airambulance', 'bus', 'train', 'cruise', 'car', 'taxi', 'limo', 'ambulance', 'motorcycle', 'bike', 'ebike', 'scooter'] },
     { id: 'stay', icon: '🏨', motion: 'hotels', label: t('Stay'), sub: t('Hotels, homestays & more'), items: ['hotels'] },
     { id: 'shippinggroup', icon: '📦', motion: 'shipping', label: t('Shipping'), sub: t('Food, courier, parcels, trucks & cargo'), items: ['food', 'dash', 'shipping', 'truck', 'freight'] },
     { id: 'eventsgroup', icon: '🎟️', motion: 'events', label: t('Events'), sub: t('Shows, summits & charity'), items: ['events', 'charity'] },
@@ -1383,6 +1386,16 @@ export default function Home() {
     }),
   ];
   const activeTile = tiles.find(g => g.items.includes(activeTab)) ?? tiles[0];
+  // Options with their own options: Helicopter opens Seaplane and Air ambulance (they stay out of the group's own row)
+  const SUB_MENUS: Record<string, string[]> = { helicopter: ['helicopter', 'seaplane', 'airambulance'] };
+  const subParent = (id: string) => Object.keys(SUB_MENUS).find(k => SUB_MENUS[k].includes(id)) ?? id;
+  const groupMenu = activeTile.items.filter(id => subParent(id) === id);
+  const subMenu = SUB_MENUS[subParent(activeTab)] ?? null;
+  const tileGrid = (n: number) => (n <= 3 ? 'grid-cols-3 max-w-2xl' : n <= 5 ? 'grid-cols-3 sm:grid-cols-5' : n <= 8 ? 'grid-cols-4 sm:grid-cols-8' : 'grid-cols-3 sm:grid-cols-5 md:grid-cols-7');
+  const menuTiles = (ids: string[], selected: string, aria: string) => optionTiles(
+    ids.map(id => ({ id: `sub-${id}`, icon: tabById[id].icon, label: tabById[id].label })),
+    tabById[selected]?.label ?? '', label => { const id = ids.find(x => tabById[x].label === label); if (id && id !== activeTab) switchTab(id); }, aria, tileGrid(ids.length),
+  );
   const STAY_TYPES: [string, string, string][] = [
     ['hotels', '🏨', t('Hotels')], ['homestays', '🏡', t('Homestays')], ['resorts', '🏝️', t('Resorts')], ['hostels', '🛏️', t('Hostels & dorms')],
     ['apartments', '🏢', t('Apartments')], ['villas', '🏘️', t('Villas')], ['guesthouses', '🛖', t('Guesthouses')], ['bnb', '☕', t('B&Bs')],
@@ -2261,20 +2274,24 @@ export default function Home() {
             })}
           </div>
 
-          {/* Options inside a group: Transport, Shipping and Events pick a tab, Stay picks the property type */}
+          {/* Options inside a group, as large tiles like Tourism and Study: Transport, Shipping and Events pick a tab
+              (Helicopter opens a second row), Stay picks the property type */}
           {(activeTile.items.length > 1 || activeTile.id === 'stay') && (
-            <div className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 sm:px-5 py-3 bg-gray-50/60">
+            <div className="border-b border-gray-100 px-3 sm:px-5 pt-4 sm:pt-5 bg-gray-50/60">
               {activeTile.id === 'stay'
-                ? STAY_TYPES.map(([id, icon, label]) => (
-                  <button key={id} onClick={() => { setStayType(id); setResults([]); setHasSearched(false); }} className={subPill(stayType === id)}>
-                    <span aria-hidden>{icon}</span>{label}
-                  </button>
-                ))
-                : activeTile.items.map(id => (
-                  <button key={id} onClick={() => switchTab(id)} className={subPill(activeTab === id)}>
-                    <span aria-hidden>{tabById[id].icon}</span>{tabById[id].label}
-                  </button>
-                ))}
+                ? optionTiles(
+                  STAY_TYPES.map(([id, icon, label]) => ({ id: `stay-${id}`, icon, label })),
+                  STAY_TYPES.find(([id]) => id === stayType)?.[2] ?? '',
+                  label => { const hit = STAY_TYPES.find(([, , l]) => l === label); if (hit) { setStayType(hit[0]); setResults([]); setHasSearched(false); } },
+                  t('Property type'), tileGrid(STAY_TYPES.length),
+                )
+                : menuTiles(groupMenu, subParent(activeTab), activeTile.label)}
+              {subMenu && (
+                <div key={subParent(activeTab)} className="animate-[panelIn_250ms_ease-out]">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wider text-gray-500">{tabById[subParent(activeTab)].label}</p>
+                  {menuTiles(subMenu, activeTab, tabById[subParent(activeTab)].label)}
+                </div>
+              )}
             </div>
           )}
 
@@ -2859,6 +2876,7 @@ export default function Home() {
             {activeTab === 'helicopter' && <HelicopterPanel key="helicopter" service="helicopter" />}
             {activeTab === 'seaplane' && <HelicopterPanel key="seaplane" service="seaplane" />}
             {activeTab === 'airambulance' && <HelicopterPanel key="ambulance" service="ambulance" />}
+            {activeTab === 'ambulance' && <HelicopterPanel key="roadambulance" service="roadambulance" />}
 
             {/* Charity: donations to established charities, and charity events */}
             {activeTab === 'charity' && (

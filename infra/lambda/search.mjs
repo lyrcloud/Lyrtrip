@@ -2902,12 +2902,12 @@ const SUPPORT_EMAIL = 'support@lyrtrip.com';
 const LYRBOT_SYSTEM_PROMPT = `You are Lyrbot, the help assistant on Lyrtrip (lyrtrip.com), a travel booking site. You chat with travellers in a small window on the site.
 
 What you know about Lyrtrip:
-- Home page tiles: Transport (flights; helicopter, seaplane and air ambulance charters; bus, train, cruise; and rides: car, taxi, limo, motorcycle taxi, bike, e-bike, moped and scooter), Stay (hotels), Shipping (food delivery, same-day courier, parcel shipments, truck booking, and cargo and containers by sea, air, rail and road), tourism (tour packages, visas, passports, insurance and destination ideas), events, study abroad and careers.
+- Home page tiles: Transport (flights; helicopter, seaplane and air ambulance charters; bus, train, cruise; and rides: car, taxi, limo, ambulance, motorcycle taxi, bike, e-bike, moped and scooter), Stay (hotels), Shipping (food delivery, same-day courier, parcel shipments, truck booking, and cargo and containers by sea, air, rail and road), tourism (tour packages, visas, passports, insurance and destination ideas), events, study abroad and careers.
 - Accounts: sign in or create an account at lyrtrip.com/login with email, Google, Facebook or WeChat. New email accounts confirm a 6-digit code sent by email; "Forgot password?" on the sign-in form emails a reset code. The dashboard (lyrtrip.com/dashboard) shows the traveller's tours and bookings.
 - Flights: booked and ticketed directly on Lyrtrip, paid securely by card through Stripe. After payment the e-ticket and booking reference arrive by email and on the receipt page. Baggage allowance and change or refund rules depend on the fare and are set by the airline.
 - Hotels: the guest pays the hotel's total plus a 12% Lyrtrip service fee, and Lyrtrip books the room directly with the property, then emails the hotel's confirmation number. If the hotel can't confirm, the guest is refunded in full (allow 5-10 business days for the card refund). Check-in times, deposits and cancellation rules are set by the hotel.
 - Rides: the car, taxi, limo and motorcycle options show fare estimates; booking rides, bikes, e-bikes and scooters on Lyrtrip opens soon.
-- Air charters: helicopter, seaplane and air ambulance requests get a quote from Lyrtrip (the operator's price plus a 10% service charge), paid by card, and are followed at lyrtrip.com/helicopter/requests. Air ambulance is not an emergency service: for a life-threatening emergency, tell the traveller to call their local emergency number.
+- Air charters and ambulances: helicopter, seaplane, air ambulance and ground ambulance (the Ambulance ride option) requests get a quote from Lyrtrip (the operator's price plus a 10% service charge), paid by card, and are followed at lyrtrip.com/helicopter/requests. Air and ground ambulance bookings are not an emergency service: for a life-threatening emergency, tell the traveller to call their local emergency number.
 - Trucks, cargo and containers: requests get a quote from Lyrtrip (the carrier's price plus a 10% service charge), paid by card, with booking and tracking updates at lyrtrip.com/freight/requests. Duties, taxes and port charges not in the quote are the customer's.
 - Courier and food delivery: the Courier option books a same-day courier that picks up an item and delivers it across town, usually within the hour, paid on Lyrtrip with live status on the receipt page. Food delivery uses the same courier to collect a meal the traveller has already ordered and paid for at a restaurant.
 - Shipping: the Shipping tab compares courier rates (USPS, FedEx, UPS, DHL and more) for parcels worldwide and sells a printable label.
@@ -7020,7 +7020,21 @@ const HELI_SERVICES = {
     },
     aircraft: ['Any (fastest available)', 'Turboprop (e.g. King Air)', 'Light jet (e.g. Learjet)', 'Mid / long-range jet', 'Helicopter'],
   },
+  // Ground ambulance (Ambulance ride option): booked transfers, not emergency response
+  roadambulance: {
+    label: 'Ambulance', loop: ['standby'],
+    charters: {
+      transfer:     'Hospital to hospital transfer',
+      discharge:    'Hospital discharge / going home',
+      appointment:  'Appointment, dialysis or scan trips',
+      icu:          'ICU / ventilator ambulance (ALS)',
+      longdistance: 'Long-distance / interstate ambulance',
+      standby:      'Event medical standby',
+    },
+    aircraft: ['Any (nearest available)', 'Patient transport (non-emergency)', 'Basic life support (BLS)', 'Advanced life support (ALS / ICU)', 'Neonatal ambulance', 'Bariatric ambulance'],
+  },
 };
+const HELI_MEDICAL = ['ambulance', 'roadambulance'];
 const heliService = r => HELI_SERVICES[r.service] ?? HELI_SERVICES.helicopter;
 const HELI_MOBILITY = ['Walks unaided', 'Wheelchair', 'Stretcher', 'Intensive care (ventilated / ICU)'];
 const HELI_ESCORTS = ['Nurse', 'Doctor', 'Doctor and nurse', 'No medical escort needed'];
@@ -7052,7 +7066,7 @@ function cleanHeliRequest(b) {
 
   const service = HELI_SERVICES[b.service] ? b.service : 'helicopter';
   const svc = HELI_SERVICES[service];
-  const ambulance = service === 'ambulance';
+  const ambulance = HELI_MEDICAL.includes(service);
   const charter = Object.keys(svc.charters).includes(b.charter) ? b.charter : '';
   if (!charter) throw new JobError('Choose the kind of charter');
   const roundTrip = !!b.roundTrip;
@@ -7081,7 +7095,7 @@ function cleanHeliRequest(b) {
     if (row.fullName.length < 2) fail(`enter the full name as on their ID`);
     if (!row.dateOfBirth || Date.parse(row.dateOfBirth) > Date.now()) fail(`enter a valid date of birth`);
     if (!row.nationality) fail(`enter the nationality`);
-    if (!(row.weightKg >= 3 && row.weightKg <= 250)) fail(`enter the body weight in kg (operators need it to balance the aircraft)`);
+    if (!(row.weightKg >= 3 && row.weightKg <= 250)) fail(`enter the body weight in kg (operators need it for safe loading)`);
     if (!row.idType || row.idNumber.length < 3) fail(`choose the photo ID they will bring and enter its number`);
     return row;
   });
