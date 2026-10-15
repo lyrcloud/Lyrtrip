@@ -13,6 +13,7 @@ import HotelPriceCompare from '@/components/HotelPriceCompare';
 import CheckoutExtras from '@/components/CheckoutExtras';
 import ShippingTab from '@/components/ShippingTab';
 import CourierDelivery from '@/components/CourierDelivery';
+import RideBooking from '@/components/RideBooking';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -204,6 +205,9 @@ interface UberRideEstimate {
   surgeMultiplier: number;
   emoji: string;
   seats: string;
+  // Set when ride booking is on: the Lyrtrip price (fare + fee) and the pickup wait
+  price?: number;
+  pickupMinutes?: number | null;
 }
 
 interface RideDraft {
@@ -598,7 +602,9 @@ export default function Home() {
 
 
   const [uberDropoff, setUberDropoff] = useState<LocationData | null>(null);
-  const [uberPickupText, setUberPickupText] = useState('');
+  // null: the device's current location
+  const [uberPickup, setUberPickup] = useState<LocationData | null>(null);
+  const [uberPickerKey, setUberPickerKey] = useState(0);
   const [uberCity, setUberCity] = useState('');
   const [uberPrices, setUberPrices] = useState<UberRideEstimate[]>([]);
   const [uberPriceLoading, setUberPriceLoading] = useState(false);
@@ -658,20 +664,37 @@ export default function Home() {
       .catch(() => {});
   }, [userLocation, locationLoading, locationError]);
 
-  const handleFetchUberPrices = () => {
+  const ridePickup = uberPickup ?? { ...userLocation, address: 'Current location' };
+
+  // Live, bookable prices when ride booking is on; otherwise typical-rate estimates
+  const handleFetchUberPrices = async () => {
     if (!uberDropoff) return;
+    const searchBase = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
     const lambdaBase = (process.env.NEXT_PUBLIC_UBER_LAMBDA_URL ?? '').replace(/\/$/, '');
-    if (!lambdaBase) return;
     setUberPriceLoading(true);
     setUberPriceError(null);
-    fetch(`${lambdaBase}/estimates?pickupLat=${userLocation.lat}&pickupLng=${userLocation.lng}&dropoffLat=${uberDropoff.lat}&dropoffLng=${uberDropoff.lng}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.rides?.length) setUberPrices(data.rides);
-        else setUberPriceError(data.error ?? 'No rides available for this route.');
-      })
-      .catch(() => setUberPriceError('Could not connect to Uber service.'))
-      .finally(() => setUberPriceLoading(false));
+    try {
+      const live = await fetch(`${searchBase}/api/ride/estimate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pickup: { lat: ridePickup.lat, lng: ridePickup.lng, label: ridePickup.address }, dropoff: { lat: uberDropoff.lat, lng: uberDropoff.lng, label: uberDropoff.address } }),
+      }).then(r => r.json()).catch(() => null);
+      if (live?.enabled) {
+        if (live.rides?.length) {
+          setUberPrices(live.rides.map((r: UberRideEstimate & { currency: string; price: number }) => ({
+            ...r, lowEstimate: r.price, highEstimate: r.price, currencyCode: r.currency, surgeMultiplier: 1,
+          })));
+        } else setUberPriceError(live.error ?? 'No rides are available for this trip right now.');
+        return;
+      }
+      if (!lambdaBase) return;
+      const data = await fetch(`${lambdaBase}/estimates?pickupLat=${ridePickup.lat}&pickupLng=${ridePickup.lng}&dropoffLat=${uberDropoff.lat}&dropoffLng=${uberDropoff.lng}`).then(r => r.json());
+      if (data.rides?.length) setUberPrices(data.rides);
+      else setUberPriceError(data.error ?? 'No rides available for this route.');
+    } catch {
+      setUberPriceError('Could not get ride prices. Please try again.');
+    } finally {
+      setUberPriceLoading(false);
+    }
   };
 
   // After login redirect back with ?booking=pending — auto-trigger Stripe
@@ -875,7 +898,9 @@ export default function Home() {
     setUberDropoff(null);
     setUberPrices([]);
     setUberPriceError(null);
-    setUberPickupText('');
+   
+    setUberPickup(null);
+    setUberPickerKey(k => k + 1);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -2270,13 +2295,16 @@ export default function Home() {
                   <div className="space-y-2 mb-4">
                     <div className="flex items-center gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50">
                       <span className="w-3 h-3 rounded-full bg-black shrink-0" />
-                      <input
-                        type="text"
-                        value={uberPickupText}
-                        onChange={e => setUberPickupText(e.target.value)}
-                        placeholder={!locationLoading && !locationError ? '📍 Using your current location' : 'Enter location'}
-                        className="flex-1 bg-transparent text-sm text-gray-800 outline-none placeholder-gray-400"
-                      />
+                      <div className="flex-1">
+                        <LocationPicker key={`pickup-${uberPickerKey}`}
+                          onLocationSelect={(loc) => { setUberPickup(loc); setUberPrices([]); setUberPriceError(null); }}
+                          placeholder={!locationLoading && !locationError ? '📍 Pickup: your current location' : 'Enter pickup location'}
+                        />
+                      </div>
+                      {uberPickup && (
+                        <button onClick={() => { setUberPickup(null); setUberPickerKey(k => k + 1); setUberPrices([]); }}
+                          className="text-xs text-gray-600 underline shrink-0">Use my location</button>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 px-4 py-3 border border-gray-200 rounded-xl bg-gray-50">
                       <span className="w-3 h-3 rounded-sm bg-black shrink-0" />
@@ -2319,11 +2347,16 @@ export default function Home() {
                               </p>
                             </div>
                             <div className="text-right shrink-0 ml-3">
-                              <p className="font-bold text-gray-900">{money(ride.lowEstimate, ride.currencyCode || 'USD')}–{money(ride.highEstimate, ride.currencyCode || 'USD')}</p>
-                              <p className="text-xs text-gray-400">+${serviceFee} fee</p>
+                              {ride.price != null ? (<>
+                                <p className="font-bold text-gray-900">{money(ride.price, ride.currencyCode || 'USD')}</p>
+                                <p className="text-xs text-gray-400">{ride.pickupMinutes != null ? `${ride.pickupMinutes} min away · ` : ''}incl. fee</p>
+                              </>) : (<>
+                                <p className="font-bold text-gray-900">{money(ride.lowEstimate, ride.currencyCode || 'USD')}–{money(ride.highEstimate, ride.currencyCode || 'USD')}</p>
+                                <p className="text-xs text-gray-400">+${serviceFee} fee</p>
+                              </>)}
                               <button
                                 onClick={() => {
-                                  setRideDraft({ ride, pickupLat: userLocation.lat, pickupLng: userLocation.lng, dropoffLat: uberDropoff!.lat, dropoffLng: uberDropoff!.lng, pickupLabel: uberPickupText || 'Current location', dropoffLabel: uberDropoff!.address });
+                                  setRideDraft({ ride, pickupLat: ridePickup.lat, pickupLng: ridePickup.lng, dropoffLat: uberDropoff!.lat, dropoffLng: uberDropoff!.lng, pickupLabel: uberPickup?.address || 'Current location', dropoffLabel: uberDropoff!.address });
                                   
                                 }}
                                 className="mt-1 px-4 py-1.5 bg-black text-white text-sm font-semibold rounded-lg hover:bg-gray-800 transition"
@@ -2983,8 +3016,17 @@ export default function Home() {
           );
         })()}
 
-        {/* Ride modal: estimates only until ride booking opens */}
-        {rideDraft && (
+        {/* Ride modal: booking when live prices came back, otherwise estimates only */}
+        {rideDraft && rideDraft.ride.price != null && (
+          <RideBooking
+            ride={{ ...rideDraft.ride, price: rideDraft.ride.price, currency: rideDraft.ride.currencyCode, pickupMinutes: rideDraft.ride.pickupMinutes ?? null }}
+            pickup={{ lat: rideDraft.pickupLat, lng: rideDraft.pickupLng, label: rideDraft.pickupLabel }}
+            dropoff={{ lat: rideDraft.dropoffLat, lng: rideDraft.dropoffLng, label: rideDraft.dropoffLabel }}
+            user={user}
+            onClose={() => setRideDraft(null)}
+          />
+        )}
+        {rideDraft && rideDraft.ride.price == null && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
               <div className="flex items-center gap-2 mb-4">

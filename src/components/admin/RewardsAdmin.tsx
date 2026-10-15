@@ -614,3 +614,64 @@ export function DeliveriesPanel({ call }: { call: Call }) {
     </div>
   );
 }
+
+// ── Rides (Guest Rides) ──────────────────────────────────────────────────────
+
+interface AdminRide {
+  orderId: string; status: string; step: string | null; tier: string; email: string; riderName: string; riderPhone: string;
+  currency: string; pickup: { label: string }; dropoff: { label: string }; estimatedTotal: number; holdAmount: number;
+  totalCharged: number | null; bookedFare: number; finalFare: number | null; finalFareSource: string | null;
+  uberTripId: string | null; trackingUrl: string | null; paymentIntent: string | null; error: string | null; createdAt: string;
+}
+
+const RIDE_STATUS: Record<string, string> = {
+  active: 'bg-sky-100 text-sky-800', processing: 'bg-sky-100 text-sky-800', settling: 'bg-sky-100 text-sky-800', completed: 'bg-emerald-100 text-emerald-800',
+  canceled: 'bg-gray-200 text-gray-700', not_booked: 'bg-gray-200 text-gray-700', needs_review: 'bg-red-100 text-red-800',
+};
+
+export function RidesPanel({ call }: { call: Call }) {
+  const [rows, setRows] = useState<AdminRide[] | null>(null);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    call({ action: 'rides.list' }).then(d => { setRows(d.rides as AdminRide[]); setEnabled(d.enabled as boolean); }).catch(() => setRows([]));
+  }, [call]);
+  const done = (rows ?? []).filter(r => r.status === 'completed');
+  const money = (n: number, c = 'USD') => `${c} ${n.toFixed(2)}`;
+  return (
+    <div className="space-y-3">
+      {enabled === false && (
+        <p className={`${panel} p-3 text-sm text-amber-800 bg-amber-50`}>Ride booking is switched off (RIDES_ENABLED is not true). Travellers see estimates only.</p>
+      )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          ['Rides completed', String(done.length)],
+          ['Live now', String((rows ?? []).filter(r => r.status === 'active').length)],
+          ['Sales', usd(done.reduce((s, r) => s + (r.totalCharged ?? 0), 0))],
+          ['Lyrtrip margin', usd(done.reduce((s, r) => s + (r.totalCharged ?? 0) - (r.finalFare ?? r.bookedFare), 0))],
+        ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
+      </div>
+      <div className={`${panel} divide-y divide-gray-100`}>
+        {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
+        {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No rides yet.</p>}
+        {rows?.map(r => (
+          <div key={r.orderId} className="p-4 flex flex-wrap items-start justify-between gap-3 text-sm">
+            <div className="min-w-0">
+              <p className="font-semibold text-gray-900">
+                {r.tier} · {r.riderName}
+                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${RIDE_STATUS[r.status] ?? 'bg-gray-100 text-gray-700'}`}>{r.status === 'active' ? r.step : r.status.replace('_', ' ')}</span>
+              </p>
+              <p className="text-gray-600 truncate">{r.pickup.label} → {r.dropoff.label}</p>
+              <p className="text-xs text-gray-400">{r.email} · {r.riderPhone} · Order {r.orderId}{r.uberTripId ? ` · Trip ${r.uberTripId}` : ''}{r.paymentIntent ? ` · ${r.paymentIntent}` : ''} · {new Date(r.createdAt).toLocaleString()}</p>
+              {r.error && <p className="text-xs text-red-600 mt-1">{r.error}</p>}
+              {r.trackingUrl && <a href={r.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-600 font-semibold">Tracking</a>}
+            </div>
+            <div className="text-right">
+              <p className="font-bold text-gray-900">{r.totalCharged != null ? money(r.totalCharged, r.currency) : `est. ${money(r.estimatedTotal, r.currency)}`}</p>
+              <p className="text-xs text-gray-500">Fare {money(r.finalFare ?? r.bookedFare, r.currency)}{r.finalFareSource === 'booked_fare' ? ' (upfront)' : ''} · hold {money(r.holdAmount, r.currency)}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

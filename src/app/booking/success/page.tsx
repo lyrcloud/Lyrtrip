@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { getBookings, updateBookingStatus } from '@/lib/bookings';
 import { rewardsCall, type BookingCredits } from '@/lib/rewards';
+import LocationMap from '@/components/LocationMap';
 
 interface FlightLeg {
   airline: string;
@@ -139,6 +140,33 @@ const COURIER_STEP: Record<string, string> = {
   dropoff: 'On the way to drop-off', delivered: 'Delivered', canceled: 'Canceled', returned: 'Returned to sender',
 };
 
+interface RideReceipt {
+  status: 'processing' | 'active' | 'settling' | 'completed' | 'canceled' | 'not_booked' | 'needs_review';
+  step: string | null;
+  orderId: string;
+  tier: string;
+  rider: string;
+  pickup: { label: string };
+  dropoff: { label: string };
+  currency: string;
+  estimatedTotal: number;
+  holdAmount: number;
+  totalCharged: number | null;
+  driver: { name: string | null; phone: string | null; photo: string | null; rating: number | null } | null;
+  vehicle: { make: string | null; model: string | null; color: string | null; plate: string | null } | null;
+  pickupPin: string | null;
+  pickupEta: number | null;
+  dropoffEta: number | null;
+  location: { lat: number; lng: number } | null;
+  canCancel: boolean;
+  message: string | null;
+}
+
+const RIDE_STEP: Record<string, string> = {
+  processing: 'Finding your driver', accepted: 'Driver on the way', arriving: 'Driver arriving', in_progress: 'On your way',
+  completed: 'Completed', rider_canceled: 'Cancelled', driver_canceled: 'Cancelled', no_drivers_available: 'No driver found',
+};
+
 const DOC_LABEL: Record<string, string> = { label: 'Shipping label', commercial_invoice: 'Commercial invoice (customs)', packing_slip: 'Packing slip' };
 
 function fmtDate(d: string): string {
@@ -167,6 +195,8 @@ export default function BookingSuccessPage() {
   const [hotelReceipt, setHotelReceipt]     = useState<HotelReceipt | null>(null);
   const [shipment, setShipment]             = useState<ShipmentReceipt | null>(null);
   const [delivery, setDelivery]             = useState<DeliveryReceipt | null>(null);
+  const [ride, setRide]                     = useState<RideReceipt | null>(null);
+  const [rideCancel, setRideCancel]         = useState<'idle' | 'busy' | string>('idle');
   const [giftCard, setGiftCard]             = useState<{ code: string; amount: number; recipient_email: string | null } | null>(null);
 
   useEffect(() => {
@@ -252,6 +282,31 @@ export default function BookingSuccessPage() {
       return;
     }
 
+    // Ride: book after the card hold, then follow the trip until it ends and the fare is charged
+    if (type === 'ride' && sessionId) {
+      setFlightLoading(true);
+      const load = async (attempt: number): Promise<void> => {
+        const res = await fetch(`${baseUrl}/api/ride/confirm`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }),
+        }).catch(() => null);
+        const data = res ? await res.json().catch(() => null) : null;
+        if (data?.success) {
+          setRide(data as RideReceipt);
+          setFlightLoading(false);
+          if (['active', 'settling'].includes(data.status) && attempt < 1000) setTimeout(() => void load(attempt + 1), 10000);
+          return;
+        }
+        if ((!res || res.status >= 502 || data?.pending) && attempt < 40) {
+          await new Promise(r => setTimeout(r, 4000));
+          return load(attempt + 1);
+        }
+        setFlightError(data?.error ?? 'Could not load your ride. Please contact support@lyrtrip.com.');
+        setFlightLoading(false);
+      };
+      void load(0);
+      return;
+    }
+
     // Gift card bought on /rewards
     if (type === 'giftcard' && sessionId) {
       setFlightLoading(true);
@@ -293,7 +348,7 @@ export default function BookingSuccessPage() {
       <div className="flex-1 bg-gray-50 flex items-center justify-center px-4">
         <div className="bg-white rounded-2xl shadow-lg p-10 max-w-md w-full text-center">
           <div className="w-16 h-16 bg-brand-100 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl animate-pulse">✈️</div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">{typeof window !== 'undefined' && window.location.search.includes('type=hotel') ? 'Loading Your Booking…' : 'Issuing Your Ticket…'}</h1>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">{typeof window !== 'undefined' && window.location.search.includes('type=hotel') ? 'Loading Your Booking…' : typeof window !== 'undefined' && window.location.search.includes('type=ride') ? 'Booking Your Ride…' : 'Issuing Your Ticket…'}</h1>
           <p className="text-gray-500">We&apos;re confirming your booking with the airline. This usually takes a few seconds, but some airlines take up to a couple of minutes — please keep this page open.</p>
           <div className="mt-6 flex justify-center gap-1">
             {[0,1,2].map(i => (
@@ -323,6 +378,93 @@ export default function BookingSuccessPage() {
   }
 
   // ── Flight — e-ticket & itinerary (printable) ─────────────────────────────
+  if (ride) {
+    const r = ride;
+    const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const live = r.status === 'active';
+    const badge = r.status === 'completed' ? 'bg-emerald-100 text-emerald-800' : live ? 'bg-sky-100 text-sky-800'
+      : r.status === 'needs_review' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700';
+    const label = live ? RIDE_STEP[r.step ?? ''] ?? 'Booked'
+      : ({ processing: 'Booking', settling: 'Finishing up', completed: 'Completed', canceled: 'Cancelled', not_booked: 'Not booked', needs_review: 'Confirming' } as Record<string, string>)[r.status];
+    const cancel = async () => {
+      if (!confirm('Cancel this ride? The hold on your card will be released.')) return;
+      setRideCancel('busy');
+      const sessionId = new URLSearchParams(window.location.search).get('session_id');
+      const res = await fetch(`${(process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '')}/api/ride/cancel`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }),
+      }).catch(() => null);
+      const data = res ? await res.json().catch(() => null) : null;
+      if (data?.success) { setRide(data as RideReceipt); setRideCancel('idle'); }
+      else setRideCancel(data?.error ?? 'Could not cancel. Please try again.');
+    };
+    const car = r.vehicle && [r.vehicle.color, r.vehicle.make, r.vehicle.model].filter(Boolean).join(' ');
+    return (
+      <div className="flex-1 bg-gray-50 py-10 px-4">
+        <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden">
+          <div className="px-8 py-6 border-b border-gray-200 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-widest text-gray-500">Lyrtrip ride</p>
+              <h1 className="text-2xl font-bold text-gray-900">🚗 {r.tier} to {r.dropoff.label.split(',')[0]}</h1>
+              {live && r.step !== 'in_progress' && r.pickupEta != null && r.driver && <p className="text-sm text-gray-600">Driver arrives in about {r.pickupEta} min</p>}
+              {live && r.step === 'in_progress' && r.dropoffEta != null && <p className="text-sm text-gray-600">Arriving in about {r.dropoffEta} min</p>}
+            </div>
+            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badge}`}>{label}</span>
+          </div>
+          {r.message && <p className="px-8 pt-5 text-sm text-gray-700">{r.message}</p>}
+          {live && <p className="px-8 pt-5 text-xs text-gray-400">Live status: this page refreshes every 10 seconds.</p>}
+          {r.pickupPin && (
+            <p className="mx-8 mt-5 rounded-xl bg-gray-900 text-white px-4 py-3 text-sm">Pickup PIN: <span className="font-mono text-lg font-bold tracking-widest">{r.pickupPin}</span> · give it to the driver when you get in</p>
+          )}
+          {r.driver?.name && (
+            <div className="mx-8 mt-5 flex items-center gap-3 rounded-xl border border-gray-200 p-3">
+              {r.driver.photo
+                // eslint-disable-next-line @next/next/no-img-element
+                ? <img src={r.driver.photo} alt="" className="w-12 h-12 rounded-full object-cover" />
+                : <span className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center text-xl">🧑</span>}
+              <div className="text-sm">
+                <p className="font-semibold text-gray-900">{r.driver.name}{r.driver.rating ? ` · ★ ${r.driver.rating}` : ''}</p>
+                {car && <p className="text-gray-600">{car}{r.vehicle?.plate ? ` · ${r.vehicle.plate}` : ''}</p>}
+                {live && r.driver.phone && <a href={`tel:${r.driver.phone}`} className="text-brand-600 font-medium">Call driver</a>}
+              </div>
+            </div>
+          )}
+          {live && r.location && (
+            <div className="mx-8 mt-5 rounded-xl overflow-hidden border border-gray-200 h-56">
+              <LocationMap key={`${r.location.lat},${r.location.lng}`} lat={r.location.lat} lng={r.location.lng} zoom={15} title="Your driver" />
+            </div>
+          )}
+          <div className="px-8 py-5 grid sm:grid-cols-2 gap-4 text-sm">
+            <div><p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Pickup</p><p className="text-gray-700">{r.pickup.label}</p></div>
+            <div><p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-1">Destination</p><p className="text-gray-700">{r.dropoff.label}</p></div>
+          </div>
+          <div className="px-8 py-5 border-t border-gray-200">
+            <table className="w-full text-sm"><tbody>
+              {r.totalCharged != null ? (
+                <tr><td className="font-bold text-gray-900">Total charged</td><td className="text-right text-xl font-black">{r.currency} {money(r.totalCharged)}</td></tr>
+              ) : (<>
+                <tr><td className="font-bold text-gray-900">Estimated total</td><td className="text-right text-xl font-black">{r.currency} {money(r.estimatedTotal)}</td></tr>
+                <tr><td className="text-gray-500 pt-1">Card hold</td><td className="text-right text-gray-500 pt-1">{r.currency} {money(r.holdAmount)}</td></tr>
+              </>)}
+            </tbody></table>
+            <p className="text-xs text-gray-400 mt-2">
+              {r.totalCharged == null ? 'You pay the final fare incl. Lyrtrip service fee when the ride ends; the rest of the hold is released. ' : ''}Order {r.orderId}
+            </p>
+          </div>
+          <div className="px-8 py-5 bg-gray-50 flex flex-wrap items-center gap-3">
+            {r.canCancel && (
+              <button onClick={cancel} disabled={rideCancel === 'busy'} className="px-4 py-2 rounded-xl border border-red-300 text-sm font-medium text-red-700 bg-white disabled:opacity-50">
+                {rideCancel === 'busy' ? 'Cancelling…' : 'Cancel ride'}
+              </button>
+            )}
+            <Link href="/?tab=car" className="px-4 py-2 rounded-xl border border-gray-300 text-sm font-medium text-gray-700 bg-white">Book another</Link>
+            <Link href="/dashboard" className="px-4 py-2 rounded-xl bg-btn text-white text-sm font-semibold">Dashboard</Link>
+            {!['idle', 'busy'].includes(rideCancel) && <p className="w-full text-sm text-red-600">{rideCancel}</p>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (delivery) {
     const d = delivery;
     const money = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

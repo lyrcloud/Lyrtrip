@@ -42,7 +42,7 @@ const QUICK_ACTIONS = [
 
 interface Trip {
   id: string;
-  kind: 'flight' | 'hotel' | 'shipment' | 'delivery';
+  kind: 'flight' | 'hotel' | 'shipment' | 'delivery' | 'ride';
   status: string;
   title: string;
   subtitle: string;
@@ -82,8 +82,8 @@ const TRIP_STATUS: Record<string, [string, string]> = {
   canceled:       ['Canceled', 'bg-gray-50 text-gray-600 ring-gray-200'],
   returned:       ['Returned', 'bg-amber-50 text-amber-700 ring-amber-200'],
 };
-const CLOSED = new Set(['declined', 'refunded', 'booking_failed', 'declining', 'label_failed', 'delivered', 'canceled', 'returned']);
-const TRIP_ICON = { flight: ['✈️', 'bg-sky-50'], hotel: ['🏨', 'bg-violet-50'], shipment: ['📦', 'bg-amber-50'], delivery: ['🛵', 'bg-emerald-50'] } as const;
+const CLOSED = new Set(['declined', 'refunded', 'booking_failed', 'declining', 'label_failed', 'delivered', 'canceled', 'returned', 'completed', 'not_booked']);
+const TRIP_ICON = { flight: ['✈️', 'bg-sky-50'], hotel: ['🏨', 'bg-violet-50'], shipment: ['📦', 'bg-amber-50'], delivery: ['🛵', 'bg-emerald-50'], ride: ['🚗', 'bg-slate-100'] } as const;
 
 const TIER_TINT: Record<string, string> = {
   Member: 'bg-gray-100 text-gray-700', Bronze: 'bg-amber-100 text-amber-800', Silver: 'bg-slate-100 text-slate-700',
@@ -146,7 +146,7 @@ export default function DashboardPage() {
   const today = new Date(now).toISOString().slice(0, 10);
   // A shipment stays "upcoming" for two weeks after its label, while it's on the way
   const isUpcoming = (t: Trip) => !CLOSED.has(t.status)
-    && (t.kind === 'shipment' || t.kind === 'delivery' ? now - new Date(t.createdAt).getTime() < 14 * 864e5 : (t.end ?? t.start ?? today) >= today);
+    && (t.kind === 'shipment' || t.kind === 'delivery' || t.kind === 'ride' ? now - new Date(t.createdAt).getTime() < 14 * 864e5 : (t.end ?? t.start ?? today) >= today);
   const upcomingTrips = (trips ?? []).filter(isUpcoming).sort((a, b) => String(a.start).localeCompare(String(b.start)));
   const shownTrips = tripFilter === 'upcoming' ? upcomingTrips
     : tripFilter === 'past' ? (trips ?? []).filter(t => !isUpcoming(t))

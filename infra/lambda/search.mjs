@@ -2633,6 +2633,11 @@ export async function handler(event) {
   // Await here so errors thrown inside async route handlers become a JSON 500
   // instead of an unhandled Lambda error (the routes return un-awaited promises).
   try {
+    // An EventBridge schedule (every few minutes) settles rides nobody is watching
+    if (event?.source === 'aws.events') {
+      if (ridesEnabled()) await sweepRides(await getDb());
+      return { ok: true };
+    }
     return await routeRequest(event);
   } catch (error) {
     console.error('API error:', error);
@@ -3221,6 +3226,20 @@ async function handleAdmin(event) {
         });
       }
 
+      case 'rides.list': {
+        if (ridesEnabled()) await sweepRides(db).catch(err => console.error('Ride sweep failed:', err.message));
+        const rows = await db.collection('rides').find({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] } }).sort({ createdAt: -1 }).limit(200).toArray();
+        return json(200, {
+          enabled: ridesEnabled(),
+          rides: rows.map(b => ({
+            ...rideReceipt(b), email: b.email, riderName: `${b.guest.firstName} ${b.guest.lastName}`, riderPhone: b.guest.phone,
+            bookedFare: b.bookedFare, finalFare: b.finalFare ?? null, finalFareSource: b.finalFareSource ?? null,
+            uberTripId: b.uberTripId ?? null, trackingUrl: b.trackingUrl ?? null, paymentIntent: b.paymentIntent ?? null,
+            error: b.bookingError ?? b.reviewReason ?? null, createdAt: b.createdAt,
+          })),
+        });
+      }
+
       // ── Rewards: admins see everything; only the super admin changes it ──
 
       case 'rewards.list': {
@@ -3358,11 +3377,12 @@ async function handleRewards(event) {
       case 'trips': {
         const me = signedIn();
         const mine = field => ({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] }, $or: [{ userSub: me._id }, ...(me.email ? [{ [field]: me.email }] : [])] });
-        const [flights, hotels, parcels, couriers] = await Promise.all([
+        const [flights, hotels, parcels, couriers, rides] = await Promise.all([
           db.collection('flight_bookings').find(mine('passengers.0.email')).sort({ createdAt: -1 }).limit(50).toArray(),
           db.collection('hotel_bookings').find(mine('guest.email')).sort({ createdAt: -1 }).limit(50).toArray(),
           db.collection('shipments').find(mine('from.contact_email')).sort({ createdAt: -1 }).limit(50).toArray(),
           db.collection('deliveries').find(mine('email')).sort({ createdAt: -1 }).limit(50).toArray(),
+          db.collection('rides').find({ ...mine('email'), status: { $nin: ['pending_stripe', 'expired', 'checkout_failed', 'not_booked'] } }).sort({ createdAt: -1 }).limit(50).toArray(),
         ]);
         const legs = b => b.itinerary ?? [];
         return json(200, {
@@ -3398,6 +3418,14 @@ async function handleRewards(event) {
               start: (b.confirmedAt ?? b.createdAt).slice(0, 10), end: null,
               total: b.totalPrice, paid: b.credits?.amountDue ?? b.totalPrice, currency: b.currency,
               receiptUrl: b.stripeSessionId ? `/booking/success?session_id=${b.stripeSessionId}&type=delivery` : null,
+              testBooking: false, createdAt: b.createdAt,
+            })),
+            ...rides.map(b => ({
+              id: String(b._id), kind: 'ride', status: b.status, title: `${b.tier} ride → ${b.dropoff.label.split(',')[0]}`,
+              subtitle: `From ${b.pickup.label.split(',')[0]}`,
+              start: (b.confirmedAt ?? b.createdAt).slice(0, 10), end: null,
+              total: b.totalCharged ?? b.estimatedTotal, paid: b.totalCharged ?? b.estimatedTotal, currency: b.currency,
+              receiptUrl: `/booking/success?session_id=${b.stripeSessionId}&type=ride`,
               testBooking: false, createdAt: b.createdAt,
             })),
           ],
@@ -4207,6 +4235,474 @@ async function handleDeliveryConfirm(event) {
   return json(200, deliveryReceipt(done));
 }
 
+// ---------------------------------------------------------------------------
+// Rides (Uber for Business Guest Rides): Lyrtrip requests the car on its own
+// account for the traveller. The fare is only final when the trip ends, so the
+// card is held on Stripe for the upfront fare + 10% plus a buffer, and the
+// actual fare + 10% is captured when the trip completes. Cancelled or unbooked
+// rides release the hold. Off unless RIDES_ENABLED=true.
+//   UBER_GUEST_RIDES_BASE_URL  https://api.uber.com (default), the sandbox, or the Postman mock
+//   UBER_GUEST_RIDES_TOKEN     fixed bearer token (mock / pasted sandbox token); else client credentials
+//   UBER_GUEST_RIDES_CLIENT_ID / _SECRET  default to UBER_CLIENT_ID / UBER_CLIENT_SECRET
+// ---------------------------------------------------------------------------
+
+const RIDE_MARKUP = 1.10;       // 10% Lyrtrip margin on the fare
+const RIDE_HOLD_BUFFER = 1.25;  // tolls, waiting time and route changes can raise the final fare
+const RIDE_HOLD_MIN_EXTRA = 5;  // ...so hold at least 5 more than the estimate
+const RIDE_LIVE = new Set(['processing', 'accepted', 'arriving', 'in_progress']);
+const RIDE_CANCELABLE = new Set(['processing', 'accepted', 'arriving']);
+const RIDE_ENDED = { completed: 'completed', rider_canceled: 'canceled', driver_canceled: 'canceled', no_drivers_available: 'canceled', failed: 'canceled' };
+// Stripe amounts for these currencies are whole units, not cents
+const ZERO_DECIMAL = new Set(['BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF']);
+const stripeAmount = (major, currency) => (ZERO_DECIMAL.has(currency) ? Math.ceil(major) : Math.ceil(Number((major * 100).toFixed(6))));
+const fromStripeAmount = (amount, currency) => (ZERO_DECIMAL.has(currency) ? amount : amount / 100);
+const ridesEnabled = () => process.env.RIDES_ENABLED === 'true';
+const guestRidesBase = () => (process.env.UBER_GUEST_RIDES_BASE_URL || 'https://api.uber.com').replace(/\/$/, '');
+const mongoDoc = r => (r?.value !== undefined ? r.value : r);
+let guestRidesToken;  // { token, expiresAt }
+
+async function guestRidesAuth() {
+  if (process.env.UBER_GUEST_RIDES_TOKEN) return process.env.UBER_GUEST_RIDES_TOKEN;
+  if (guestRidesToken && guestRidesToken.expiresAt > Date.now() + 60_000) return guestRidesToken.token;
+  const id = process.env.UBER_GUEST_RIDES_CLIENT_ID || process.env.UBER_CLIENT_ID || UBER_CLIENT_ID_DEFAULT;
+  const secret = process.env.UBER_GUEST_RIDES_CLIENT_SECRET || process.env.UBER_CLIENT_SECRET;
+  if (!secret) throw new UberDirectError('Ride booking is not configured', 500);
+  const res = await fetch('https://auth.uber.com/oauth/v2/token', {
+    method: 'POST',
+    body: new URLSearchParams({ client_id: id, client_secret: secret, grant_type: 'client_credentials', scope: 'guests.trips' }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) throw new UberDirectError(`Ride sign-in failed: ${data.error ?? res.status}`, 502);
+  guestRidesToken = { token: data.access_token, expiresAt: Date.now() + Number(data.expires_in ?? 3600) * 1000 };
+  return guestRidesToken.token;
+}
+
+// Throws UberDirectError; a timeout or network failure has no status
+async function guestRidesFetch(path, { method = 'GET', body, timeoutMs = 20_000 } = {}) {
+  const res = await fetch(`${guestRidesBase()}/v1/guests${path}`, {
+    method,
+    headers: { authorization: `Bearer ${await guestRidesAuth()}`, 'content-type': 'application/json' },
+    body: body && JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (res.status === 204) return {};
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new UberDirectError(String(data.message || data.error || `Ride service error ${res.status}`).replace(/uber/gi, 'ride service'), res.status, data.code);
+  return data;
+}
+
+// Uber's product names mapped to Lyrtrip's neutral tiers; shared, pet, accessible and other special products are not offered
+function rideTierName(displayName) {
+  const n = String(displayName ?? '');
+  if (/share|pool|pet|wav|assist|access|teen|senior|moto|taxi|reserve|courier|connect|package|flash|hourly/i.test(n)) return null;
+  if (/suv/i.test(n)) return 'Premium SUV';
+  if (/black|lux|premier|select/i.test(n)) return 'Premium';
+  if (/xl/i.test(n)) return 'XL';
+  if (/comfort/i.test(n)) return 'Comfort';
+  if (/^uber\s*x$|^x$|standard|green|electric|uberx/i.test(n)) return 'Standard';
+  return null;
+}
+
+// The cheapest upfront fare per tier, in RIDE_TIERS order
+function rideOptions(data) {
+  const best = new Map();
+  for (const e of data?.product_estimates ?? []) {
+    const fare = e.estimate_info?.fare;
+    const tier = rideTierName(e.product?.display_name);
+    const value = Number(fare?.value);
+    if (!tier || !fare?.fare_id || !(value > 0) || !e.product?.product_id) continue;
+    const trip = e.estimate_info.trip ?? {};
+    const dist = Number(trip.distance_estimate);
+    const opt = {
+      productId: e.product.product_id, tier, fareId: fare.fare_id, fare: value,
+      currency: String(fare.currency_code || 'USD').toUpperCase(),
+      pickupMinutes: e.estimate_info.pickup_estimate ?? null,
+      distanceMiles: dist > 0 ? Math.round((trip.distance_unit === 'km' ? dist * 0.621371 : dist) * 10) / 10 : null,
+      durationSec: trip.duration_estimate ?? null,
+    };
+    if (!best.has(tier) || opt.fare < best.get(tier).fare) best.set(tier, opt);
+  }
+  return RIDE_TIERS.filter(t => best.has(t.name)).map(t => ({ ...best.get(t.name), emoji: t.emoji, seats: t.seats }));
+}
+
+// Returns { lat, lng, label } or an error string
+function cleanRideStop(p, side) {
+  const lat = Number(p?.lat), lng = Number(p?.lng);
+  if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180) || (lat === 0 && lng === 0)) return `Choose the ${side} on the map or from the suggestions`;
+  const label = String(p?.label ?? '').trim().slice(0, 200);
+  return { lat, lng, label: label || `${lat.toFixed(5)}, ${lng.toFixed(5)}` };
+}
+
+function cleanRideGuest(g) {
+  const s = v => String(v ?? '').trim();
+  const firstName = s(g?.firstName).slice(0, 40), lastName = s(g?.lastName).slice(0, 40);
+  if (!firstName || !lastName) return "Enter the rider's first and last name";
+  const phone = parsePhoneNumberFromString(s(g?.phone), 'US');
+  if (!phone?.isValid()) return "The rider's phone number isn't valid. Include the country code, e.g. +1 415 555 2671";
+  const email = s(g?.email).toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return 'Enter your email for the receipt';
+  return { firstName, lastName, phone: phone.number, email };
+}
+
+const rideEstimates = (pickup, dropoff) => guestRidesFetch('/trips/estimates', {
+  method: 'POST',
+  body: { pickup: { latitude: pickup.lat, longitude: pickup.lng }, dropoff: { latitude: dropoff.lat, longitude: dropoff.lng } },
+});
+
+const rideServiceError = err => (err.status >= 400 && err.status < 500 ? `We can't book a ride for this trip: ${err.message}` : 'Ride prices are unavailable right now. Please try again in a minute.');
+
+async function handleRideEstimate(event) {
+  if (!ridesEnabled()) return json(200, { enabled: false });
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const pickup = cleanRideStop(body.pickup, 'pickup'), dropoff = cleanRideStop(body.dropoff, 'destination');
+  const problem = [pickup, dropoff].find(v => typeof v === 'string');
+  if (problem) return json(400, { error: problem });
+  try {
+    const rides = rideOptions(await rideEstimates(pickup, dropoff));
+    if (!rides.length) return json(200, { enabled: true, rides: [], error: 'No rides are available for this trip right now.' });
+    return json(200, {
+      enabled: true,
+      rides: rides.map(o => ({
+        productId: o.productId, name: o.tier, emoji: o.emoji, seats: o.seats, currency: o.currency,
+        price: withMarkup(o.fare, RIDE_MARKUP), pickupMinutes: o.pickupMinutes, distance: o.distanceMiles, duration: o.durationSec,
+      })),
+    });
+  } catch (err) {
+    return json(err.status >= 500 || !err.status ? 502 : 200, { enabled: true, error: rideServiceError(err) });
+  }
+}
+
+function rideReceipt(b) {
+  return {
+    success:        true,
+    status:         b.status,        // processing | active | completed | canceled | not_booked | needs_review
+    step:           b.uberStatus ?? null,
+    orderId:        String(b._id),
+    tier:           b.tier,
+    rider:          b.guest.firstName,
+    pickup:         { label: b.pickup.label, lat: b.pickup.lat, lng: b.pickup.lng },
+    dropoff:        { label: b.dropoff.label, lat: b.dropoff.lat, lng: b.dropoff.lng },
+    currency:       b.currency,
+    estimatedTotal: b.estimatedTotal,
+    holdAmount:     fromStripeAmount(b.holdAmount, b.currency),
+    totalCharged:   b.totalCharged ?? null,
+    driver:         b.driver ?? null,
+    vehicle:        b.vehicle ?? null,
+    pickupPin:      b.status === 'active' ? b.pickupPin ?? null : null,
+    pickupEta:      b.pickupEta ?? null,
+    dropoffEta:     b.dropoffEta ?? null,
+    location:       b.status === 'active' ? b.location ?? null : null,
+    canCancel:      b.status === 'active' && RIDE_CANCELABLE.has(b.uberStatus),
+    message:        b.customerMessage ?? null,
+  };
+}
+
+async function handleRideCheckout(event) {
+  if (!ridesEnabled()) return json(403, { error: 'Ride booking on Lyrtrip opens soon. You have not been charged.' });
+  const stripe = mainStripe();
+  if (!stripe) return json(500, { error: 'Payments are not configured' });
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const pickup = cleanRideStop(body.pickup, 'pickup'), dropoff = cleanRideStop(body.dropoff, 'destination');
+  const guest = cleanRideGuest(body.guest);
+  const problem = [pickup, dropoff, guest].find(v => typeof v === 'string');
+  if (problem) return json(400, { error: problem });
+  const note = String(body.note ?? '').trim().slice(0, 200);
+
+  let option;
+  try {
+    option = rideOptions(await rideEstimates(pickup, dropoff)).find(o => o.productId === body.productId);
+  } catch (err) {
+    return json(err.status >= 500 || !err.status ? 502 : 400, { error: rideServiceError(err) });
+  }
+  if (!option) return json(409, { error: 'This ride type is no longer available for your trip. Please check prices again.' });
+  const retailTotal = withMarkup(option.fare, RIDE_MARKUP);
+  const agreed = Number(body.quotedTotal);
+  if (!(agreed > 0) || retailTotal > agreed * 1.02 + 0.5) {
+    return json(409, { priceChanged: true, totalPrice: retailTotal, error: `The fare is now ${option.currency} ${retailTotal.toFixed(2)}. Please review and continue.` });
+  }
+
+  const db = await getDb();
+  const user = await optionalUser(body.idToken);
+  const account = user ? await rw.getAccount(db, user) : null;
+  const feeRate = rw.feeRate(account, await rw.getSettings(db), RIDE_MARKUP);
+  const estimatedTotal = withMarkup(option.fare, feeRate);
+  const holdAmount = stripeAmount(Math.max(estimatedTotal * RIDE_HOLD_BUFFER, estimatedTotal + RIDE_HOLD_MIN_EXTRA), option.currency);
+  const coll = db.collection('rides');
+  const _id = new ObjectId();
+  const orderId = _id.toString();
+  const now = new Date().toISOString();
+  await coll.insertOne({
+    _id, status: 'pending_stripe', userSub: account?._id ?? null, email: guest.email, guest, note,
+    pickup, dropoff, productId: option.productId, tier: option.tier, bookedFare: option.fare, currency: option.currency,
+    feeRate, estimatedTotal, holdAmount, createdAt: now, updatedAt: now,
+  });
+
+  const cur = option.currency;
+  let session;
+  try {
+    session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      payment_intent_data: { capture_method: 'manual', description: `Lyrtrip ride ${orderId}` },
+      line_items: [{ price_data: { currency: cur.toLowerCase(), unit_amount: holdAmount, product_data: {
+        name: `Lyrtrip ride: ${option.tier}`,
+        description: `${pickup.label} → ${dropoff.label} · Card hold only. You pay the final fare incl. Lyrtrip service fee (about ${cur} ${estimatedTotal.toFixed(2)}) when the ride ends; the rest is released.`.slice(0, 500),
+      } }, quantity: 1 }],
+      metadata: { type: 'ride', rideId: orderId },
+      customer_email: guest.email,
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+      success_url: `${SITE_URL}/booking/success?session_id={CHECKOUT_SESSION_ID}&type=ride`,
+      cancel_url: `${SITE_URL}/booking/cancel?session_id={CHECKOUT_SESSION_ID}&type=ride`,
+    });
+  } catch (err) {
+    await coll.updateOne({ _id }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
+    throw err;
+  }
+  await coll.updateOne({ _id }, { $set: { stripeSessionId: session.id } });
+  return json(200, { url: session.url, orderId });
+}
+
+// What the receipt shows from Uber's trip details (the tracking link is Uber-branded: admins only)
+function rideTripFields(t) {
+  const d = t.driver, v = t.vehicle;
+  return {
+    uberStatus: t.status,
+    trackingUrl: t.rider_tracking_url ?? null,
+    driver: d ? { name: d.name ?? null, phone: d.phone_number ?? null, photo: d.picture_url ?? null, rating: d.rating ?? null } : null,
+    vehicle: v ? { make: v.make ?? null, model: v.model ?? null, color: v.vehicle_color_name ?? null, plate: v.license_plate ?? null } : null,
+    pickupPin: t.pin_details?.pickup_pin ?? null,
+    pickupEta: t.pickup?.eta ?? null,
+    dropoffEta: t.destination?.eta ?? null,
+    location: t.location?.latitude != null ? { lat: t.location.latitude, lng: t.location.longitude, bearing: t.location.bearing ?? 0 } : null,
+  };
+}
+
+const moneyValue = v => (typeof v === 'number' ? v : Number(String(v ?? '').replace(/[^0-9.]/g, '')));
+
+// The trip's final fare in major units. Field names follow Uber's docs and the mock; checked against the sandbox
+// before go-live. Falls back to the upfront fare the trip was booked at.
+async function rideFinalFare(b, t) {
+  const pick = o => [o?.total_charged, o?.total_fare, o?.client_fare, o?.fare?.value, o?.total_owed].map(moneyValue).find(n => n > 0);
+  let fare = pick(t?.receipt) ?? pick(t);
+  if (!fare) fare = pick(await guestRidesFetch(`/trips/${b.uberTripId}/receipt`, { timeoutMs: 8000 }).catch(() => null));
+  return { fare: fare ?? b.bookedFare, source: fare ? 'uber' : 'booked_fare' };
+}
+
+async function alertRideReview(b, reason) {
+  await sendEmail({
+    to: bookingsAlertEmail(),
+    subject: `Ride needs review: ${b.tier} ${b.pickup.label.split(',')[0]} → ${b.dropoff.label.split(',')[0]}`,
+    html: hotelEmailHtml('A ride needs a person', [
+      ['Order', String(b._id)], ['Reason', reason], ['Rider', `${b.guest.firstName} ${b.guest.lastName}, ${b.guest.phone}`],
+      ['Ride service trip', b.uberTripId ?? '—'], ['Card hold', `${b.currency} ${fromStripeAmount(b.holdAmount, b.currency).toFixed(2)} (${b.paymentIntent ?? '—'})`],
+      ['What to do', 'Check the trip in Uber for Business. Capture the fare + 10% in Stripe if the ride happened, otherwise cancel the hold.'],
+    ], { url: `${SITE_URL}/admin`, label: 'Open admin' }),
+    text: `Ride ${b._id} needs review: ${reason}`,
+  });
+}
+
+// A finished trip: capture the final fare + fee (never above the hold), or release the hold if it was cancelled
+async function settleRide(coll, b, t) {
+  const ended = RIDE_ENDED[t.status];
+  const claimed = mongoDoc(await coll.findOneAndUpdate({ _id: b._id, status: 'active' }, { $set: { status: 'settling', updatedAt: new Date().toISOString() } }, { returnDocument: 'after' }));
+  if (!claimed) return (await coll.findOne({ _id: b._id })) ?? b;
+  const stripe = mainStripe();
+  const now = new Date().toISOString();
+  let set;
+  try {
+    if (ended === 'completed') {
+      const { fare, source } = await rideFinalFare(b, t);
+      const due = withMarkup(fare, b.feeRate);
+      const amount = Math.min(stripeAmount(due, b.currency), b.holdAmount);
+      const pi = await stripe.paymentIntents.capture(b.paymentIntent, { amount_to_capture: amount });
+      const charged = fromStripeAmount(pi.amount_received ?? amount, b.currency);
+      set = { status: 'completed', finalFare: fare, finalFareSource: source, totalCharged: charged, totalPrice: charged, completedAt: now, customerMessage: null };
+      if (stripeAmount(due, b.currency) > b.holdAmount) {
+        set.reviewReason = `Final fare + fee ${b.currency} ${due.toFixed(2)} was above the hold; charged the hold.`;
+        await alertRideReview({ ...b, ...set }, set.reviewReason);
+      }
+    } else {
+      await stripe.paymentIntents.cancel(b.paymentIntent).catch(err => { if (err.code !== 'payment_intent_unexpected_state') throw err; });
+      set = {
+        status: 'canceled', totalCharged: 0, canceledAt: now,
+        customerMessage: t.status === 'rider_canceled'
+          ? 'Your ride was cancelled. The hold on your card has been released; you have not been charged.'
+          : "No driver could complete this ride, so it was cancelled. The hold on your card has been released; you have not been charged.",
+      };
+    }
+  } catch (err) {
+    console.error('Ride settlement failed:', err.message);
+    set = { status: 'needs_review', reviewReason: `Settling a ${t.status} trip failed: ${err.message}`, customerMessage: 'Your ride has ended. We are finalising the charge and will email your receipt.' };
+    await alertRideReview(b, set.reviewReason);
+  }
+  set.updatedAt = now;
+  await coll.updateOne({ _id: b._id }, { $set: set });
+  return { ...b, ...set };
+}
+
+// Asks the ride service for the trip's latest state; settles it once it has ended
+async function refreshRide(coll, b) {
+  if (b.status !== 'active' || !b.uberTripId) return b;
+  let t;
+  try {
+    t = await guestRidesFetch(`/trips/${b.uberTripId}`, { timeoutMs: 8000 });
+  } catch {
+    return b;
+  }
+  const set = { ...rideTripFields(t), updatedAt: new Date().toISOString() };
+  await coll.updateOne({ _id: b._id, status: 'active' }, { $set: set });
+  const next = { ...b, ...set };
+  return RIDE_ENDED[t.status] ? settleRide(coll, next, t) : next;
+}
+
+async function handleRideConfirm(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const stripe = mainStripe();
+  if (!stripe) return json(500, { error: 'Payments are not configured' });
+  let session;
+  try { session = await stripe.checkout.sessions.retrieve(String(body.sessionId ?? ''), { expand: ['payment_intent'] }); } catch { return json(400, { error: 'Invalid session ID' }); }
+  if (session.metadata?.type !== 'ride') return json(400, { error: 'Not a ride payment' });
+  const id = session.metadata.rideId;
+  if (!ObjectId.isValid(id)) return json(400, { error: 'Invalid ride' });
+
+  const db = await getDb();
+  const coll = db.collection('rides');
+  const _id = new ObjectId(id);
+  const pi = session.payment_intent;
+  let order = null;
+  // A manual-capture checkout leaves the payment "unpaid" with the card authorised
+  if (pi?.status === 'requires_capture') {
+    const claimed = await coll.findOneAndUpdate(
+      { _id, status: 'pending_stripe', stripeSessionId: session.id },
+      { $set: { status: 'processing', paymentIntent: pi.id, updatedAt: new Date().toISOString() } },
+      { returnDocument: 'after' },
+    );
+    order = mongoDoc(claimed);
+  }
+  if (!order) {
+    const existing = await coll.findOne({ _id });
+    if (!existing) return json(404, { error: 'Ride not found' });
+    if (existing.status === 'pending_stripe') return json(402, { error: 'Payment not completed' });
+    if (existing.status !== 'processing') return json(200, rideReceipt(await refreshRide(coll, existing)));
+    if (Date.now() - new Date(existing.updatedAt).getTime() < STALE_PROCESSING_MS) return json(202, { pending: true, message: 'Booking your ride' });
+    order = mongoDoc(await coll.findOneAndUpdate({ _id, status: 'processing', updatedAt: existing.updatedAt }, { $set: { updatedAt: new Date().toISOString() } }, { returnDocument: 'after' }));
+    if (!order) return json(202, { pending: true, message: 'Booking your ride' });
+    // The run that was booking died after asking for the car: it may exist, and a retry could send a second one
+    if (order.tripRequestedAt) {
+      const reviewReason = 'The booking run stopped after requesting the trip; it may or may not have been created.';
+      await coll.updateOne({ _id }, { $set: { status: 'needs_review', reviewReason, customerMessage: "We're confirming your ride. If it isn't confirmed in a few minutes, the hold on your card will be released.", updatedAt: new Date().toISOString() } });
+      await alertRideReview(order, reviewReason);
+      return json(200, rideReceipt(await coll.findOne({ _id })));
+    }
+  }
+
+  const payment = await stripePaymentDetails(stripe, { payment_intent: order.paymentIntent });
+  await coll.updateOne({ _id }, { $set: { payment } });
+
+  const fail = async (reason, customerMessage) => {
+    console.error('Ride booking failed:', reason);
+    let released = true;
+    await stripe.paymentIntents.cancel(order.paymentIntent).catch(err => { released = false; console.error('Releasing the ride hold failed:', err.message); });
+    const message = customerMessage ?? "We couldn't book this ride.";
+    await coll.updateOne({ _id }, { $set: {
+      status: 'not_booked', bookingError: String(reason), totalCharged: 0, updatedAt: new Date().toISOString(),
+      customerMessage: released ? `${message} The hold on your card has been released; you have not been charged.` : `${message} Please contact support@lyrtrip.com with order ID ${id} so we can release the hold on your card.`,
+    } });
+    return json(200, rideReceipt(await coll.findOne({ _id })));
+  };
+
+  // Upfront fares last a couple of minutes, so price again now; the fare must not have risen (2% or 50 cents of slack)
+  let option;
+  try {
+    option = rideOptions(await rideEstimates(order.pickup, order.dropoff)).find(o => o.productId === order.productId);
+  } catch (err) {
+    if (err.status >= 500 || !err.status) return json(503, { pending: true, message: 'Booking your ride' });
+    return fail(`re-estimate failed: ${err.message}`);
+  }
+  if (!option) return fail('the ride type is no longer offered', `No ${order.tier} rides are available for this trip right now.`);
+  if (option.fare > order.bookedFare * 1.02 + 0.5) return fail(`fare rose from ${order.bookedFare} to ${option.fare}`, 'The fare for this ride went up while you were paying, so we did not book it. Please check prices again.');
+
+  await coll.updateOne({ _id }, { $set: { tripRequestedAt: new Date().toISOString(), bookedFare: option.fare } });
+  let trip;
+  try {
+    trip = await guestRidesFetch('/trips', {
+      method: 'POST',
+      timeoutMs: 25_000,
+      body: {
+        guest: { first_name: order.guest.firstName, last_name: order.guest.lastName, phone_number: order.guest.phone, locale: 'en' },
+        pickup: { latitude: order.pickup.lat, longitude: order.pickup.lng, address: order.pickup.label },
+        dropoff: { latitude: order.dropoff.lat, longitude: order.dropoff.lng, address: order.dropoff.label },
+        product_id: order.productId,
+        fare_id: option.fareId,
+        note_for_driver: order.note || undefined,
+        expense_memo: `Lyrtrip ride ${id}`,
+      },
+    });
+  } catch (err) {
+    // A reply means no trip was created; a timeout may have created one, and retrying could send two cars
+    if (err.status) return fail(err.message, err.status < 500 ? `We couldn't book this ride: ${err.message}.` : undefined);
+    const reviewReason = `Trip request timed out: ${err.message}`;
+    await coll.updateOne({ _id }, { $set: { status: 'needs_review', reviewReason, customerMessage: "We're confirming your ride. If it isn't confirmed in a few minutes, the hold on your card will be released.", updatedAt: new Date().toISOString() } });
+    await alertRideReview(order, reviewReason);
+    return json(200, rideReceipt(await coll.findOne({ _id })));
+  }
+  if (!trip.request_id) return fail('no request_id in the trip reply');
+
+  const set = { status: 'active', uberTripId: trip.request_id, uberStatus: trip.status ?? 'processing', confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await coll.updateOne({ _id }, { $set: set });
+  const done = await refreshRide(coll, { ...order, ...set });
+  const url = `${SITE_URL}/booking/success?session_id=${session.id}&type=ride`;
+  await sendEmail({
+    to: order.email,
+    subject: `Your Lyrtrip ride is booked: ${order.tier} to ${order.dropoff.label.split(',')[0]}`,
+    html: hotelEmailHtml('Your ride is booked', [
+      ['Ride', order.tier], ['Pickup', order.pickup.label], ['Destination', order.dropoff.label],
+      ['Estimated total', `${order.currency} ${order.estimatedTotal.toFixed(2)}`],
+      ['Card hold', `${order.currency} ${fromStripeAmount(order.holdAmount, order.currency).toFixed(2)}, released except for the final fare`],
+    ], { url, label: 'Track your ride' }),
+    text: `Your Lyrtrip ride (${order.tier}) to ${order.dropoff.label} is booked. Track it: ${url}`,
+  });
+  return json(200, rideReceipt(done));
+}
+
+async function handleRideCancel(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const coll = (await getDb()).collection('rides');
+  const b = await coll.findOne({ stripeSessionId: String(body.sessionId ?? '') });
+  if (!b) return json(404, { error: 'Ride not found' });
+  if (b.status === 'processing') return json(409, { error: 'Your ride is being booked. Try again in a moment.' });
+  if (b.status !== 'active' || !RIDE_CANCELABLE.has(b.uberStatus)) return json(409, { error: "This ride can't be cancelled now." });
+  try {
+    await guestRidesFetch(`/trips/${b.uberTripId}`, { method: 'DELETE' });
+  } catch (err) {
+    return json(err.status === 409 ? 409 : 502, { error: err.status === 409 ? "This ride can't be cancelled now." : 'Could not cancel the ride. Please try again.' });
+  }
+  return json(200, rideReceipt(await refreshRide(coll, b)));
+}
+
+// Keeps rides moving when nobody has the receipt open: settles ended trips, and releases holds for
+// rides paid for but never booked (the traveller left before the receipt page loaded)
+async function sweepRides(db) {
+  const coll = db.collection('rides');
+  const ago = ms => new Date(Date.now() - ms).toISOString();
+  for (const b of await coll.find({ status: 'active', updatedAt: { $lt: ago(60_000) } }).limit(25).toArray()) {
+    await refreshRide(coll, b).catch(err => console.error('Ride refresh failed:', err.message));
+  }
+  const stripe = mainStripe();
+  if (!stripe) return;
+  for (const b of await coll.find({ status: 'pending_stripe', stripeSessionId: { $exists: true }, createdAt: { $lt: ago(35 * 60_000) } }).limit(10).toArray()) {
+    const session = await stripe.checkout.sessions.retrieve(b.stripeSessionId, { expand: ['payment_intent'] }).catch(() => null);
+    if (!session) continue;
+    const pi = session.payment_intent;
+    if (pi?.status === 'requires_capture') await stripe.paymentIntents.cancel(pi.id).catch(err => console.error('Releasing an unbooked ride hold failed:', err.message));
+    await coll.updateOne({ _id: b._id, status: 'pending_stripe' }, { $set: {
+      status: pi?.status === 'requires_capture' ? 'not_booked' : 'expired', paymentIntent: pi?.id ?? null, totalCharged: 0, updatedAt: new Date().toISOString(),
+      customerMessage: 'This ride was not booked because the booking was not finished. The hold on your card has been released.',
+    } });
+  }
+}
+
 async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
@@ -4231,6 +4727,10 @@ async function routeRequest(event) {
     if (path.endsWith('/api/delivery/quote')         && method === 'POST')         return handleDeliveryQuote(event);
     if (path.endsWith('/api/delivery/checkout')      && method === 'POST')         return handleDeliveryCheckout(event);
     if (path.endsWith('/api/delivery/confirm')       && method === 'POST')         return handleDeliveryConfirm(event);
+    if (path.endsWith('/api/ride/estimate')          && method === 'POST')         return handleRideEstimate(event);
+    if (path.endsWith('/api/ride/checkout')          && method === 'POST')         return handleRideCheckout(event);
+    if (path.endsWith('/api/ride/confirm')           && method === 'POST')         return handleRideConfirm(event);
+    if (path.endsWith('/api/ride/cancel')            && method === 'POST')         return handleRideCancel(event);
     if (path.endsWith('/api/assistant/chat')         && method === 'POST')         return handleLyrbotChat(event);
     if (path.endsWith('/api/rates')                  && method === 'GET')          return handleRates();
     if (path.endsWith('/api/i18n')                   && method === 'POST')         return handleI18n(event);
