@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
+import PageLoader from '@/components/PageLoader';
 import { PLAN_STYLE } from '@/lib/jobs';
 import {
   studyCall, uploadStudyDoc, STUDY_STATUS_STYLE,
@@ -115,6 +116,8 @@ export default function StudyProfilePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadKey, setLoadKey] = useState(0);
   const [appsKey, setAppsKey] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingKind = useRef<string | null>(null);
@@ -147,10 +150,10 @@ export default function StudyProfilePage() {
           setAppsKey(k => k + 1);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not load your profile.');
+        setLoadError(err instanceof Error ? err.message : 'Could not load your profile.');
       }
     })();
-  }, [user]);
+  }, [user, loadKey]);
 
   if (!loading && !user) {
     return (
@@ -162,7 +165,7 @@ export default function StudyProfilePage() {
     );
   }
   if (!view || !plans) {
-    return <div className="flex-1 flex items-center justify-center bg-gray-50"><div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600" /></div>;
+    return <PageLoader error={loadError} onRetry={() => { setLoadError(null); setLoadKey(k => k + 1); }} returnTo="/study/profile" />;
   }
 
   const set = <K extends keyof StudentProfile>(k: K, v: StudentProfile[K]) => { setP(x => ({ ...x, [k]: v })); setError(null); setNotice(null); };

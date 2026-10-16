@@ -49,8 +49,12 @@ function getStoredSession(): StoredSession | null {
     return null;
   }
 
-  const rawSession = window.localStorage.getItem(sessionStorageKey);
-  return rawSession ? (JSON.parse(rawSession) as StoredSession) : null;
+  try {
+    const rawSession = window.localStorage.getItem(sessionStorageKey);
+    return rawSession ? (JSON.parse(rawSession) as StoredSession) : null;
+  } catch {
+    return null;
+  }
 }
 
 function setStoredSession(session: StoredSession) {
@@ -104,11 +108,67 @@ function userFromToken(token: string): AuthenticatedUser {
   };
 }
 
+// When the saved tokens stop working: expiresAt, or the ID token's own exp claim
+function sessionExpiry(session: StoredSession): number {
+  if (session.expiresAt) return session.expiresAt;
+  try {
+    const exp = Number(decodeJwt(session.idToken || session.accessToken).exp);
+    return exp ? exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+let refreshing: Promise<StoredSession | null> | null = null;
+
+// Cognito tokens last an hour; a saved session older than that is renewed with its refresh token.
+// Without this, API calls from a tab or browser kept open went out with an expired token and failed.
+async function freshSession(): Promise<StoredSession | null> {
+  const session = getStoredSession();
+  if (!session?.accessToken) return null;
+  if (sessionExpiry(session) - Date.now() > 120_000) return session;
+  if (!session.refreshToken) {
+    clearStoredSession();
+    return null;
+  }
+  refreshing ??= (async () => {
+    try {
+      const response = await getClient().send(
+        new InitiateAuthCommand({
+          AuthFlow: 'REFRESH_TOKEN_AUTH',
+          ClientId: getConfig().clientId,
+          AuthParameters: { REFRESH_TOKEN: session.refreshToken! },
+        })
+      );
+      const result = response.AuthenticationResult;
+      if (!result?.AccessToken) throw Object.assign(new Error('No token'), { name: 'NotAuthorizedException' });
+      const renewed: StoredSession = {
+        accessToken: result.AccessToken,
+        idToken: result.IdToken ?? session.idToken,
+        refreshToken: result.RefreshToken ?? session.refreshToken,
+        expiresAt: result.ExpiresIn ? Date.now() + result.ExpiresIn * 1000 : undefined,
+      };
+      setStoredSession(renewed);
+      return renewed;
+    } catch (error) {
+      // A refused refresh token means signed out; a network failure keeps the session for the next try
+      if ((error as Error)?.name === 'NotAuthorizedException') {
+        clearStoredSession();
+        return null;
+      }
+      return session;
+    } finally {
+      refreshing = null;
+    }
+  })();
+  return refreshing;
+}
+
 /**
- * Get the current user session
+ * Get the current user session, renewing expired tokens first
  */
 export async function getSession() {
-  return getStoredSession();
+  return freshSession();
 }
 
 /**
@@ -117,7 +177,7 @@ export async function getSession() {
  * Cognito GetUser call for the canonical email and username.
  */
 export async function getUser(): Promise<AuthenticatedUser | null> {
-  const session = getStoredSession();
+  const session = await freshSession();
 
   if (!session?.accessToken) {
     return null;

@@ -24,7 +24,7 @@ export interface HotelSearchParams {
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   // The site is a static export, so /api/* lives on the Lambda API, not this origin.
   const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-  const token = getAccessToken();
+  const token = (await getSession())?.accessToken ?? getAccessToken();
   const response = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {

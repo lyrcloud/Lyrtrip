@@ -56,12 +56,19 @@ export const STUDY_STATUS_STYLE: Record<string, string> = {
 export async function studyCall<T = Record<string, unknown>>(payload: Record<string, unknown>): Promise<T> {
   const session = await getSession();
   const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
-  const res = await fetch(`${baseUrl}/api/study`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, ...(session?.idToken && { idToken: session.idToken }) }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/study`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, ...(session?.idToken && { idToken: session.idToken }) }),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch {
+    throw new Error('Lyrtrip did not answer. Check your connection and try again.');
+  }
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) throw new Error('Your sign-in has expired. Please sign in again.');
   if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
   return data as T;
 }

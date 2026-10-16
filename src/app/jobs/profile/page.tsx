@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
+import PageLoader from '@/components/PageLoader';
 import { jobsCall, uploadJobFile, APP_STYLE, PLAN_STYLE, type Education, type JobApplication, type Experience, type JobPlans, type JobProfile, type OwnerView } from '@/lib/jobs';
 import { rememberReturnTo } from '@/lib/returnTo';
 
@@ -81,6 +82,9 @@ export default function JobProfilePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadKey, setLoadKey] = useState(0);
+  const [planError, setPlanError] = useState<string | null>(null);
   const photoRef = useRef<HTMLInputElement>(null);
   const cvRef = useRef<HTMLInputElement>(null);
 
@@ -107,10 +111,10 @@ export default function JobProfilePage() {
           setNotice('Your plan is active. Your profile is now shown to companies.');
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not load your profile.');
+        setLoadError(err instanceof Error ? err.message : 'Could not load your profile.');
       }
     })();
-  }, [user]);
+  }, [user, loadKey]);
 
   if (!loading && !user) {
     return (
@@ -122,7 +126,7 @@ export default function JobProfilePage() {
     );
   }
   if (!view || !plans) {
-    return <div className="flex-1 flex items-center justify-center bg-gray-50"><div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600" /></div>;
+    return <PageLoader error={loadError} onRetry={() => { setLoadError(null); setLoadKey(k => k + 1); }} returnTo="/jobs/profile" />;
   }
 
   const set = <K extends keyof JobProfile>(k: K, v: JobProfile[K]) => { setP(x => ({ ...x, [k]: v })); setError(null); setNotice(null); };
@@ -145,11 +149,42 @@ export default function JobProfilePage() {
     apply(await uploadJobFile(kind, file));
     setNotice(kind === 'photo' ? 'Photo uploaded.' : 'CV uploaded.');
   });
-  const subscribe = (plan: string) => run(`sub-${plan}`, async () => {
-    await jobsCall<OwnerView>({ action: 'profile.save', profile: p });
-    const { url } = await jobsCall<{ url: string }>({ action: 'subscribe', plan, period });
-    window.location.href = url;
-  });
+  // What is still missing in the form as typed (the server checks the saved profile again)
+  const missingNow = () => {
+    const m: string[] = [];
+    if (!p.firstName.trim() || !p.lastName.trim()) m.push('Full name');
+    if (!view.hasPhoto) m.push('Profile photo');
+    if (!view.hasCv) m.push('CV');
+    if (p.headline.trim().length < 5) m.push('Headline');
+    if (!p.city.trim() || !p.country.trim()) m.push('City and country');
+    if (!p.email.trim()) m.push('Email');
+    if (!p.phone.trim()) m.push('Phone');
+    if (p.about.trim().length < 50) m.push('About you (at least 50 characters)');
+    if (!p.desiredRoles.length) m.push('Roles you want');
+    if (!p.jobTypes.length) m.push('Job types');
+    if (!p.workModes.length) m.push('Work arrangement');
+    if (p.yearsExperience == null) m.push('Years of experience');
+    if (p.skills.length < 3) m.push('At least 3 skills');
+    if (!p.languages.length) m.push('Languages');
+    if (!p.availability) m.push('Availability');
+    if (!p.firstJob && !p.experience.some(e => e.title && e.company && e.start)) m.push('Work experience (or tick "Looking for my first job")');
+    if (!p.education.some(e => e.school)) m.push('Education');
+    return m;
+  };
+  const subscribe = async (plan: string) => {
+    setPlanError(null);
+    const m = missingNow();
+    if (m.length) { setPlanError(`To choose a plan, first add: ${m.join(', ')}.`); return; }
+    setBusy(`sub-${plan}`);
+    try {
+      await jobsCall<OwnerView>({ action: 'profile.save', profile: p });
+      const { url } = await jobsCall<{ url: string }>({ action: 'subscribe', plan, period });
+      window.location.assign(url);
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : 'Could not open checkout.');
+      setBusy(null);
+    }
+  };
   const setCancel = (cancel: boolean) => run('cancel', async () => {
     if (cancel && !confirm('Cancel your plan? Your profile stays listed until the end of the period you paid for.')) return;
     apply(await jobsCall<OwnerView>({ action: cancel ? 'subscription.cancel' : 'subscription.resume' }));
@@ -353,12 +388,12 @@ export default function JobProfilePage() {
                   <p className="text-2xl font-black text-gray-900 mt-1">{usd(prices[pl.id] ?? pl.monthly)}<span className="text-sm font-medium text-gray-500"> / {PER[period] ?? period}</span></p>
                   {period !== 'month' && period !== 'week' && <p className="text-xs text-emerald-700">Saves {usd(Math.round((pl.monthly * ({ month3: 3, month6: 6, year: 12 }[period] ?? 1) - (prices[pl.id] ?? 0)) * 100) / 100)}</p>}
                   <ul className="mt-3 space-y-1 text-sm text-gray-700 flex-1">{pl.perks.map(k => <li key={k}>✓ {k}</li>)}</ul>
-                  <button onClick={() => subscribe(pl.id)} disabled={!!busy || view.missing.length > 0}
+                  <button onClick={() => subscribe(pl.id)} disabled={!!busy}
                     className={`mt-4 ${primary} w-full`}>{busy === `sub-${pl.id}` ? 'Opening checkout…' : `Choose ${pl.name}`}</button>
                 </div>
               ))}
             </div>
-            {view.missing.length > 0 && <p className="text-xs text-gray-500">Finish the required fields above to choose a plan.</p>}
+            {planError && <p className="text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">{planError}</p>}
           </>)}
         </div>
 
