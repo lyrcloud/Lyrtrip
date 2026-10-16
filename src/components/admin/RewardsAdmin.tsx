@@ -560,12 +560,12 @@ export function ShipmentsPanel({ call }: { call: Call }) {
   );
 }
 
-// ── Courier deliveries (Uber Direct) ─────────────────────────────────────────
+// ── Courier deliveries (Uber Direct or DoorDash Drive, whichever quoted lower) ─────────────────────────────────────────
 
 interface AdminDelivery {
   orderId: string; status: string; uberStatus: string | null; email: string; totalPrice: number; amountPaid: number; baseFee: number;
   currency: string; pickup: { label: string }; dropoff: { label: string }; item: { description: string };
-  trackingUrl: string | null; uberDeliveryId: string | null; error: string | null; createdAt: string;
+  trackingUrl: string | null; uberDeliveryId: string | null; provider: string; error: string | null; createdAt: string;
 }
 
 const DELIVERY_STATUS: Record<string, string> = {
@@ -600,13 +600,13 @@ export function DeliveriesPanel({ call }: { call: Call }) {
                 <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${DELIVERY_STATUS[r.status] ?? 'bg-gray-100 text-gray-700'}`}>{r.uberStatus ?? r.status}</span>
               </p>
               <p className="text-gray-600 truncate">{r.pickup.label} → {r.dropoff.label}</p>
-              <p className="text-xs text-gray-400">{r.email} · Order {r.orderId}{r.uberDeliveryId ? ` · ${r.uberDeliveryId}` : ''} · {new Date(r.createdAt).toLocaleString()}</p>
+              <p className="text-xs text-gray-400">{r.email} · Order {r.orderId} · {r.provider === 'doordash' ? 'DoorDash' : 'Uber'}{r.uberDeliveryId ? ` ${r.uberDeliveryId}` : ''} · {new Date(r.createdAt).toLocaleString()}</p>
               {r.error && <p className="text-xs text-red-600 mt-1">{r.error}</p>}
               {r.trackingUrl && <a href={r.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-600 font-semibold">Tracking</a>}
             </div>
             <div className="text-right">
               <p className="font-bold text-gray-900">{usd(r.totalPrice)}</p>
-              <p className="text-xs text-gray-500">Uber fee {usd(r.baseFee)}</p>
+              <p className="text-xs text-gray-500">{r.provider === 'doordash' ? 'DoorDash' : 'Uber'} fee {usd(r.baseFee)}</p>
             </div>
           </div>
         ))}

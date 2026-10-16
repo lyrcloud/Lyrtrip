@@ -3333,7 +3333,7 @@ async function handleAdmin(event) {
       case 'deliveries.list': {
         const rows = await db.collection('deliveries').find({ status: { $nin: ['pending_stripe', 'expired', 'checkout_failed'] } }).sort({ createdAt: -1 }).limit(200).toArray();
         return json(200, {
-          deliveries: rows.map(b => ({ ...deliveryReceipt(b), trackingUrl: b.trackingUrl ?? null, email: b.email, baseFee: b.baseFeeCents / 100, uberDeliveryId: b.uberDeliveryId ?? null, error: b.bookingError ?? null, createdAt: b.createdAt })),
+          deliveries: rows.map(b => ({ ...deliveryReceipt(b), trackingUrl: b.trackingUrl ?? null, email: b.email, baseFee: b.baseFeeCents / 100, uberDeliveryId: b.courierDeliveryId ?? b.uberDeliveryId ?? null, provider: b.courierProvider ?? b.bookingProvider ?? b.quotedProvider ?? 'uber', error: b.bookingError ?? null, createdAt: b.createdAt })),
         });
       }
 
@@ -4076,9 +4076,9 @@ async function alertShipmentReview(order, reason) {
 }
 
 // ---------------------------------------------------------------------------
-// Courier delivery (Uber Direct): an Uber courier takes a parcel from A to B
-// the same day. The sender pays Uber's fee + 10% on Stripe; Lyrtrip then
-// creates the delivery on its Uber Direct account and shows live tracking.
+// Courier delivery (Uber Direct, or DoorDash Drive when cheaper): a courier takes a parcel from A to B
+// the same day. The sender pays the courier fee + 10% on Stripe; Lyrtrip then
+// creates the delivery on its own account with that provider and shows live status.
 // ---------------------------------------------------------------------------
 
 const DELIVERY_MARKUP = 1.10;  // 10% Lyrtrip margin on Uber's delivery fee
@@ -4150,8 +4150,9 @@ function cleanDeliveryItem(i) {
   return { description, size, valueCents: Math.round(value * 100) };
 }
 
+// Each courier provider returns quotes as { provider, quoteId, fee (cents), currency, pickupMinutes, totalMinutes, dropoffEta }
 async function uberDeliveryQuote(pickup, dropoff, item) {
-  return uberDirectFetch('/delivery_quotes', {
+  const q = await uberDirectFetch('/delivery_quotes', {
     method: 'POST',
     body: {
       pickup_address: pickup.address, dropoff_address: dropoff.address,
@@ -4159,11 +4160,114 @@ async function uberDeliveryQuote(pickup, dropoff, item) {
       manifest_total_value: item.valueCents,
     },
   });
+  return {
+    provider: 'uber', quoteId: q.id, fee: q.fee, currency: String(q.currency ?? 'usd').toUpperCase(),
+    pickupMinutes: q.pickup_duration ?? null, totalMinutes: q.duration ?? null, dropoffEta: q.dropoff_eta ?? null,
+  };
+}
+
+async function uberDeliveryCreate(id, order, quote) {
+  return uberDirectFetch('/deliveries', {
+    method: 'POST',
+    timeoutMs: 25_000,
+    body: {
+      quote_id: quote.quoteId,
+      idempotency_key: id,
+      external_id: id,
+      pickup_name: order.pickup.name, pickup_address: order.pickup.address, pickup_phone_number: order.pickup.phone,
+      pickup_notes: order.pickup.notes || undefined,
+      dropoff_name: order.dropoff.name, dropoff_address: order.dropoff.address, dropoff_phone_number: order.dropoff.phone,
+      dropoff_notes: order.dropoff.notes || undefined,
+      manifest_items: [{ name: order.item.description, quantity: 1, size: order.item.size }],
+      manifest_total_value: order.item.valueCents,
+      deliverable_action: order.leaveAtDoor ? 'deliverable_action_leave_at_door' : 'deliverable_action_meet_at_door',
+      undeliverable_action: order.leaveAtDoor ? 'leave_at_door' : 'return',
+    },
+  });
+}
+
+// DoorDash Drive: the second courier provider. Every request carries a short-lived HS256 JWT made
+// from the Developer Portal access key. Off unless DOORDASH_ENABLED=true (the keys may be sandbox ones,
+// whose deliveries are simulated and must never be sold).
+//   DOORDASH_DEVELOPER_ID / DOORDASH_KEY_ID / DOORDASH_SIGNING_SECRET
+const DOORDASH_API = 'https://openapi.doordash.com/drive/v2';
+const doordashEnabled = () => process.env.DOORDASH_ENABLED === 'true'
+  && !!(process.env.DOORDASH_DEVELOPER_ID && process.env.DOORDASH_KEY_ID && process.env.DOORDASH_SIGNING_SECRET);
+
+function doordashJwt() {
+  const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = `${b64({ alg: 'HS256', typ: 'JWT', 'dd-ver': 'DD-JWT-V1' })}.${b64({ aud: 'doordash', iss: process.env.DOORDASH_DEVELOPER_ID, kid: process.env.DOORDASH_KEY_ID, iat: now, exp: now + 300 })}`;
+  const key = Buffer.from(process.env.DOORDASH_SIGNING_SECRET, 'base64');
+  return `${unsigned}.${createHmac('sha256', key).update(unsigned).digest('base64url')}`;
+}
+
+async function doordashFetch(path, { method = 'GET', body, timeoutMs = 20_000 } = {}) {
+  const res = await fetch(`${DOORDASH_API}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${doordashJwt()}`, 'content-type': 'application/json' },
+    body: body && JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = (data.field_errors ?? []).map(f => f.error).filter(Boolean).join('; ');
+    throw new UberDirectError(detail || data.message || `DoorDash error ${res.status}`, res.status, data.code);
+  }
+  return data;
+}
+
+const doordashAddress = stop => {
+  const a = JSON.parse(stop.address);
+  return [...a.street_address, a.city, [a.state, a.zip_code].filter(Boolean).join(' '), a.country].filter(Boolean).join(', ');
+};
+
+const minutesUntil = iso => (iso ? Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 60_000)) : null);
+
+const doordashBody = (externalId, pickup, dropoff, item, leaveAtDoor) => ({
+  external_delivery_id: externalId,
+  pickup_address: doordashAddress(pickup), pickup_business_name: pickup.name, pickup_phone_number: pickup.phone,
+  pickup_instructions: pickup.notes || undefined,
+  dropoff_address: doordashAddress(dropoff), dropoff_contact_given_name: dropoff.name, dropoff_phone_number: dropoff.phone,
+  dropoff_instructions: dropoff.notes || undefined,
+  order_value: item.valueCents,
+  items: [{ name: item.description, quantity: 1 }],
+  contactless_dropoff: !!leaveAtDoor,
+});
+
+// A quote only prices the trip (under a throwaway id); the order itself is created with its own id below
+async function doordashDeliveryQuote(pickup, dropoff, item, leaveAtDoor = false) {
+  const q = await doordashFetch('/quotes', { method: 'POST', body: doordashBody(`q-${randomUUID()}`, pickup, dropoff, item, leaveAtDoor) });
+  return {
+    provider: 'doordash', quoteId: q.external_delivery_id, fee: q.fee, currency: String(q.currency ?? 'usd').toUpperCase(),
+    pickupMinutes: minutesUntil(q.pickup_time_estimated), totalMinutes: minutesUntil(q.dropoff_time_estimated), dropoffEta: q.dropoff_time_estimated ?? null,
+  };
+}
+
+// Quotes every enabled provider and returns the cheapest; throws the first error when none can deliver
+// The external id is the Lyrtrip order id, so a retry gets 409 and returns the delivery already created
+async function doordashDeliveryCreate(id, order) {
+  try {
+    return await doordashFetch('/deliveries', { method: 'POST', timeoutMs: 25_000, body: doordashBody(id, order.pickup, order.dropoff, order.item, order.leaveAtDoor) });
+  } catch (err) {
+    if (err.status === 409) return doordashFetch(`/deliveries/${id}`, { timeoutMs: 10_000 });
+    throw err;
+  }
+}
+
+async function courierQuote(pickup, dropoff, item) {
+  const providers = [uberDeliveryQuote(pickup, dropoff, item)];
+  if (doordashEnabled()) providers.push(doordashDeliveryQuote(pickup, dropoff, item));
+  const results = await Promise.allSettled(providers);
+  const quotes = results.filter(r => r.status === 'fulfilled').map(r => r.value).filter(q => Number.isFinite(q.fee));
+  if (!quotes.length) throw results.find(r => r.status === 'rejected').reason;
+  const currency = quotes[0].currency;
+  return quotes.filter(q => q.currency === currency).sort((a, b) => a.fee - b.fee)[0];
 }
 
 const uberDeliveryError = err =>
   err.status === 400 || err.status === 422 || err.code === 'address_undeliverable' || err.code === 'invalid_params'
-    ? `We can't deliver between these addresses: ${err.message.replace(/uber/gi, 'courier')}`
+    ? `We can't deliver between these addresses: ${err.message.replace(/uber|doordash/gi, 'courier')}`
     : err.message;
 
 async function handleDeliveryQuote(event) {
@@ -4174,10 +4278,10 @@ async function handleDeliveryQuote(event) {
   const problem = [pickup, dropoff, item].find(v => typeof v === 'string');
   if (problem) return json(400, { error: problem });
   try {
-    const q = await uberDeliveryQuote(pickup, dropoff, item);
+    const q = await courierQuote(pickup, dropoff, item);
     return json(200, {
-      price: withMarkup(q.fee / 100, DELIVERY_MARKUP), currency: String(q.currency ?? 'usd').toUpperCase(),
-      pickupMinutes: q.pickup_duration ?? null, totalMinutes: q.duration ?? null, dropoffEta: q.dropoff_eta ?? null,
+      price: withMarkup(q.fee / 100, DELIVERY_MARKUP), currency: q.currency,
+      pickupMinutes: q.pickupMinutes, totalMinutes: q.totalMinutes, dropoffEta: q.dropoffEta,
     });
   } catch (err) {
     return json(err.status >= 500 ? 502 : 200, { error: uberDeliveryError(err) });
@@ -4218,11 +4322,11 @@ async function handleDeliveryCheckout(event) {
 
   let q;
   try {
-    q = await uberDeliveryQuote(pickup, dropoff, item);
+    q = await courierQuote(pickup, dropoff, item);
   } catch (err) {
     return json(err.status >= 500 ? 502 : 400, { error: uberDeliveryError(err) });
   }
-  const currency = String(q.currency ?? 'usd').toUpperCase();
+  const currency = q.currency;
   const retailTotal = withMarkup(q.fee / 100, DELIVERY_MARKUP);
   const agreed = Number(body.quotedTotal);
   if (!(agreed > 0) || retailTotal > agreed + 0.5) {
@@ -4251,7 +4355,7 @@ async function handleDeliveryCheckout(event) {
   await coll.insertOne({
     _id, status: 'pending_stripe', userSub: account?._id ?? null, email,
     pickup, dropoff, item, leaveAtDoor: !!body.leaveAtDoor,
-    baseFeeCents: q.fee, totalPrice, currency, credits, createdAt: now, updatedAt: now,
+    baseFeeCents: q.fee, quotedProvider: q.provider, totalPrice, currency, credits, createdAt: now, updatedAt: now,
   });
 
   let session;
@@ -4278,26 +4382,53 @@ async function handleDeliveryCheckout(event) {
   return json(200, { url: session.url, orderId });
 }
 
-// Uber's delivery states mapped to what the receipt shows
-const DELIVERY_STATE = { pending: 'active', pickup: 'active', pickup_complete: 'active', dropoff: 'active', delivered: 'delivered', canceled: 'canceled', returned: 'returned' };
+// Courier steps (Uber's names; DoorDash's are mapped onto them) and what the receipt shows for each
+const DELIVERY_STATE = { pending: 'active', pickup: 'active', pickup_complete: 'active', dropoff: 'active', returning: 'active', delivered: 'delivered', canceled: 'canceled', returned: 'returned' };
+const DOORDASH_STEP = {
+  quote: 'pending', created: 'pending', confirmed: 'pending', enroute_to_pickup: 'pickup', arrived_at_pickup: 'pickup',
+  picked_up: 'pickup_complete', enroute_to_dropoff: 'dropoff', arrived_at_dropoff: 'dropoff', delivered: 'delivered',
+  cancelled: 'canceled', enroute_to_return: 'returning', returned: 'returned',
+};
 
-function deliveryResult(d) {
+function deliveryResult(provider, d) {
+  if (provider === 'doordash') {
+    const step = DOORDASH_STEP[d.delivery_status] ?? 'pending';
+    return {
+      courierProvider: 'doordash',
+      courierDeliveryId: d.external_delivery_id,
+      uberStatus: step,  // the courier step, whichever provider
+      providerStatus: d.delivery_status,
+      status: DELIVERY_STATE[step],
+      trackingUrl: d.tracking_url ?? null,
+      dropoffEta: d.dropoff_time_estimated ?? null,
+      courier: d.dasher_name ? { name: d.dasher_name, phone: d.dasher_dropoff_phone_number ?? null, vehicle: [d.dasher_vehicle_make, d.dasher_vehicle_model].filter(Boolean).join(' ') || null, rating: null, photo: null } : null,
+      providerFeeCents: d.fee ?? null,
+    };
+  }
   return {
+    courierProvider: 'uber',
+    courierDeliveryId: d.id,
     uberDeliveryId: d.id,
     uberStatus: d.status,
+    providerStatus: d.status,
     status: DELIVERY_STATE[d.status] ?? 'active',
     trackingUrl: d.tracking_url ?? null,
     dropoffEta: d.dropoff_eta ?? null,
     courier: d.courier ? { name: d.courier.name ?? null, phone: d.courier.phone_number ?? null, vehicle: [d.courier.vehicle_color, d.courier.vehicle_make, d.courier.vehicle_model].filter(Boolean).join(' ') || null, rating: d.courier.rating ?? null, photo: d.courier.img_href ?? null } : null,
-    uberFeeCents: d.fee ?? null,
+    providerFeeCents: d.fee ?? null,
   };
 }
 
-// Asks Uber for the latest status of a live delivery (receipt refreshes)
+const fetchCourierDelivery = (provider, deliveryId, timeoutMs) => provider === 'doordash'
+  ? doordashFetch(`/deliveries/${encodeURIComponent(deliveryId)}`, { timeoutMs })
+  : uberDirectFetch(`/deliveries/${deliveryId}`, { timeoutMs });
+
+// Asks the courier provider for the latest status of a live delivery (receipt refreshes)
 async function refreshDelivery(coll, b) {
-  if (!b.uberDeliveryId || !['active'].includes(b.status)) return b;
+  const provider = b.courierProvider ?? 'uber', deliveryId = b.courierDeliveryId ?? b.uberDeliveryId;
+  if (!deliveryId || b.status !== 'active') return b;
   try {
-    const set = { ...deliveryResult(await uberDirectFetch(`/deliveries/${b.uberDeliveryId}`, { timeoutMs: 8000 })), updatedAt: new Date().toISOString() };
+    const set = { ...deliveryResult(provider, await fetchCourierDelivery(provider, deliveryId, 8000)), updatedAt: new Date().toISOString() };
     await coll.updateOne({ _id: b._id }, { $set: set });
     return { ...b, ...set };
   } catch {
@@ -4356,43 +4487,52 @@ async function handleDeliveryConfirm(event) {
     return json(500, { error: customerMessage });
   };
 
-  // Quotes last 15 minutes, so price again now; Uber's fee must not have risen (2% or 50 cents of slack)
-  let quote;
-  try {
-    quote = await uberDeliveryQuote(order.pickup, order.dropoff, order.item);
-  } catch (err) {
-    if (err.status >= 500 || !err.status) return json(503, { pending: true, message: 'Booking your courier' });
-    return fail(`re-quote failed: ${err.message}`);
+  // The provider is fixed before anything is created, so a retried run can never book a second courier elsewhere
+  let provider = order.bookingProvider;
+
+  // Quotes are short-lived, so price again now; the fee must not have risen (2% or 50 cents of slack).
+  // The provider that was quoted is tried first and the other is the fallback. A retried run reuses the
+  // quote it fixed, since that run may already have created the delivery and a fresh quote could fail.
+  const ceiling = order.baseFeeCents * 1.02 + 50;
+  const quoteWith = p => p === 'doordash'
+    ? doordashDeliveryQuote(order.pickup, order.dropoff, order.item, order.leaveAtDoor)
+    : uberDeliveryQuote(order.pickup, order.dropoff, order.item);
+  const candidates = provider ? []
+    : [order.quotedProvider ?? 'uber', ...(doordashEnabled() ? ['uber', 'doordash'] : ['uber'])].filter((p, i, all) => all.indexOf(p) === i);
+  let quote = provider ? order.bookedQuote : null, lastError, transient = false;
+  for (const p of candidates) {
+    try {
+      const q = await quoteWith(p);
+      if (q.currency === order.currency && q.fee <= ceiling) { quote = q; break; }
+      lastError = `${p} fee rose from ${order.baseFeeCents} to ${q.fee} cents`;
+    } catch (err) {
+      if (err.status >= 500 || !err.status) transient = true;
+      lastError = `${p} re-quote failed: ${err.message}`;
+    }
   }
-  if (quote.fee > order.baseFeeCents * 1.02 + 50) return fail(`Uber's fee rose from ${order.baseFeeCents} to ${quote.fee} cents`);
+  if (!quote) return transient ? json(503, { pending: true, message: 'Booking your courier' }) : fail(lastError);
+  if (!provider) {
+    provider = quote.provider;
+    await coll.updateOne({ _id }, { $set: { bookingProvider: provider, bookedQuote: quote } });
+  }
 
   let delivery;
   try {
-    delivery = await uberDirectFetch('/deliveries', {
-      method: 'POST',
-      timeoutMs: 25_000,
-      body: {
-        quote_id: quote.id,
-        idempotency_key: id,
-        external_id: id,
-        pickup_name: order.pickup.name, pickup_address: order.pickup.address, pickup_phone_number: order.pickup.phone,
-        pickup_notes: order.pickup.notes || undefined,
-        dropoff_name: order.dropoff.name, dropoff_address: order.dropoff.address, dropoff_phone_number: order.dropoff.phone,
-        dropoff_notes: order.dropoff.notes || undefined,
-        manifest_items: [{ name: order.item.description, quantity: 1, size: order.item.size }],
-        manifest_total_value: order.item.valueCents,
-        deliverable_action: order.leaveAtDoor ? 'deliverable_action_leave_at_door' : 'deliverable_action_meet_at_door',
-        undeliverable_action: order.leaveAtDoor ? 'leave_at_door' : 'return',
-      },
-    });
+    delivery = provider === 'doordash'
+      ? await doordashDeliveryCreate(id, order)
+      : await uberDeliveryCreate(id, order, quote);
   } catch (err) {
-    if (err.status >= 400 && err.status < 500) return fail(err.message);
-    // Timeout or Uber error: the idempotency key makes the next poll's retry safe
+    if (err.status >= 400 && err.status < 500) return fail(`${provider}: ${err.message}`);
+    // Timeout or provider error: the next poll retries safely (both providers dedupe on the order id)
     await coll.updateOne({ _id }, { $set: { updatedAt: new Date(0).toISOString() } });
     return json(503, { pending: true, message: 'Booking your courier' });
   }
+  return finishDelivery(db, coll, order, session, deliveryResult(provider, delivery));
+}
 
-  const set = { ...deliveryResult(delivery), confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+async function finishDelivery(db, coll, order, session, result) {
+  const _id = order._id;
+  const set = { ...result, confirmedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   await coll.updateOne({ _id }, { $set: set });
   await rw.earnRewards(db, coll, _id, `Courier delivery to ${order.dropoff.label.split(',')[0]}`).catch(err => console.error('Rewards failed:', err));
   const done = { ...order, ...set };

@@ -137,7 +137,7 @@ interface DeliveryReceipt {
 
 const COURIER_STEP: Record<string, string> = {
   pending: 'Finding a courier', pickup: 'Courier heading to pickup', pickup_complete: 'Picked up',
-  dropoff: 'On the way to drop-off', delivered: 'Delivered', canceled: 'Canceled', returned: 'Returned to sender',
+  dropoff: 'On the way to drop-off', returning: 'Returning to sender', delivered: 'Delivered', canceled: 'Canceled', returned: 'Returned to sender',
 };
 
 interface RideReceipt {

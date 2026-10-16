@@ -61,6 +61,8 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       if (process.env.EASYSHIP_API_KEY) cur.EASYSHIP_API_KEY = process.env.EASYSHIP_API_KEY;
       // Dash courier delivery: Uber Direct
       for (const k of ["UBER_DIRECT_CUSTOMER_ID", "UBER_DIRECT_CLIENT_ID", "UBER_DIRECT_CLIENT_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
+      // Second courier provider: DoorDash Drive, used only when DOORDASH_ENABLED=true (never with sandbox keys)
+      for (const k of ["DOORDASH_ENABLED", "DOORDASH_DEVELOPER_ID", "DOORDASH_KEY_ID", "DOORDASH_SIGNING_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
       // Job profiles: photos and CVs in a private S3 bucket (created once by hand; see the commit notes)
       if (process.env.JOB_PROFILE_BUCKET) cur.JOB_PROFILE_BUCKET = process.env.JOB_PROFILE_BUCKET;
       // Car tab ride booking (Guest Rides): off unless RIDES_ENABLED=true; the base URL can point at the sandbox or a mock
