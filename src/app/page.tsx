@@ -329,9 +329,9 @@ const mockData: Record<string, SearchResult[]> = {
     { id: '3', name: 'Museum Pass — 24 Hours', description: 'Access to 5 major museums with guide', rating: 4.7, price: 85 },
   ],
   career: [
-    { id: '1', name: 'Senior Software Engineer', company: 'Google', jobLocation: 'Remote / Mountain View, CA', salary: '$180,000–220,000/yr', jobType: 'Full-time', postedAt: '2 days ago', description: 'Build and scale distributed systems powering Google\'s core products.' },
-    { id: '2', name: 'Product Manager', company: 'Meta', jobLocation: 'Menlo Park, CA', salary: '$150,000–190,000/yr', jobType: 'Full-time', postedAt: '1 day ago', description: 'Drive product strategy and execution for flagship consumer applications.' },
-    { id: '3', name: 'UX Designer', company: 'Apple', jobLocation: 'Cupertino, CA', salary: '$130,000–160,000/yr', jobType: 'Full-time', postedAt: '3 days ago', description: 'Shape delightful user experiences across iOS and macOS platforms.' },
+    { id: '1', name: 'Senior Software Engineer', jobLocation: 'Remote / Mountain View, CA', salary: '$180,000–220,000/yr', jobType: 'Full-time', postedAt: '2 days ago', description: 'Build and scale distributed systems powering core consumer products.' },
+    { id: '2', name: 'Product Manager', jobLocation: 'Menlo Park, CA', salary: '$150,000–190,000/yr', jobType: 'Full-time', postedAt: '1 day ago', description: 'Drive product strategy and execution for flagship consumer applications.' },
+    { id: '3', name: 'UX Designer', jobLocation: 'Cupertino, CA', salary: '$130,000–160,000/yr', jobType: 'Full-time', postedAt: '3 days ago', description: 'Shape delightful user experiences across iOS and macOS platforms.' },
   ],
 };
 
@@ -625,6 +625,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [applyJob, setApplyJob] = useState<ApplyJob | null>(null);
+  const [openJobs, setOpenJobs] = useState<Record<string, boolean>>({});
   const [applyStudy, setApplyStudy] = useState<ApplyStudy | null>(null);
   const [applyEvent, setApplyEvent] = useState<TicketEvent | null>(null);
   const [bookTour, setBookTour] = useState<TourItem | null>(null);
@@ -1860,21 +1861,15 @@ export default function Home() {
       <div className="mt-6 space-y-4">
         {results.map(result => (
           <div key={result.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition">
-            {/* Company logo */}
             <div className="w-20 bg-gray-50 flex items-center justify-center p-3 shrink-0 border-r border-gray-100">
-              {result.imageUrl ? (
-                <img src={result.imageUrl} alt={result.company} className="w-14 h-14 object-contain rounded-lg" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-              ) : (
-                <div className="w-14 h-14 bg-brand-100 flex items-center justify-center text-3xl rounded-lg">💼</div>
-              )}
+              <div className="w-14 h-14 bg-brand-100 flex items-center justify-center text-3xl rounded-lg">💼</div>
             </div>
             <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
               <div>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <h3 className="font-bold text-gray-900 text-base leading-tight truncate">{result.name}</h3>
-                    <p className="text-sm text-brand-600 font-medium mt-0.5">{result.company}</p>
-                    {result.jobLocation && <p className="text-xs text-gray-500">📍 {result.jobLocation}</p>}
+                    <h3 className="font-bold text-gray-900 text-base leading-tight">{result.name}</h3>
+                    {result.jobLocation && <p className="text-xs text-gray-500 mt-0.5">📍 {result.jobLocation}</p>}
                   </div>
                   <div className="shrink-0 text-right flex flex-col items-end gap-1">
                     {result.salary && (
@@ -1886,21 +1881,33 @@ export default function Home() {
                   </div>
                 </div>
                 {result.description && (
-                  <p className="text-sm text-gray-600 mt-2 line-clamp-2">{result.description}</p>
+                  <p className={`text-sm text-gray-600 mt-2 whitespace-pre-line ${openJobs[result.id] ? '' : 'line-clamp-3'}`}>{result.description}</p>
                 )}
                 {result.highlights && result.highlights.length > 0 && (
-                  <div className="mt-2 space-y-1">
-                    {result.highlights.slice(0, 1).map(h => (
+                  <div className="mt-2 space-y-2">
+                    {(openJobs[result.id] ? result.highlights : result.highlights.slice(0, 1)).map(h => (
                       <div key={h.title}>
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{h.title}</p>
-                        <ul className="flex flex-wrap gap-1 mt-1">
-                          {h.items.slice(0, 3).map((item, i) => (
-                            <li key={i} className="text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">{item}</li>
-                          ))}
-                        </ul>
+                        {openJobs[result.id] ? (
+                          <ul className="list-disc pl-5 mt-1 space-y-0.5">
+                            {h.items.map((item, i) => <li key={i} className="text-sm text-gray-700">{item}</li>)}
+                          </ul>
+                        ) : (
+                          <ul className="flex flex-wrap gap-1 mt-1">
+                            {h.items.slice(0, 3).map((item, i) => (
+                              <li key={i} className="text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full">{item}</li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
                     ))}
                   </div>
+                )}
+                {((result.description?.length ?? 0) > 200 || (result.highlights?.length ?? 0) > 0) && (
+                  <button type="button" onClick={() => setOpenJobs(o => ({ ...o, [result.id]: !o[result.id] }))}
+                    className="mt-2 text-sm font-medium text-brand-700 hover:underline">
+                    {openJobs[result.id] ? 'Show less' : 'Show full job details'}
+                  </button>
                 )}
                 {result.benefits && result.benefits.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-2">
@@ -1917,7 +1924,7 @@ export default function Home() {
                 {result.applyToken ? (
                   <button
                     type="button"
-                    onClick={() => setApplyJob({ name: result.name, company: result.company, jobLocation: result.jobLocation, applyToken: result.applyToken! })}
+                    onClick={() => setApplyJob({ name: result.name, jobLocation: result.jobLocation, applyToken: result.applyToken! })}
                     className="px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
                   >
                     Apply via Lyrtrip →

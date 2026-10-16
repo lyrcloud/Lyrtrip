@@ -41,7 +41,7 @@ export interface TalentProfile extends TalentCard {
 
 // An application made through Lyrtrip; the employer's contact details stay with Lyrtrip
 export interface JobApplication {
-  id: string; title: string; company: string; location: string; salary: string | null; jobType: string | null;
+  id: string; title: string; location: string; salary: string | null; jobType: string | null;
   status: 'submitted' | 'forwarded' | 'interview' | 'rejected' | 'hired' | 'withdrawn'; statusLabel: string; message: string;
   createdAt: string; updatedAt: string;
 }

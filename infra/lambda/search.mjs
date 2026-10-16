@@ -201,9 +201,9 @@ const mockData = {
   ],
   study: [],
   career: [
-    { id: '1', name: 'Senior Software Engineer', company: 'Google', jobLocation: 'Remote / Mountain View, CA', salary: '$180,000–220,000/yr', jobType: 'Full-time', postedAt: '2 days ago', description: 'Build and scale distributed systems powering Google\'s core products. 5+ years experience required.' },
-    { id: '2', name: 'Product Manager', company: 'Meta', jobLocation: 'Menlo Park, CA', salary: '$150,000–190,000/yr', jobType: 'Full-time', postedAt: '1 day ago', description: 'Drive product strategy and execution for flagship consumer applications. MBA or equivalent preferred.' },
-    { id: '3', name: 'UX Designer', company: 'Apple', jobLocation: 'Cupertino, CA', salary: '$130,000–160,000/yr', jobType: 'Full-time', postedAt: '3 days ago', description: 'Shape delightful user experiences across iOS and macOS platforms. Portfolio required.' },
+    { id: '1', name: 'Senior Software Engineer', jobLocation: 'Remote / Mountain View, CA', salary: '$180,000–220,000/yr', jobType: 'Full-time', postedAt: '2 days ago', description: 'Build and scale distributed systems powering core consumer products. 5+ years experience required.' },
+    { id: '2', name: 'Product Manager', jobLocation: 'Menlo Park, CA', salary: '$150,000–190,000/yr', jobType: 'Full-time', postedAt: '1 day ago', description: 'Drive product strategy and execution for flagship consumer applications. MBA or equivalent preferred.' },
+    { id: '3', name: 'UX Designer', jobLocation: 'Cupertino, CA', salary: '$130,000–160,000/yr', jobType: 'Full-time', postedAt: '3 days ago', description: 'Shape delightful user experiences across iOS and macOS platforms. Portfolio required.' },
   ],
 };
 
@@ -2016,6 +2016,16 @@ function scrubJobContacts(text, note = JOB_CONTACT_NOTE) {
     .trim();
 }
 const BOOK_NOTE = '[book via Lyrtrip]';
+// Job results also never name the employer: their name in the text becomes "the employer"
+function scrubJob(text, company) {
+  let out = scrubJobContacts(text);
+  const name = String(company ?? '').trim();
+  if (name.length >= 2) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`(?<![\\w])${esc}(?![\\w])`, 'gi'), 'the employer');
+  }
+  return out;
+}
 
 const jobTokenKey = () => createHash('sha256').update(process.env.JOB_APPLY_SECRET || `${process.env.STRIPE_SECRET_KEY}:job-apply`).digest();
 function sealJob(data) {
@@ -2061,10 +2071,10 @@ async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
 
   return (data.jobs_results ?? []).map((j, i) => ({
     id:          j.job_id ?? String(i),
-    name:        j.title,
-    company:     j.company_name,
+    // The employer's name, logo and links stay in the sealed token; the full details are shown without them
+    name:        scrubJob(j.title, j.company_name),
     jobLocation: j.location,
-    description: scrubJobContacts(j.description).slice(0, 400),
+    description: scrubJob(j.description, j.company_name).slice(0, 6000),
     salary:      j.detected_extensions?.salary ?? null,
     jobType:     j.detected_extensions?.schedule_type ?? null,
     postedAt:    j.detected_extensions?.posted_at ?? null,
@@ -2073,15 +2083,15 @@ async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
       j.detected_extensions?.health_insurance ? 'Health Insurance' : null,
       j.detected_extensions?.paid_time_off    ? 'PTO'              : null,
       j.detected_extensions?.vision_coverage  ? 'Vision'           : null,
+      j.detected_extensions?.work_from_home   ? 'Work from home'   : null,
     ].filter(Boolean),
-    imageUrl:    j.thumbnail ?? null,
     applyToken:  sealJob({
       jobId: j.job_id ?? null, title: j.title, company: j.company_name, location: j.location ?? '', via: j.via ?? '',
       salary: j.detected_extensions?.salary ?? null, jobType: j.detected_extensions?.schedule_type ?? null,
       applyOptions: (j.apply_options ?? []).slice(0, 5).map(o => ({ title: o.title, link: o.link })),
       shareLink: j.share_link ?? null, description: (j.description ?? '').slice(0, 1500), at: Date.now(),
     }),
-    highlights:  (j.job_highlights ?? []).map(h => ({ title: scrubJobContacts(h.title), items: (h.items ?? []).slice(0, 4).map(scrubJobContacts) })),
+    highlights:  (j.job_highlights ?? []).map(h => ({ title: scrubJob(h.title, j.company_name), items: (h.items ?? []).slice(0, 20).map(t => scrubJob(t, j.company_name)) })),
     rating:      null,
     price:       null,
   }));
@@ -3370,10 +3380,10 @@ async function handleAdmin(event) {
         } });
         if (status !== a.status || message) {
           await sendEmail({
-            to: a.applicant.email, subject: `${JOB_APP_STATUS[status]}: ${a.job.title} at ${a.job.company}`,
-            html: jobAppEmail(JOB_APP_STATUS[status], [['Job', a.job.title], ['Company', a.job.company], ...(message ? [['Message from Lyrtrip', message]] : [])],
+            to: a.applicant.email, subject: `${JOB_APP_STATUS[status]}: ${a.job.title}`,
+            html: jobAppEmail(JOB_APP_STATUS[status], [['Job', a.job.title], ['Location', a.job.location], ...(message ? [['Message from Lyrtrip', message]] : [])],
               `Reply to this email or see ${SITE_URL}/jobs/profile. Please keep all contact about this job through Lyrtrip.`),
-            text: `${JOB_APP_STATUS[status]}: ${a.job.title} at ${a.job.company}.${message ? `\n\n${message}` : ''}`,
+            text: `${JOB_APP_STATUS[status]}: ${a.job.title}.${message ? `\n\n${message}` : ''}`,
           });
         }
         return json(200, { ok: true });
@@ -5089,7 +5099,7 @@ function applyMissing(p) {
 const jobAppId = (sub, job) => `${sub}:${createHash('sha256').update(job.jobId || `${job.title}|${job.company}|${job.location}`).digest('hex').slice(0, 24)}`;
 // What the applicant sees: never the employer's links
 const applicantJobApp = a => ({
-  id: a._id, title: a.job.title, company: a.job.company, location: a.job.location, salary: a.job.salary ?? null, jobType: a.job.jobType ?? null,
+  id: a._id, title: a.job.title, location: a.job.location, salary: a.job.salary ?? null, jobType: a.job.jobType ?? null,
   status: a.status, statusLabel: JOB_APP_STATUS[a.status] ?? a.status, message: a.applicantMessage ?? '', createdAt: a.createdAt, updatedAt: a.updatedAt,
 });
 const jobAppEmail = (heading, rows, foot) => `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#111">
@@ -5311,10 +5321,10 @@ async function handleJobs(event) {
         await apps.replaceOne({ _id }, a, { upsert: true });
         await Promise.all([
           sendEmail({
-            to: p.email, subject: `Application received: ${job.title} at ${job.company}`,
-            html: jobAppEmail('We have your application', [['Job', job.title], ['Company', job.company], ['Location', job.location]],
+            to: p.email, subject: `Application received: ${job.title}`,
+            html: jobAppEmail('We have your application', [['Job', job.title], ['Location', job.location]],
               `Lyrtrip reviews your application and sends it to the employer for you. Employers reply through Lyrtrip, and we email you any update. You can follow it at ${SITE_URL}/jobs/profile.`),
-            text: `We received your application for ${job.title} at ${job.company}. Lyrtrip sends it to the employer and emails you any update.`,
+            text: `We received your application for ${job.title}. Lyrtrip sends it to the employer and emails you any update.`,
           }),
           sendEmail({
             to: superAdminEmail(), subject: `New job application: ${a.applicant.name} for ${job.title} (${job.company})`,

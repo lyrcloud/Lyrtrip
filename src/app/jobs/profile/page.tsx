@@ -55,7 +55,7 @@ function MyApplications() {
           <div key={a.id} className="py-3 flex flex-wrap items-start justify-between gap-2 text-sm">
             <div className="min-w-0">
               <p className="font-semibold text-gray-900">{a.title}</p>
-              <p className="text-gray-600">{[a.company, a.location].filter(Boolean).join(' · ')}</p>
+              <p className="text-gray-600">{a.location}</p>
               <p className="text-xs text-gray-400">Applied {new Date(a.createdAt).toLocaleDateString()}</p>
               {a.message && <p className="mt-1 text-gray-700 whitespace-pre-line bg-gray-50 rounded-lg p-2">{a.message}</p>}
             </div>

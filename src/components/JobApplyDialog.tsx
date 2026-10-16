@@ -6,7 +6,7 @@ import { useAuth } from '@/context/AuthContext';
 import { jobsCall, APP_STYLE, type ApplyCheck, type JobApplication } from '@/lib/jobs';
 import { rememberReturnTo } from '@/lib/returnTo';
 
-export interface ApplyJob { name: string; company?: string; jobLocation?: string; applyToken: string }
+export interface ApplyJob { name: string; jobLocation?: string; applyToken: string }
 
 const primary = 'px-5 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover disabled:bg-gray-300 transition';
 
@@ -104,7 +104,7 @@ export default function JobApplyDialog({ job, onClose }: { job: ApplyJob; onClos
           <div className="min-w-0">
             <p className="text-xs font-bold uppercase tracking-widest text-brand-600">Apply via Lyrtrip</p>
             <h2 className="text-lg font-bold text-gray-900">{job.name}</h2>
-            <p className="text-sm text-gray-600">{[job.company, job.jobLocation].filter(Boolean).join(' · ')}</p>
+            <p className="text-sm text-gray-600">{job.jobLocation}</p>
           </div>
           <button onClick={onClose} aria-label="Close" className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
         </div>
