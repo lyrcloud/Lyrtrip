@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, sign as cryptoSign } from 'node:crypto';
 import Stripe from 'stripe';
 import Anthropic from '@anthropic-ai/sdk';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
@@ -4417,6 +4417,8 @@ async function handleDeliveryConfirm(event) {
 //   UBER_GUEST_RIDES_BASE_URL  https://api.uber.com (default), the sandbox, or the Postman mock
 //   UBER_GUEST_RIDES_TOKEN     fixed bearer token (mock / pasted sandbox token); else client credentials
 //   UBER_GUEST_RIDES_CLIENT_ID / _SECRET  default to UBER_CLIENT_ID / UBER_CLIENT_SECRET
+//   UBER_GUEST_RIDES_PRIVATE_KEY / _KEY_ID  Uber's asymmetric key (PEM and its key UUID); used instead of
+//                              the client secret when set (signed JWT client assertion, RS256)
 // ---------------------------------------------------------------------------
 
 const RIDE_MARKUP = 1.10;       // 10% Lyrtrip margin on the fare
@@ -4434,15 +4436,33 @@ const guestRidesBase = () => (process.env.UBER_GUEST_RIDES_BASE_URL || 'https://
 const mongoDoc = r => (r?.value !== undefined ? r.value : r);
 let guestRidesToken;  // { token, expiresAt }
 
+// Uber's asymmetric-key sign-in: a short-lived JWT signed with the private key downloaded from the
+// Uber dashboard (Setup > Authentication > Add Asymmetric Key) replaces the client secret
+function uberClientAssertion(appId) {
+  const pem = (process.env.UBER_GUEST_RIDES_PRIVATE_KEY ?? '').replace(/\\n/g, '\n').trim();
+  const kid = process.env.UBER_GUEST_RIDES_KEY_ID;
+  if (!pem || !kid) return null;
+  const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = `${b64({ alg: 'RS256', typ: 'JWT', kid })}.${b64({ iss: appId, sub: appId, aud: 'auth.uber.com', jti: randomUUID(), iat: now, exp: now + 300 })}`;
+  return `${unsigned}.${cryptoSign('RSA-SHA256', Buffer.from(unsigned), pem).toString('base64url')}`;
+}
+
 async function guestRidesAuth() {
   if (process.env.UBER_GUEST_RIDES_TOKEN) return process.env.UBER_GUEST_RIDES_TOKEN;
   if (guestRidesToken && guestRidesToken.expiresAt > Date.now() + 60_000) return guestRidesToken.token;
   const id = process.env.UBER_GUEST_RIDES_CLIENT_ID || process.env.UBER_CLIENT_ID || UBER_CLIENT_ID_DEFAULT;
   const secret = process.env.UBER_GUEST_RIDES_CLIENT_SECRET || process.env.UBER_CLIENT_SECRET;
-  if (!secret) throw new UberDirectError('Ride booking is not configured', 500);
+  const assertion = uberClientAssertion(id);
+  if (!assertion && !secret) throw new UberDirectError('Ride booking is not configured', 500);
   const res = await fetch('https://auth.uber.com/oauth/v2/token', {
     method: 'POST',
-    body: new URLSearchParams({ client_id: id, client_secret: secret, grant_type: 'client_credentials', scope: 'guests.trips' }),
+    body: new URLSearchParams({
+      grant_type: 'client_credentials', scope: 'guests.trips',
+      ...(assertion
+        ? { client_assertion: assertion, client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer' }
+        : { client_id: id, client_secret: secret }),
+    }),
     signal: AbortSignal.timeout(10_000),
   });
   const data = await res.json().catch(() => ({}));

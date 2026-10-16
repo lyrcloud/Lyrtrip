@@ -64,7 +64,7 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       // Job profiles: photos and CVs in a private S3 bucket (created once by hand; see the commit notes)
       if (process.env.JOB_PROFILE_BUCKET) cur.JOB_PROFILE_BUCKET = process.env.JOB_PROFILE_BUCKET;
       // Car tab ride booking (Guest Rides): off unless RIDES_ENABLED=true; the base URL can point at the sandbox or a mock
-      for (const k of ["RIDES_ENABLED", "UBER_GUEST_RIDES_BASE_URL", "UBER_GUEST_RIDES_TOKEN", "UBER_GUEST_RIDES_CLIENT_ID", "UBER_GUEST_RIDES_CLIENT_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
+      for (const k of ["RIDES_ENABLED", "UBER_GUEST_RIDES_BASE_URL", "UBER_GUEST_RIDES_TOKEN", "UBER_GUEST_RIDES_CLIENT_ID", "UBER_GUEST_RIDES_CLIENT_SECRET", "UBER_GUEST_RIDES_PRIVATE_KEY", "UBER_GUEST_RIDES_KEY_ID"]) if (process.env[k]) cur[k] = process.env[k];
       if (process.env.DUFFEL_STRIPE_SECRET_KEY) cur.DUFFEL_STRIPE_SECRET_KEY = process.env.DUFFEL_STRIPE_SECRET_KEY;
       else delete cur.DUFFEL_STRIPE_SECRET_KEY;   // live Duffel pays with the main STRIPE_SECRET_KEY
       require("fs").writeFileSync(process.argv[1], JSON.stringify({ Variables: cur }));
