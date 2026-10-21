@@ -1,0 +1,33 @@
+{
+  "appId": "com.lyrtrip.app",
+  "appName": "Lyrtrip",
+  "webDir": "www",
+  "server": {
+    "url": "https://www.lyrtrip.com",
+    "errorPath": "offline.html",
+    "allowNavigation": [
+      "lyrtrip.com",
+      "www.lyrtrip.com",
+      "lyrtrip-auth.auth.us-east-1.amazoncognito.com",
+      "checkout.stripe.com",
+      "*.stripe.com"
+    ]
+  },
+  "appendUserAgent": "LyrtripApp",
+  "backgroundColor": "#ffffff",
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#ffffff",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "style": "LIGHT",
+      "backgroundColor": "#ffffff",
+      "overlaysWebView": false
+    }
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

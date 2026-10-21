@@ -1,0 +1,522 @@
+Lyrtrip — Google Play store listing translations
+Each section: language (Play locale code), app name, short description (max 80 characters), full description.
+
+==================================================
+Language: Bengali (bn-BD)
+App name: Lyrtrip
+Short description: ফ্লাইট, হোটেল, পার্সেল, ফ্রেইট, ট্যুর ও আরও অনেক কিছু, এক অ্যাপে বুক করুন।
+Full description:
+Lyrtrip একটি অ্যাপ, যা দিয়ে আপনি নিজেকে, আপনার পরিবার ও আপনার জিনিসপত্র পৃথিবীর যেকোনো জায়গায় পৌঁছাতে পারেন। ফ্লাইট বুক করুন, হোটেলের অনুরোধ করুন, পার্সেল পাঠান, ফ্রেইট পাঠান, ট্যুরের পরিকল্পনা করুন এবং আরও অনেক কিছু, আপনার নিজের মুদ্রায় দামসহ।
+
+ফ্লাইট ও এয়ার চার্টার
+• বিশ্বজুড়ে শত শত এয়ারলাইনের ফ্লাইট খুঁজুন ও বুক করুন
+• হেলিকপ্টার, সি-প্লেন বা এয়ার অ্যাম্বুলেন্স চার্টারের অনুরোধ করে কোটেশন নিন
+
+থাকার ব্যবস্থা
+• হোটেল, রিসোর্ট, হোমস্টে, অ্যাপার্টমেন্ট, ভিলা ও আরও অনেক কিছুর অনুরোধ করুন
+• আমাদের টিম আপনার বুকিং নিশ্চিত করে ইমেইলে বিস্তারিত পাঠাবে
+
+রাইড
+• আপনার রুটে কার, ট্যাক্সি, লিমো ও মোটরসাইকেলের ভাড়া তুলনা করুন
+
+শিপিং ও কুরিয়ার
+• USPS, FedEx, UPS, DHL সহ আরও অনেকের লাইভ রেটে যেকোনো জায়গায় পার্সেল পাঠান
+• একই দিনে স্থানীয় কুরিয়ার ডেলিভারি
+• বাসা বদল বা মাল পরিবহনের জন্য ট্রাক বুক করুন, অথবা সমুদ্র, আকাশ বা রেলপথে কার্গো ও কন্টেইনার পাঠান
+
+ট্যুর ও ভ্রমণ সেবা
+• ট্যুর প্যাকেজ, পারিবারিক ছুটি, হানিমুন, তীর্থযাত্রা ও শিক্ষা সফর
+• ভিসা, পাসপোর্ট, আইডি কার্ড ও ভ্রমণ বীমায় সহায়তা
+
+পড়াশোনা ও চাকরি
+• ডকুমেন্ট আপলোড ও আবেদন ট্র্যাকিংসহ বিদেশে পড়াশোনার জন্য আবেদন করুন
+• জব প্রোফাইল তৈরি করুন যাতে কোম্পানিগুলো আপনাকে খুঁজে পায়, এবং চাকরিতে আবেদন করুন
+
+ট্যাক্স, আইনি সেবা ও আইনজীবী
+• ট্যাক্স রিটার্ন, GST/VAT সহায়তা, আইনি ডকুমেন্ট, নিবন্ধন ও আইনজীবীর পরামর্শের অনুরোধ করুন
+
+ইভেন্ট ও দাতব্য
+• কনসার্ট, শো ও সামিটের টিকিটের অনুরোধ করুন
+• আপনার পছন্দের উদ্যোগে দান করুন
+
+রিওয়ার্ড
+• বুকিংয়ে পয়েন্ট অর্জন করুন এবং পরে তা ব্যবহার করুন
+• বন্ধু ও পরিবারের জন্য গিফট কার্ড কিনুন
+
+আপনার সুবিধামতো পেমেন্ট
+• আপনার স্থানীয় মুদ্রা ও ভাষায় দাম
+• Stripe-এর মাধ্যমে নিরাপদ কার্ড পেমেন্ট
+• ড্যাশবোর্ডে প্রতিটি বুকিং ও অনুরোধ ট্র্যাক করুন
+
+LYRBOT সহকারী
+• যেকোনো বুকিংয়ে যেকোনো সময় সাহায্যের জন্য Lyrbot-কে জিজ্ঞাসা করুন
+
+প্রশ্ন আছে? ইমেইল করুন support@lyrtrip.com-এ।
+
+==================================================
+Language: Hindi (hi-IN)
+App name: Lyrtrip
+Short description: फ़्लाइट, होटल, पार्सल, फ़्रेट, टूर और बहुत कुछ, एक ही ऐप में बुक करें।
+Full description:
+Lyrtrip एक ऐप है जिससे आप खुद को, अपने परिवार को और अपने सामान को दुनिया में कहीं भी पहुँचा सकते हैं। फ़्लाइट बुक करें, होटल का अनुरोध करें, पार्सल भेजें, फ़्रेट भेजें, टूर की योजना बनाएँ और बहुत कुछ, अपनी ही मुद्रा में कीमतों के साथ।
+
+फ़्लाइट और एयर चार्टर
+• दुनिया भर की सैकड़ों एयरलाइनों की फ़्लाइट खोजें और बुक करें
+• हेलीकॉप्टर, सीप्लेन या एयर एम्बुलेंस चार्टर का अनुरोध करें और कोटेशन पाएँ
+
+ठहरने की जगह
+• होटल, रिसॉर्ट, होमस्टे, अपार्टमेंट, विला और बहुत कुछ का अनुरोध करें
+• हमारी टीम आपकी बुकिंग की पुष्टि करके विवरण ईमेल पर भेजेगी
+
+राइड
+• अपने रूट पर कार, टैक्सी, लिमो और मोटरसाइकिल के किराए की तुलना करें
+
+शिपिंग और कूरियर
+• USPS, FedEx, UPS, DHL और अन्य की लाइव दरों के साथ कहीं भी पार्सल भेजें
+• उसी दिन लोकल कूरियर डिलीवरी
+• सामान शिफ़्ट करने या ढुलाई के लिए ट्रक बुक करें, या समुद्र, हवाई या रेल से कार्गो और कंटेनर भेजें
+
+टूर और यात्रा सेवाएँ
+• टूर पैकेज, फ़ैमिली हॉलिडे, हनीमून, तीर्थयात्रा और शैक्षिक टूर
+• वीज़ा, पासपोर्ट, आईडी कार्ड और यात्रा बीमा में मदद
+
+पढ़ाई और नौकरी
+• डॉक्यूमेंट अपलोड और आवेदन ट्रैकिंग के साथ विदेश में पढ़ाई के लिए आवेदन करें
+• जॉब प्रोफ़ाइल बनाएँ ताकि कंपनियाँ आपको ढूँढ सकें, और नौकरियों के लिए आवेदन करें
+
+टैक्स, कानूनी सेवाएँ और वकील
+• टैक्स रिटर्न, GST/VAT सहायता, कानूनी दस्तावेज़, रजिस्ट्रेशन और वकील की सलाह का अनुरोध करें
+
+इवेंट और चैरिटी
+• कॉन्सर्ट, शो और समिट के टिकट का अनुरोध करें
+• अपनी पसंद के कार्यों के लिए दान करें
+
+रिवॉर्ड
+• बुकिंग पर पॉइंट कमाएँ और बाद में भुनाएँ
+• दोस्तों और परिवार के लिए गिफ़्ट कार्ड खरीदें
+
+अपने तरीके से भुगतान करें
+• अपनी स्थानीय मुद्रा और भाषा में कीमतें
+• Stripe के ज़रिए सुरक्षित कार्ड भुगतान
+• अपने डैशबोर्ड में हर बुकिंग और अनुरोध ट्रैक करें
+
+LYRBOT असिस्टेंट
+• किसी भी बुकिंग में, कभी भी मदद के लिए Lyrbot से पूछें
+
+सवाल हैं? support@lyrtrip.com पर ईमेल करें।
+
+==================================================
+Language: Arabic (ar)
+App name: Lyrtrip
+Short description: احجز رحلات الطيران والفنادق والطرود والشحن والجولات والمزيد في تطبيق واحد.
+Full description:
+‏Lyrtrip تطبيق واحد يوصلك أنت وعائلتك وأغراضك إلى أي مكان في العالم. احجز رحلات الطيران، واطلب الفنادق، وأرسل الطرود، وانقل البضائع، وخطط للجولات وغير ذلك، مع أسعار بعملتك المحلية.
+
+رحلات الطيران والطائرات المستأجرة
+• ابحث واحجز رحلات على مئات شركات الطيران حول العالم
+• اطلب استئجار طائرة هليكوبتر أو طائرة مائية أو إسعاف جوي واحصل على عرض سعر
+
+الإقامة
+• اطلب فنادق ومنتجعات وإقامات منزلية وشققًا وفيلات والمزيد
+• يؤكد فريقنا حجزك ويرسل التفاصيل عبر البريد الإلكتروني
+
+التنقل
+• قارن أسعار السيارات وسيارات الأجرة والليموزين والدراجات النارية على مسارك
+
+الشحن والتوصيل
+• أرسل الطرود إلى أي مكان بأسعار مباشرة من USPS وFedEx وUPS وDHL وغيرها
+• توصيل محلي في نفس اليوم
+• احجز شاحنة للنقل أو نقل البضائع، أو اشحن البضائع والحاويات بحرًا أو جوًا أو بالسكك الحديدية
+
+الجولات وخدمات السفر
+• باقات سياحية وعطلات عائلية وشهر عسل ورحلات حج وعمرة وجولات تعليمية
+• مساعدة في التأشيرات وجوازات السفر وبطاقات الهوية وتأمين السفر
+
+الدراسة والعمل
+• قدّم للدراسة في الخارج مع رفع المستندات وتتبع الطلب
+• أنشئ ملفًا مهنيًا لتجدك الشركات، وتقدّم للوظائف
+
+الضرائب والخدمات القانونية والمحامون
+• اطلب الإقرارات الضريبية ومساعدة ضريبة القيمة المضافة والمستندات القانونية والتسجيلات واستشارات المحامين
+
+الفعاليات والأعمال الخيرية
+• اطلب تذاكر الحفلات والعروض والمؤتمرات
+• تبرّع للقضايا التي تهمك
+
+المكافآت
+• اكسب نقاطًا على الحجوزات واستبدلها لاحقًا
+• اشترِ بطاقات هدايا للأصدقاء والعائلة
+
+ادفع بطريقتك
+• أسعار بعملتك ولغتك المحلية
+• دفع آمن بالبطاقة عبر Stripe
+• تتبّع كل حجز وطلب من لوحة التحكم
+
+المساعد LYRBOT
+• اسأل Lyrbot للمساعدة في أي حجز وفي أي وقت
+
+لديك أسئلة؟ راسلنا على support@lyrtrip.com
+
+==================================================
+Language: Urdu (ur)
+App name: Lyrtrip
+Short description: فلائٹس، ہوٹل، پارسل، فریٹ، ٹورز اور بہت کچھ، ایک ہی ایپ میں بک کریں۔
+Full description:
+‏Lyrtrip ایک ایپ ہے جس سے آپ خود کو، اپنے خاندان کو اور اپنا سامان دنیا میں کہیں بھی پہنچا سکتے ہیں۔ فلائٹس بک کریں، ہوٹل کی درخواست کریں، پارسل بھیجیں، فریٹ بھیجیں، ٹور کی منصوبہ بندی کریں اور بہت کچھ، اپنی کرنسی میں قیمتوں کے ساتھ۔
+
+فلائٹس اور ایئر چارٹر
+• دنیا بھر کی سینکڑوں ایئرلائنز کی فلائٹس تلاش کریں اور بک کریں
+• ہیلی کاپٹر، سی پلین یا ایئر ایمبولینس چارٹر کی درخواست کریں اور کوٹیشن حاصل کریں
+
+قیام
+• ہوٹل، ریزورٹ، ہوم اسٹے، اپارٹمنٹ، ولا اور بہت کچھ کی درخواست کریں
+• ہماری ٹیم آپ کی بکنگ کی تصدیق کر کے تفصیلات ای میل کرے گی
+
+سواری
+• اپنے روٹ پر کار، ٹیکسی، لیمو اور موٹر سائیکل کے کرایوں کا موازنہ کریں
+
+شپنگ اور کوریئر
+• USPS، FedEx، UPS، DHL اور دیگر کے لائیو ریٹس پر کہیں بھی پارسل بھیجیں
+• اسی دن لوکل کوریئر ڈیلیوری
+• سامان کی منتقلی یا ڈھلائی کے لیے ٹرک بک کریں، یا سمندری، ہوائی یا ریل کے ذریعے کارگو اور کنٹینر بھیجیں
+
+ٹورز اور سفری خدمات
+• ٹور پیکجز، فیملی چھٹیاں، ہنی مون، زیارات اور تعلیمی ٹورز
+• ویزا، پاسپورٹ، شناختی کارڈ اور سفری انشورنس میں مدد
+
+تعلیم اور ملازمت
+• دستاویزات اپ لوڈ اور درخواست ٹریکنگ کے ساتھ بیرون ملک تعلیم کے لیے اپلائی کریں
+• جاب پروفائل بنائیں تاکہ کمپنیاں آپ کو تلاش کر سکیں، اور ملازمتوں کے لیے اپلائی کریں
+
+ٹیکس، قانونی خدمات اور وکلاء
+• ٹیکس ریٹرن، GST/VAT میں مدد، قانونی دستاویزات، رجسٹریشن اور وکیل کے مشورے کی درخواست کریں
+
+ایونٹس اور خیرات
+• کنسرٹس، شوز اور سمٹس کے ٹکٹوں کی درخواست کریں
+• اپنی پسند کے مقاصد کے لیے عطیہ کریں
+
+انعامات
+• بکنگ پر پوائنٹس کمائیں اور بعد میں استعمال کریں
+• دوستوں اور خاندان کے لیے گفٹ کارڈ خریدیں
+
+اپنی مرضی سے ادائیگی
+• اپنی مقامی کرنسی اور زبان میں قیمتیں
+• Stripe کے ذریعے محفوظ کارڈ ادائیگی
+• اپنے ڈیش بورڈ میں ہر بکنگ اور درخواست ٹریک کریں
+
+LYRBOT اسسٹنٹ
+• کسی بھی بکنگ میں، کسی بھی وقت مدد کے لیے Lyrbot سے پوچھیں
+
+سوالات؟ support@lyrtrip.com پر ای میل کریں۔
+
+==================================================
+Language: Spanish, Latin America (es-419)
+App name: Lyrtrip
+Short description: Reserva vuelos, hoteles, envíos, carga, tours y más en una sola app de viajes.
+Full description:
+Lyrtrip es una sola app para llevarte a ti, a tu familia y tus cosas a cualquier parte del mundo. Reserva vuelos, solicita hoteles, envía paquetes, mueve carga, planifica tours y mucho más, con precios en tu propia moneda.
+
+VUELOS Y CHÁRTERS AÉREOS
+• Busca y reserva vuelos de cientos de aerolíneas en todo el mundo
+• Solicita un chárter en helicóptero, hidroavión o ambulancia aérea y recibe una cotización
+
+ALOJAMIENTO
+• Solicita hoteles, resorts, casas de familia, apartamentos, villas y más
+• Nuestro equipo confirma tu reserva y te envía los detalles por correo
+
+TRASLADOS
+• Compara precios de autos, taxis, limusinas y motos en tu ruta
+
+ENVÍOS Y MENSAJERÍA
+• Envía paquetes a cualquier lugar con tarifas en vivo de USPS, FedEx, UPS, DHL y más
+• Mensajería local el mismo día
+• Reserva un camión para mudanzas o transporte, o envía carga y contenedores por mar, aire o tren
+
+TOURS Y SERVICIOS DE VIAJE
+• Paquetes turísticos, vacaciones en familia, lunas de miel, peregrinaciones y viajes educativos
+• Ayuda con visas, pasaportes, documentos de identidad y seguro de viaje
+
+ESTUDIOS Y EMPLEO
+• Postula para estudiar en el extranjero, con carga de documentos y seguimiento de tu solicitud
+• Crea un perfil laboral para que las empresas te encuentren, y postula a empleos
+
+IMPUESTOS, SERVICIOS LEGALES Y ABOGADOS
+• Solicita declaraciones de impuestos, ayuda con IVA, documentos legales, registros y asesoría de abogados
+
+EVENTOS Y BENEFICENCIA
+• Solicita entradas para conciertos, espectáculos y congresos
+• Dona a las causas que te importan
+
+RECOMPENSAS
+• Gana puntos con tus reservas y canjéalos después
+• Compra tarjetas de regalo para amigos y familia
+
+PAGA A TU MANERA
+• Precios en tu moneda e idioma local
+• Pagos seguros con tarjeta a través de Stripe
+• Sigue cada reserva y solicitud desde tu panel
+
+ASISTENTE LYRBOT
+• Pídele ayuda a Lyrbot con cualquier reserva, en cualquier momento
+
+¿Preguntas? Escríbenos a support@lyrtrip.com.
+
+==================================================
+Language: Portuguese, Brazil (pt-BR)
+App name: Lyrtrip
+Short description: Reserve voos, hotéis, encomendas, cargas, passeios e mais em um só app.
+Full description:
+O Lyrtrip é um só app para levar você, sua família e suas coisas a qualquer lugar do mundo. Reserve voos, solicite hotéis, envie encomendas, transporte cargas, planeje passeios e muito mais, com preços na sua moeda.
+
+VOOS E FRETAMENTO AÉREO
+• Pesquise e reserve voos de centenas de companhias aéreas no mundo todo
+• Solicite fretamento de helicóptero, hidroavião ou UTI aérea e receba um orçamento
+
+HOSPEDAGEM
+• Solicite hotéis, resorts, casas de família, apartamentos, vilas e mais
+• Nossa equipe confirma sua reserva e envia os detalhes por e-mail
+
+CORRIDAS
+• Compare preços de carros, táxis, limusines e mototáxis na sua rota
+
+ENVIOS E ENTREGAS
+• Envie encomendas para qualquer lugar com tarifas em tempo real de USPS, FedEx, UPS, DHL e outras
+• Entrega local no mesmo dia
+• Reserve um caminhão para mudanças ou fretes, ou envie cargas e contêineres por mar, ar ou trem
+
+PASSEIOS E SERVIÇOS DE VIAGEM
+• Pacotes turísticos, férias em família, lua de mel, peregrinações e viagens educacionais
+• Ajuda com vistos, passaportes, documentos de identidade e seguro viagem
+
+ESTUDOS E EMPREGO
+• Candidate-se para estudar no exterior, com envio de documentos e acompanhamento da inscrição
+• Crie um perfil profissional para as empresas encontrarem você, e candidate-se a vagas
+
+IMPOSTOS, SERVIÇOS JURÍDICOS E ADVOGADOS
+• Solicite declarações de imposto, ajuda com tributos, documentos jurídicos, registros e consultoria de advogados
+
+EVENTOS E CARIDADE
+• Solicite ingressos para shows, espetáculos e conferências
+• Doe para as causas que você apoia
+
+RECOMPENSAS
+• Ganhe pontos nas reservas e resgate depois
+• Compre vales-presente para amigos e familiares
+
+PAGUE DO SEU JEITO
+• Preços na sua moeda e idioma
+• Pagamentos seguros com cartão pelo Stripe
+• Acompanhe cada reserva e solicitação no seu painel
+
+ASSISTENTE LYRBOT
+• Peça ajuda ao Lyrbot com qualquer reserva, a qualquer hora
+
+Dúvidas? Escreva para support@lyrtrip.com.
+
+==================================================
+Language: French (fr-FR)
+App name: Lyrtrip
+Short description: Vols, hôtels, colis, fret, circuits et plus : tout réserver dans une appli.
+Full description:
+Lyrtrip est une seule appli pour vous emmener, vous, votre famille et vos affaires, partout dans le monde. Réservez des vols, demandez des hôtels, envoyez des colis, expédiez du fret, organisez des circuits et bien plus, avec des prix dans votre devise.
+
+VOLS ET AFFRÈTEMENTS AÉRIENS
+• Recherchez et réservez des vols sur des centaines de compagnies aériennes dans le monde
+• Demandez un hélicoptère, un hydravion ou une ambulance aérienne et recevez un devis
+
+HÉBERGEMENT
+• Demandez des hôtels, resorts, chambres chez l'habitant, appartements, villas et plus
+• Notre équipe confirme votre réservation et vous envoie les détails par e-mail
+
+TRAJETS
+• Comparez les prix des voitures, taxis, limousines et motos sur votre trajet
+
+EXPÉDITION ET COURSIER
+• Envoyez des colis partout avec les tarifs en direct d'USPS, FedEx, UPS, DHL et d'autres
+• Livraison locale par coursier le jour même
+• Réservez un camion pour un déménagement ou du transport, ou expédiez marchandises et conteneurs par mer, air ou rail
+
+CIRCUITS ET SERVICES DE VOYAGE
+• Circuits organisés, vacances en famille, lunes de miel, pèlerinages et voyages éducatifs
+• Aide pour les visas, passeports, cartes d'identité et l'assurance voyage
+
+ÉTUDES ET EMPLOI
+• Candidatez pour étudier à l'étranger, avec envoi de documents et suivi de votre dossier
+• Créez un profil professionnel pour que les entreprises vous trouvent, et postulez à des offres
+
+FISCALITÉ, SERVICES JURIDIQUES ET AVOCATS
+• Demandez des déclarations d'impôts, de l'aide TVA, des documents juridiques, des immatriculations et des conseils d'avocats
+
+ÉVÉNEMENTS ET DONS
+• Demandez des billets pour des concerts, spectacles et sommets
+• Faites un don aux causes qui vous tiennent à cœur
+
+RÉCOMPENSES
+• Gagnez des points sur vos réservations et utilisez-les plus tard
+• Achetez des cartes cadeaux pour vos proches
+
+PAYEZ COMME VOUS VOULEZ
+• Prix dans votre devise et votre langue
+• Paiement sécurisé par carte via Stripe
+• Suivez chaque réservation et demande dans votre tableau de bord
+
+ASSISTANT LYRBOT
+• Demandez de l'aide à Lyrbot pour toute réservation, à tout moment
+
+Des questions ? Écrivez à support@lyrtrip.com.
+
+==================================================
+Language: German (de-DE)
+App name: Lyrtrip
+Short description: Flüge, Hotels, Pakete, Fracht, Touren und mehr in einer Reise-App buchen.
+Full description:
+Lyrtrip ist eine App, mit der Sie sich, Ihre Familie und Ihre Sachen überallhin auf der Welt bringen. Buchen Sie Flüge, fragen Sie Hotels an, versenden Sie Pakete und Fracht, planen Sie Touren und vieles mehr, mit Preisen in Ihrer Währung.
+
+FLÜGE UND CHARTERFLÜGE
+• Flüge von Hunderten Airlines weltweit suchen und buchen
+• Hubschrauber, Wasserflugzeug oder Ambulanzflug anfragen und ein Angebot erhalten
+
+UNTERKÜNFTE
+• Hotels, Resorts, Privatunterkünfte, Apartments, Villen und mehr anfragen
+• Unser Team bestätigt Ihre Buchung und sendet Ihnen die Details per E-Mail
+
+FAHRTEN
+• Preise für Autos, Taxis, Limousinen und Motorräder auf Ihrer Strecke vergleichen
+
+VERSAND UND KURIER
+• Pakete überallhin versenden, mit Live-Tarifen von USPS, FedEx, UPS, DHL und weiteren
+• Lokaler Kurierdienst am selben Tag
+• Lkw für Umzug oder Transport buchen oder Fracht und Container per Schiff, Flugzeug oder Bahn versenden
+
+TOUREN UND REISESERVICES
+• Pauschalreisen, Familienurlaub, Flitterwochen, Pilgerreisen und Bildungsreisen
+• Hilfe bei Visa, Reisepässen, Ausweisen und Reiseversicherungen
+
+STUDIUM UND JOBS
+• Für ein Auslandsstudium bewerben, mit Dokument-Upload und Statusverfolgung
+• Ein Jobprofil erstellen, damit Unternehmen Sie finden, und sich auf Stellen bewerben
+
+STEUERN, RECHTSDIENSTE UND ANWÄLTE
+• Steuererklärungen, Hilfe bei USt/MwSt, Rechtsdokumente, Registrierungen und Anwaltsberatung anfragen
+
+EVENTS UND SPENDEN
+• Tickets für Konzerte, Shows und Gipfeltreffen anfragen
+• Für Anliegen spenden, die Ihnen wichtig sind
+
+PRÄMIEN
+• Bei Buchungen Punkte sammeln und später einlösen
+• Geschenkkarten für Freunde und Familie kaufen
+
+BEZAHLEN, WIE SIE WOLLEN
+• Preise in Ihrer Währung und Sprache
+• Sichere Kartenzahlung über Stripe
+• Jede Buchung und Anfrage im Dashboard verfolgen
+
+LYRBOT-ASSISTENT
+• Lyrbot jederzeit um Hilfe bei jeder Buchung bitten
+
+Fragen? Schreiben Sie an support@lyrtrip.com.
+
+==================================================
+Language: Chinese, Simplified (zh-CN)
+App name: Lyrtrip
+Short description: 一个应用即可预订机票、酒店、包裹寄送、货运、旅游团等服务。
+Full description:
+Lyrtrip 是一款让您、您的家人和您的物品抵达世界任何地方的应用。预订机票、申请酒店、寄送包裹、运输货物、规划旅游等等，价格以您的本地货币显示。
+
+机票与包机
+• 搜索并预订全球数百家航空公司的航班
+• 申请直升机、水上飞机或空中救护包机并获取报价
+
+住宿
+• 申请酒店、度假村、民宿、公寓、别墅等
+• 我们的团队会确认您的预订并通过电子邮件发送详情
+
+出行
+• 比较您路线上的汽车、出租车、豪华轿车和摩托车价格
+
+快递与同城配送
+• 通过 USPS、FedEx、UPS、DHL 等的实时运费将包裹寄往任何地方
+• 当日同城快递配送
+• 预订卡车用于搬家或货运，或通过海运、空运或铁路运输货物和集装箱
+
+旅游与出行服务
+• 旅游套餐、家庭度假、蜜月、朝圣之旅和游学团
+• 协助办理签证、护照、身份证和旅行保险
+
+留学与求职
+• 申请出国留学，支持上传文件和跟踪申请进度
+• 创建求职档案让企业找到您，并申请职位
+
+税务、法律服务与律师
+• 申请报税、GST/增值税协助、法律文件、注册登记和律师咨询
+
+活动与慈善
+• 申请音乐会、演出和峰会门票
+• 为您关心的公益事业捐款
+
+奖励
+• 预订赚取积分，之后可兑换使用
+• 为亲友购买礼品卡
+
+灵活支付
+• 以您的本地货币和语言显示价格
+• 通过 Stripe 安全刷卡支付
+• 在控制面板中跟踪每笔预订和申请
+
+LYRBOT 助手
+• 随时向 Lyrbot 咨询任何预订问题
+
+有疑问？请发送电子邮件至 support@lyrtrip.com。
+
+==================================================
+Language: Indonesian (id)
+App name: Lyrtrip
+Short description: Pesan tiket pesawat, hotel, paket, kargo, tur, dan lainnya dalam satu aplikasi.
+Full description:
+Lyrtrip adalah satu aplikasi untuk membawa Anda, keluarga, dan barang-barang Anda ke mana pun di dunia. Pesan tiket pesawat, ajukan hotel, kirim paket, kirim kargo, rencanakan tur, dan banyak lagi, dengan harga dalam mata uang Anda.
+
+PENERBANGAN DAN CARTER PESAWAT
+• Cari dan pesan penerbangan dari ratusan maskapai di seluruh dunia
+• Ajukan carter helikopter, pesawat amfibi, atau ambulans udara dan dapatkan penawaran harga
+
+PENGINAPAN
+• Ajukan hotel, resor, homestay, apartemen, vila, dan lainnya
+• Tim kami mengonfirmasi pemesanan Anda dan mengirim detailnya lewat email
+
+PERJALANAN DARAT
+• Bandingkan harga mobil, taksi, limusin, dan ojek di rute Anda
+
+PENGIRIMAN DAN KURIR
+• Kirim paket ke mana saja dengan tarif langsung dari USPS, FedEx, UPS, DHL, dan lainnya
+• Kurir lokal di hari yang sama
+• Pesan truk untuk pindahan atau angkutan barang, atau kirim kargo dan kontainer lewat laut, udara, atau kereta
+
+TUR DAN LAYANAN PERJALANAN
+• Paket tur, liburan keluarga, bulan madu, ziarah, dan tur edukasi
+• Bantuan visa, paspor, kartu identitas, dan asuransi perjalanan
+
+STUDI DAN KERJA
+• Daftar kuliah di luar negeri, dengan unggah dokumen dan pelacakan pendaftaran
+• Buat profil kerja agar perusahaan dapat menemukan Anda, dan lamar pekerjaan
+
+PAJAK, LAYANAN HUKUM, DAN PENGACARA
+• Ajukan pelaporan pajak, bantuan PPN, dokumen hukum, pendaftaran, dan konsultasi pengacara
+
+ACARA DAN AMAL
+• Ajukan tiket konser, pertunjukan, dan konferensi
+• Berdonasi untuk tujuan yang Anda pedulikan
+
+HADIAH
+• Kumpulkan poin dari setiap pemesanan dan tukarkan nanti
+• Beli kartu hadiah untuk teman dan keluarga
+
+BAYAR SESUAI KEINGINAN
+• Harga dalam mata uang dan bahasa lokal Anda
+• Pembayaran kartu yang aman melalui Stripe
+• Lacak setiap pemesanan dan permintaan di dasbor Anda
+
+ASISTEN LYRBOT
+• Minta bantuan Lyrbot untuk pemesanan apa pun, kapan saja
+
+Ada pertanyaan? Kirim email ke support@lyrtrip.com.
