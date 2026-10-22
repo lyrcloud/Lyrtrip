@@ -606,7 +606,7 @@ async function handlePhoneAuth(event, action) {
       let { status, body: result } = await twilioVerify('Verifications', {
         To: phone, Channel: 'sms', CustomFriendlyName: 'Lyrtrip',
       });
-      if (status === 400 && /friendly/i.test(String(result.message))) {
+      if (result.code === 60204 || /friendly/i.test(String(result.message))) {
         console.error('Twilio rejected CustomFriendlyName:', result.code, result.message);
         ({ status, body: result } = await twilioVerify('Verifications', { To: phone, Channel: 'sms' }));
       }
