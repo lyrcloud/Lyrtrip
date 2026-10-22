@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { MongoClient, ObjectId } from 'mongodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import * as rw from './rewards.mjs';
 import {
@@ -514,6 +515,155 @@ async function handleWeChatAuth(event) {
     },
     profile: { nickname, avatar },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Mobile number sign-in, like Lyrshop. The user pool only takes emails as
+// usernames, so a phone account is a Cognito user whose username is a
+// stand-in address (<digits>@phone.lyrtrip.com) that is never mailed; the
+// site signs in with it and a password like any email account. Twilio Verify
+// texts and checks the codes for sign-up and password resets, using the
+// Twilio account Lyrshop already has (secret TWILIO_SECRET, default
+// lyrshop/twilio) with "Lyrtrip" as the sender name.
+// ---------------------------------------------------------------------------
+
+const PHONE_LOGIN_DOMAIN = 'phone.lyrtrip.com';
+const phoneLoginEmail = phone => `${phone.slice(1)}@${PHONE_LOGIN_DOMAIN}`;
+const isPhoneLoginEmail = email => String(email ?? '').toLowerCase().endsWith(`@${PHONE_LOGIN_DOMAIN}`);
+
+function normalizePhone(raw) {
+  const phone = String(raw ?? '').replace(/[\s().-]/g, '');
+  return /^\+[1-9]\d{7,14}$/.test(phone) ? phone : null;
+}
+
+let twilioCredentials;
+
+async function twilioVerify(path, form) {
+  twilioCredentials ??= JSON.parse((await new SecretsManagerClient({}).send(new GetSecretValueCommand({
+    SecretId: process.env.TWILIO_SECRET || 'lyrshop/twilio',
+  }))).SecretString);
+  const { account_sid: sid, auth_token: token } = twilioCredentials;
+  const service = process.env.TWILIO_VERIFY_SERVICE_SID || twilioCredentials.verify_service_sid;
+  const res = await fetch(`https://verify.twilio.com/v2/Services/${service}/${path}`, {
+    method: 'POST',
+    headers: {
+      authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString('base64')}`,
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams(form),
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+// Twilio answers 404 once a code has expired, been used or had too many tries.
+async function phoneCodeApproved(phone, code) {
+  if (!/^\d{4,10}$/.test(String(code ?? ''))) return false;
+  const { status, body } = await twilioVerify('VerificationCheck', { To: phone, Code: String(code) });
+  if (status !== 200 && status !== 404) throw new Error(`Twilio check failed (${status}): ${body.message ?? ''}`);
+  return body.status === 'approved';
+}
+
+// Accounts started by an email sign-up never confirm (nothing reads that
+// inbox), so they don't block the phone's real owner.
+async function getPhoneUser(cognito, userPoolId, phone) {
+  try {
+    const user = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: phoneLoginEmail(phone) }));
+    return user.UserStatus === 'UNCONFIRMED' ? { ...user, stale: true } : user;
+  } catch (error) {
+    if (error.name === 'UserNotFoundException') return null;
+    throw error;
+  }
+}
+
+// POST /api/auth/phone/{send,register,reset}
+async function handlePhoneAuth(event, action) {
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  if (!userPoolId) return json(500, { error: 'Sign-in is not configured.' });
+
+  let body;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch {
+    return json(400, { error: 'Invalid request.' });
+  }
+  const phone = normalizePhone(body.phone);
+  if (!phone) return json(400, { error: 'Enter a valid mobile number with its country code.' });
+
+  const cognito = getCognitoClient();
+  const existing = await getPhoneUser(cognito, userPoolId, phone);
+  const registered = existing && !existing.stale;
+
+  try {
+    if (action === 'send') {
+      if (body.purpose === 'signup' && registered) {
+        return json(409, { error: 'This number already has an account. Please sign in.' });
+      }
+      if (body.purpose === 'reset' && !registered) {
+        return json(404, { error: 'No account uses this number. Please sign up.' });
+      }
+      const { status, body: result } = await twilioVerify('Verifications', {
+        To: phone, Channel: 'sms', CustomFriendlyName: 'Lyrtrip',
+      });
+      if (status === 429) return json(429, { error: 'Too many codes for this number. Please wait a few minutes.' });
+      if (status !== 200 && status !== 201) {
+        console.error('Twilio send failed:', status, result.code, result.message);
+        return json(502, { error: "We couldn't text a code to that number. Check it and try again." });
+      }
+      return json(200, { success: true });
+    }
+
+    const password = String(body.password ?? '');
+    if (password.length < 8) return json(400, { error: 'Choose a password of at least 8 characters.' });
+
+    if (action === 'register') {
+      if (registered) return json(409, { error: 'This number already has an account. Please sign in.' });
+      if (!(await phoneCodeApproved(phone, body.code))) {
+        return json(400, { error: 'That code is wrong or has expired. Request a new one.' });
+      }
+      const username = phoneLoginEmail(phone);
+      if (existing?.stale) await cognito.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
+      const name = String(body.name ?? '').trim().slice(0, 100);
+      await cognito.send(new AdminCreateUserCommand({
+        UserPoolId: userPoolId,
+        Username: username,
+        MessageAction: 'SUPPRESS',
+        UserAttributes: [
+          { Name: 'email', Value: username },
+          { Name: 'email_verified', Value: 'false' },
+          { Name: 'phone_number', Value: phone },
+          { Name: 'phone_number_verified', Value: 'true' },
+          ...(name ? [{ Name: 'name', Value: name }] : []),
+        ],
+      }));
+      try {
+        await cognito.send(new AdminSetUserPasswordCommand({
+          UserPoolId: userPoolId, Username: username, Password: password, Permanent: true,
+        }));
+      } catch (error) {
+        await cognito.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username })).catch(() => {});
+        if (error.name === 'InvalidPasswordException') return json(400, { error: error.message });
+        throw error;
+      }
+      return json(200, { success: true, username });
+    }
+
+    if (action === 'reset') {
+      if (!registered) return json(404, { error: 'No account uses this number. Please sign up.' });
+      if (!(await phoneCodeApproved(phone, body.code))) {
+        return json(400, { error: 'That code is wrong or has expired. Request a new one.' });
+      }
+      await cognito.send(new AdminSetUserPasswordCommand({
+        UserPoolId: userPoolId, Username: phoneLoginEmail(phone), Password: password, Permanent: true,
+      }));
+      return json(200, { success: true, username: phoneLoginEmail(phone) });
+    }
+  } catch (error) {
+    if (error.name === 'InvalidPasswordException') return json(400, { error: error.message });
+    console.error('Phone auth failed:', action, error);
+    return json(500, { error: 'Mobile sign-in is unavailable right now. Please try again.' });
+  }
+
+  return json(404, { error: 'Not found' });
 }
 
 // The Stay tab's property types, as Google Hotels understands them
@@ -1398,7 +1548,9 @@ async function requireUser(idToken) {
     clientId:   process.env.COGNITO_USER_POOL_CLIENT_ID,
   });
   const claims = await idVerifier.verify(String(idToken ?? ''));
-  return { sub: String(claims.sub), email: String(claims.email ?? '').toLowerCase(), name: String(claims.name ?? '') };
+  const email = String(claims.email ?? '').toLowerCase();
+  // Mobile-number accounts carry a stand-in address that must never be mailed
+  return { sub: String(claims.sub), email: isPhoneLoginEmail(email) ? '' : email, phone: String(claims.phone_number ?? ''), name: String(claims.name ?? '') };
 }
 
 // The booking's signed-in traveller, if any (checkout also works as a guest).
@@ -1414,7 +1566,7 @@ async function requireAdmin(idToken) {
 
 async function sendEmail({ to, subject, html, text }) {
   const from = process.env.SES_FROM_EMAIL;
-  if (!from || !to) return false;
+  if (!from || !to || isPhoneLoginEmail(to)) return false;
   try {
     await new SESClient({}).send(new SendEmailCommand({
       Source: `Lyrtrip <${from}>`,
@@ -3025,7 +3177,7 @@ async function handleLyrbotChat(event) {
 
 function cognitoUserRow(u, attributes = u.Attributes) {
   const attr = Object.fromEntries((attributes ?? []).map(a => [a.Name, a.Value]));
-  let provider = attr['custom:wechat_openid'] ? 'WeChat' : 'Email';
+  let provider = attr['custom:wechat_openid'] ? 'WeChat' : isPhoneLoginEmail(attr.email) ? 'Phone' : 'Email';
   try {
     provider = JSON.parse(attr.identities ?? '[]')[0]?.providerName ?? provider;
   } catch {
@@ -8216,6 +8368,7 @@ async function routeRequest(event) {
   try {
     if (path.endsWith('/api/search'))                                               return handleSearch(event);
     if (path.endsWith('/api/auth/wechat')            && method === 'POST')         return handleWeChatAuth(event);
+    if (path.includes('/api/auth/phone/')            && method === 'POST')         return handlePhoneAuth(event, path.split('/').pop());
     if (path.endsWith('/api/stripe-checkout')        && method === 'POST')         return handleStripeCheckout(event);
     if (path.endsWith('/api/flight/places')          && method === 'POST')         return handleFlightPlaces(event);
     if (path.endsWith('/api/flight/checkout')        && method === 'POST')         return handleFlightCheckout(event);

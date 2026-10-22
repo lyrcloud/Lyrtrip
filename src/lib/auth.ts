@@ -16,11 +16,12 @@ type StoredSession = {
   expiresAt?: number;
 };
 
-export type AuthProvider = 'cognito' | 'Google' | 'Facebook' | 'WeChat';
+export type AuthProvider = 'cognito' | 'Google' | 'Facebook' | 'WeChat' | 'Phone';
 
 export type AuthenticatedUser = {
   id: string;
   email?: string;
+  phone?: string;
   name?: string;
   picture?: string;
   provider?: AuthProvider;
@@ -97,15 +98,25 @@ function providerFromIdentities(claims: Record<string, unknown>): AuthProvider {
   return 'cognito';
 }
 
+// Mobile-number accounts sign in with a stand-in address made from the number
+// (the user pool only takes emails as usernames). It is never mailed, so the
+// site shows and pre-fills the phone number instead.
+const phoneLoginDomain = 'phone.lyrtrip.com';
+export const phoneLoginEmail = (phone: string) => `${phone.replace(/^\+/, '')}@${phoneLoginDomain}`;
+const isPhoneLoginEmail = (email?: string) => !!email?.toLowerCase().endsWith(`@${phoneLoginDomain}`);
+
 function userFromToken(token: string): AuthenticatedUser {
   const claims = decodeJwt(token);
+  const email = typeof claims.email === 'string' ? claims.email : undefined;
+  const isPhone = isPhoneLoginEmail(email);
 
   return {
     id: String(claims.sub),
-    email: typeof claims.email === 'string' ? claims.email : undefined,
+    email: isPhone ? undefined : email,
+    phone: typeof claims.phone_number === 'string' ? claims.phone_number : undefined,
     name: typeof claims.name === 'string' ? claims.name : undefined,
     picture: typeof claims.picture === 'string' ? claims.picture : undefined,
-    provider: providerFromIdentities(claims),
+    provider: isPhone ? 'Phone' : providerFromIdentities(claims),
   };
 }
 
@@ -190,11 +201,13 @@ export async function getUser(): Promise<AuthenticatedUser | null> {
     const response = await getClient().send(
       new GetUserCommand({ AccessToken: session.accessToken })
     );
-    const email = response.UserAttributes?.find(attribute => attribute.Name === 'email')?.Value;
+    const attribute = (name: string) => response.UserAttributes?.find(a => a.Name === name)?.Value;
+    const email = attribute('email');
 
     return {
       id: response.Username || fromIdToken?.id || userFromToken(session.accessToken).id,
-      email: email || fromIdToken?.email,
+      email: isPhoneLoginEmail(email) ? undefined : email || fromIdToken?.email,
+      phone: attribute('phone_number') || fromIdToken?.phone,
       name: fromIdToken?.name,
       picture: fromIdToken?.picture,
       provider: fromIdToken?.provider,
@@ -311,6 +324,33 @@ export async function signIn(email: string, password: string) {
     return { data: { user: null }, error: error as Error };
   }
 }
+
+// Mobile sign-up and password resets: the Lambda texts and checks the code
+// (Twilio Verify) and sets the password, then the site signs in normally.
+async function postPhoneAuth(action: 'send' | 'register' | 'reset', body: Record<string, string>) {
+  try {
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    const response = await fetch(`${baseUrl}/api/auth/phone/${action}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'Mobile sign-in is unavailable right now.');
+    return { error: null };
+  } catch (error) {
+    return { error: error as Error };
+  }
+}
+
+export const sendPhoneCode = (phone: string, purpose: 'signup' | 'reset') =>
+  postPhoneAuth('send', { phone, purpose });
+
+export const signUpWithPhone = (phone: string, code: string, password: string, name?: string) =>
+  postPhoneAuth('register', { phone, code, password, name: name ?? '' });
+
+export const resetPasswordWithPhone = (phone: string, code: string, password: string) =>
+  postPhoneAuth('reset', { phone, code, password });
 
 /**
  * Sign out the current user

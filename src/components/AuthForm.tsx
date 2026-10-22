@@ -6,14 +6,19 @@ import { useRouter } from 'next/navigation';
 import {
   confirmResetPassword,
   confirmSignUp,
+  phoneLoginEmail,
   resendConfirmationCode,
   resetPassword,
+  resetPasswordWithPhone,
+  sendPhoneCode,
   signIn,
   signInWithFacebook,
   signInWithGoogle,
   signInWithWeChat,
   signUp,
+  signUpWithPhone,
 } from '@/lib/auth';
+import { PHONE_COUNTRIES, countryFlag, guessPhoneCountry, toE164 } from '@/lib/phoneCountries';
 import { SocialButton } from '@/components/SocialButton';
 import { useLocale } from '@/i18n/LocaleContext';
 
@@ -24,6 +29,10 @@ interface AuthFormProps {
 type Step = 'form' | 'confirm' | 'reset';
 
 const RESEND_COOLDOWN_SECONDS = 60;
+
+// The user pool's rules, checked before a code is texted so a rejected
+// password doesn't use up the code.
+const PASSWORD_RULES = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
 
 function errorName(err: unknown) {
   return (err as { name?: string } | null)?.name;
@@ -36,6 +45,11 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
   const [step, setStep] = useState<Step>('form');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  // Like Lyrshop: sign in with an email or a mobile number
+  const [contactKind, setContactKind] = useState<'email' | 'phone'>('email');
+  const [phoneCountry, setPhoneCountry] = useState('US');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -44,6 +58,10 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
   const [socialLoading, setSocialLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPhoneCountry(guessPhoneCountry());
+  }, []);
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -105,6 +123,25 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     setInfo(null);
 
     try {
+      if (contactKind === 'phone') {
+        const e164 = toE164(phoneNumber, phoneCountry);
+        if (!e164) throw new Error(t('Enter a valid mobile number for the selected country.'));
+        setPhone(e164);
+        if (activeMode === 'signup') {
+          if (!PASSWORD_RULES.test(password)) {
+            throw new Error(t('At least 8 characters with upper and lower case letters, a number and a symbol.'));
+          }
+          const { error } = await sendPhoneCode(e164, 'signup');
+          if (error) throw error;
+          openStep('confirm', t('We texted a 6-digit code to {phone}.', { phone: e164 }));
+        } else {
+          const { error } = await signIn(phoneLoginEmail(e164), password);
+          if (error) throw new Error(t('Incorrect mobile number or password.'));
+          router.push(takeReturnTo());
+        }
+        return;
+      }
+
       if (activeMode === 'signup') {
         const { data, error } = await signUp(email, password, name || undefined);
         if (errorName(error) === 'UsernameExistsException') {
@@ -148,6 +185,15 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     setInfo(null);
 
     try {
+      if (contactKind === 'phone') {
+        const { error } = await signUpWithPhone(phone, code.trim(), password, name || undefined);
+        if (error) throw error;
+        const { error: signInError } = await signIn(phoneLoginEmail(phone), password);
+        if (signInError) throw signInError;
+        router.push(takeReturnTo());
+        return;
+      }
+
       const { error } = await confirmSignUp(email, code.trim());
       if (error) throw error;
 
@@ -172,16 +218,34 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     setError(null);
     setInfo(null);
     const { error } =
-      step === 'reset' ? await resetPassword(email) : await resendConfirmationCode(email);
+      contactKind === 'phone'
+        ? await sendPhoneCode(phone, step === 'reset' ? 'reset' : 'signup')
+        : step === 'reset' ? await resetPassword(email) : await resendConfirmationCode(email);
     if (error) {
       setError(error.message);
     } else {
-      setInfo(t('We sent a new code to {email}.', { email }));
+      setInfo(contactKind === 'phone'
+        ? t('We texted a new code to {phone}.', { phone })
+        : t('We sent a new code to {email}.', { email }));
       setResendIn(RESEND_COOLDOWN_SECONDS);
     }
   };
 
   const handleForgotPassword = async () => {
+    if (contactKind === 'phone') {
+      const e164 = toE164(phoneNumber, phoneCountry);
+      if (!e164) {
+        setError(t('Enter your mobile number above first.'));
+        return;
+      }
+      setError(null);
+      setInfo(null);
+      setPhone(e164);
+      const { error } = await sendPhoneCode(e164, 'reset');
+      if (error) setError(error.message);
+      else openStep('reset', t('We texted a 6-digit reset code to {phone}.', { phone: e164 }));
+      return;
+    }
     if (!email) {
       setError(t('Enter your email above first.'));
       return;
@@ -200,10 +264,15 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     setInfo(null);
 
     try {
-      const { error } = await confirmResetPassword(email, code.trim(), newPassword);
+      if (contactKind === 'phone' && !PASSWORD_RULES.test(newPassword)) {
+        throw new Error(t('At least 8 characters with upper and lower case letters, a number and a symbol.'));
+      }
+      const { error } = contactKind === 'phone'
+        ? await resetPasswordWithPhone(phone, code.trim(), newPassword)
+        : await confirmResetPassword(email, code.trim(), newPassword);
       if (error) throw error;
 
-      const { error: signInError } = await signIn(email, newPassword);
+      const { error: signInError } = await signIn(contactKind === 'phone' ? phoneLoginEmail(phone) : email, newPassword);
       if (!signInError) {
         router.push(takeReturnTo());
         return;
@@ -225,10 +294,12 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     return (
       <form onSubmit={isReset ? handleReset : handleConfirm} className="space-y-4">
         <h2 className="text-2xl font-bold text-gray-900">
-          {isReset ? t('Reset your password') : t('Verify your email')}
+          {isReset ? t('Reset your password') : contactKind === 'phone' ? t('Verify your number') : t('Verify your email')}
         </h2>
         <p className="text-sm text-gray-600">
-          {t("Enter the 6-digit code we sent to {email}. Check your spam folder if it doesn't arrive.", { email })}
+          {contactKind === 'phone'
+            ? t('Enter the 6-digit code we texted to {phone}.', { phone })
+            : t("Enter the 6-digit code we sent to {email}. Check your spam folder if it doesn't arrive.", { email })}
         </p>
 
         <div>
@@ -345,7 +416,7 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           <div className="w-full border-t border-gray-200" />
         </div>
         <div className="relative flex justify-center text-xs">
-          <span className="bg-white px-3 text-gray-500">{t('or continue with email')}</span>
+          <span className="bg-white px-3 text-gray-500">{t('or continue with email or mobile')}</span>
         </div>
       </div>
 
@@ -367,21 +438,72 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           </div>
         )}
 
-        <div>
-          <label htmlFor="email" className="block text-sm font-medium mb-2 text-gray-700">
-            {t('Email')}
-          </label>
-          <input
-            id="email"
-            type="email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
-            placeholder="you@example.com"
-            required
-            disabled={loading}
-          />
+        <div className="grid grid-cols-2 gap-1 rounded-md bg-gray-100 p-1" role="group" aria-label={t('Sign in with')}>
+          {(['email', 'phone'] as const).map(kind => (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => { setContactKind(kind); setError(null); setInfo(null); }}
+              aria-pressed={contactKind === kind}
+              className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
+                contactKind === kind ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              {kind === 'email' ? t('Email') : t('Mobile number')}
+            </button>
+          ))}
         </div>
+
+        {contactKind === 'email' ? (
+          <div>
+            <label htmlFor="email" className="block text-sm font-medium mb-2 text-gray-700">
+              {t('Email')}
+            </label>
+            <input
+              id="email"
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
+              placeholder="you@example.com"
+              required
+              disabled={loading}
+            />
+          </div>
+        ) : (
+          <div>
+            <label htmlFor="phone" className="block text-sm font-medium mb-2 text-gray-700">
+              {t('Mobile number')}
+            </label>
+            <div className="flex gap-2">
+              <select
+                aria-label={t('Country code')}
+                value={phoneCountry}
+                onChange={e => setPhoneCountry(e.target.value)}
+                className="w-28 shrink-0 px-2 py-2 border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+                disabled={loading}
+              >
+                {PHONE_COUNTRIES.map(([iso, countryName, dial]) => (
+                  <option key={iso} value={iso} title={countryName}>
+                    {countryFlag(iso)} +{dial}
+                  </option>
+                ))}
+              </select>
+              <input
+                id="phone"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel-national"
+                value={phoneNumber}
+                onChange={e => setPhoneNumber(e.target.value)}
+                className="min-w-0 flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
+                placeholder="98765 43210"
+                required
+                disabled={loading}
+              />
+            </div>
+          </div>
+        )}
 
         <div>
           <div className="flex items-center justify-between mb-2">
