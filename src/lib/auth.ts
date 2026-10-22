@@ -28,6 +28,7 @@ export type AuthenticatedUser = {
 
 const sessionStorageKey = 'lyrtrip:cognito-session';
 const pkceStorageKey = 'lyrtrip:pkce-verifier';
+const redirectStorageKey = 'lyrtrip:oauth-redirect';
 
 function getConfig() {
   const region = process.env.NEXT_PUBLIC_COGNITO_REGION;
@@ -372,6 +373,21 @@ function getRedirectUri(path: string) {
   return `${window.location.origin}${path}`;
 }
 
+// Inside the Android app, Google refuses to sign in within the WebView
+// (403 disallowed_useragent), so the Hosted UI opens in a Chrome Custom Tab
+// and redirects to the app's own scheme. MainActivity catches that and loads
+// /auth/callback in the WebView, where the PKCE verifier is waiting.
+const appRedirectUri = 'com.lyrtrip.app://auth/callback';
+
+type CapacitorBrowser = { open(options: { url: string }): Promise<void> };
+
+function getNativeBrowser(): CapacitorBrowser | null {
+  const capacitor = (window as unknown as {
+    Capacitor?: { isNativePlatform?: () => boolean; Plugins?: { Browser?: CapacitorBrowser } };
+  }).Capacitor;
+  return capacitor?.isNativePlatform?.() ? capacitor.Plugins?.Browser ?? null : null;
+}
+
 function base64UrlEncode(bytes: ArrayBuffer | Uint8Array) {
   const buffer = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let binary = '';
@@ -416,9 +432,13 @@ export async function signInWithFederatedProvider(provider: 'Google' | 'Facebook
   const { clientId } = getConfig();
   const domain = getHostedUiDomain();
   const { verifier, challenge } = await generatePkcePair();
-  const redirectUri = getRedirectUri('/auth/callback');
+  const nativeBrowser = getNativeBrowser();
+  const redirectUri = nativeBrowser ? appRedirectUri : getRedirectUri('/auth/callback');
 
-  window.sessionStorage.setItem(pkceStorageKey, verifier);
+  // localStorage, not sessionStorage: the app may recreate the WebView while
+  // the Custom Tab is open.
+  window.localStorage.setItem(pkceStorageKey, verifier);
+  window.localStorage.setItem(redirectStorageKey, redirectUri);
 
   const params = new URLSearchParams({
     response_type: 'code',
@@ -430,7 +450,13 @@ export async function signInWithFederatedProvider(provider: 'Google' | 'Facebook
     code_challenge_method: 'S256',
   });
 
-  window.location.href = `https://${domain}/oauth2/authorize?${params.toString()}`;
+  const authorizeUrl = `https://${domain}/oauth2/authorize?${params.toString()}`;
+  if (nativeBrowser) {
+    await nativeBrowser.open({ url: authorizeUrl });
+    return { openedInTab: true };
+  }
+  window.location.href = authorizeUrl;
+  return { openedInTab: false };
 }
 
 export const signInWithGoogle = () => signInWithFederatedProvider('Google');
@@ -444,8 +470,10 @@ export async function completeFederatedSignIn(code: string) {
   try {
     const { clientId } = getConfig();
     const domain = getHostedUiDomain();
-    const verifier = window.sessionStorage.getItem(pkceStorageKey) || '';
-    window.sessionStorage.removeItem(pkceStorageKey);
+    const verifier = window.localStorage.getItem(pkceStorageKey) || '';
+    const redirectUri = window.localStorage.getItem(redirectStorageKey) || getRedirectUri('/auth/callback');
+    window.localStorage.removeItem(pkceStorageKey);
+    window.localStorage.removeItem(redirectStorageKey);
 
     const response = await fetch(`https://${domain}/oauth2/token`, {
       method: 'POST',
@@ -454,7 +482,7 @@ export async function completeFederatedSignIn(code: string) {
         grant_type: 'authorization_code',
         client_id: clientId,
         code,
-        redirect_uri: getRedirectUri('/auth/callback'),
+        redirect_uri: redirectUri,
         code_verifier: verifier,
       }),
     });

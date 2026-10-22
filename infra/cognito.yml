@@ -156,9 +156,13 @@ Resources:
       CallbackURLs:
         - !Sub '${DevSiteUrl}/auth/callback'
         - !Sub '${ProductionSiteUrl}/auth/callback'
+        - https://lyrtrip.com/auth/callback
+        # Android app: Hosted UI runs in a Custom Tab and returns here (mobile/ MainActivity)
+        - com.lyrtrip.app://auth/callback
       LogoutURLs:
         - !Ref DevSiteUrl
         - !Ref ProductionSiteUrl
+        - https://lyrtrip.com
       PreventUserExistenceErrors: ENABLED
       EnableTokenRevocation: true
 

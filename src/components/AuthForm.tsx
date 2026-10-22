@@ -79,9 +79,11 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     setError(null);
     setSocialLoading(provider);
     try {
-      if (provider === 'google') await signInWithGoogle();
-      else if (provider === 'facebook') await signInWithFacebook();
-      else signInWithWeChat();
+      if (provider === 'wechat') return signInWithWeChat();
+      const { openedInTab } = await (provider === 'google' ? signInWithGoogle() : signInWithFacebook());
+      // In the app the page stays put behind the Custom Tab; free the button
+      // in case the user closes the tab without signing in.
+      if (openedInTab) setSocialLoading(null);
     } catch (err) {
       setError((err as Error).message || 'Unable to start sign-in.');
       setSocialLoading(null);
