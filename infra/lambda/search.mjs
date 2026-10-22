@@ -613,7 +613,8 @@ async function handlePhoneAuth(event, action) {
       if (status === 429) return json(429, { error: 'Too many codes for this number. Please wait a few minutes.' });
       if (status !== 200 && status !== 201) {
         console.error('Twilio send failed:', status, result.code, result.message);
-        return json(502, { error: "We couldn't text a code to that number. Check it and try again." });
+        // Twilio's error code (e.g. 21608, 60410) is safe to return and saves digging through logs
+        return json(502, { error: "We couldn't text a code to that number. Check it and try again.", code: result.code ?? status });
       }
       return json(200, { success: true });
     }

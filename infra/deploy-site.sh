@@ -95,6 +95,10 @@ aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admi
     \"Effect\": \"Allow\",
     \"Action\": \"secretsmanager:GetSecretValue\",
     \"Resource\": \"arn:aws:secretsmanager:us-east-1:$(aws sts get-caller-identity --query Account --output text):secret:lyrshop/twilio-*\"
+  }, {
+    \"Effect\": \"Allow\",
+    \"Action\": [\"logs:CreateLogGroup\", \"logs:CreateLogStream\", \"logs:PutLogEvents\"],
+    \"Resource\": \"arn:aws:logs:us-east-1:*:log-group:/aws/lambda/$FUNCTION:*\"
   }]
 }"
 echo "admin policy on ${ROLE_ARN##*/}"
