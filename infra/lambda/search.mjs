@@ -601,9 +601,15 @@ async function handlePhoneAuth(event, action) {
       if (body.purpose === 'reset' && !registered) {
         return json(404, { error: 'No account uses this number. Please sign up.' });
       }
-      const { status, body: result } = await twilioVerify('Verifications', {
+      // The service is Lyrshop's, so ask for "Lyrtrip" as the sender name; if the
+      // account doesn't allow custom names, send with the service's own.
+      let { status, body: result } = await twilioVerify('Verifications', {
         To: phone, Channel: 'sms', CustomFriendlyName: 'Lyrtrip',
       });
+      if (status === 400 && /friendly/i.test(String(result.message))) {
+        console.error('Twilio rejected CustomFriendlyName:', result.code, result.message);
+        ({ status, body: result } = await twilioVerify('Verifications', { To: phone, Channel: 'sms' }));
+      }
       if (status === 429) return json(429, { error: 'Too many codes for this number. Please wait a few minutes.' });
       if (status !== 200 && status !== 201) {
         console.error('Twilio send failed:', status, result.code, result.message);
