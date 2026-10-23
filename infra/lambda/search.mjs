@@ -522,9 +522,9 @@ async function handleWeChatAuth(event) {
 // usernames, so a phone account is a Cognito user whose username is a
 // stand-in address (<digits>@phone.lyrtrip.com) that is never mailed; the
 // site signs in with it and a password like any email account. Twilio Verify
-// texts and checks the codes for sign-up and password resets, using the
-// Twilio account Lyrshop already has (secret TWILIO_SECRET, default
-// lyrshop/twilio) with "Lyrtrip" as the sender name.
+// texts and checks the codes for sign-up and password resets through
+// Lyrtrip's own Verify service (TWILIO_VERIFY_SERVICE_SID), on the Twilio
+// account Lyrshop already has (secret TWILIO_SECRET, default lyrshop/twilio).
 // ---------------------------------------------------------------------------
 
 const PHONE_LOGIN_DOMAIN = 'phone.lyrtrip.com';
@@ -601,15 +601,7 @@ async function handlePhoneAuth(event, action) {
       if (body.purpose === 'reset' && !registered) {
         return json(404, { error: 'No account uses this number. Please sign up.' });
       }
-      // The service is Lyrshop's, so ask for "Lyrtrip" as the sender name; if the
-      // account doesn't allow custom names, send with the service's own.
-      let { status, body: result } = await twilioVerify('Verifications', {
-        To: phone, Channel: 'sms', CustomFriendlyName: 'Lyrtrip',
-      });
-      if (result.code === 60204 || /friendly/i.test(String(result.message))) {
-        console.error('Twilio rejected CustomFriendlyName:', result.code, result.message);
-        ({ status, body: result } = await twilioVerify('Verifications', { To: phone, Channel: 'sms' }));
-      }
+      const { status, body: result } = await twilioVerify('Verifications', { To: phone, Channel: 'sms' });
       if (status === 429) return json(429, { error: 'Too many codes for this number. Please wait a few minutes.' });
       if (status !== 200 && status !== 201) {
         console.error('Twilio send failed:', status, result.code, result.message);

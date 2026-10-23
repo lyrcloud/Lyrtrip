@@ -59,6 +59,8 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       if (process.env.ANTHROPIC_API_KEY) cur.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
       // Shipping tab: courier rates and labels from Easyship
       if (process.env.EASYSHIP_API_KEY) cur.EASYSHIP_API_KEY = process.env.EASYSHIP_API_KEY;
+      // Mobile sign-in: the Lyrtrip Twilio Verify service (the account itself comes from the lyrshop/twilio secret)
+      if (process.env.TWILIO_VERIFY_SERVICE_SID) cur.TWILIO_VERIFY_SERVICE_SID = process.env.TWILIO_VERIFY_SERVICE_SID;
       // Dash courier delivery: Uber Direct
       for (const k of ["UBER_DIRECT_CUSTOMER_ID", "UBER_DIRECT_CLIENT_ID", "UBER_DIRECT_CLIENT_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
       // Second courier provider: DoorDash Drive, used only when DOORDASH_ENABLED=true (never with sandbox keys)
