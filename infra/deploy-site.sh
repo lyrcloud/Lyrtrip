@@ -38,7 +38,7 @@ aws lambda publish-version --function-name $FUNCTION $R --description "before de
 
 echo "2/5 deploy API code from $(git rev-parse --short HEAD)"
 T=$(mktemp -d)
-for f in search.mjs rewards.mjs package.json package-lock.json i18n-strings.json; do git show "HEAD:infra/lambda/$f" > "$T/$f"; done
+for f in search.mjs rewards.mjs partner.mjs package.json package-lock.json i18n-strings.json; do git show "HEAD:infra/lambda/$f" > "$T/$f"; done
 (cd "$T" && npm ci --omit=dev --silent && zip -qr "$T.zip" .)
 aws lambda update-function-code --function-name $FUNCTION $R --zip-file "fileb://$T.zip" --query LastUpdateStatus --output text
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
@@ -59,6 +59,8 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       if (process.env.ANTHROPIC_API_KEY) cur.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
       // Shipping tab: courier rates and labels from Easyship
       if (process.env.EASYSHIP_API_KEY) cur.EASYSHIP_API_KEY = process.env.EASYSHIP_API_KEY;
+      // Partner shipping (partner.mjs): the key Lyrshop calls with, and optional markups on its labels and couriers
+      for (const k of ["LYRSHOP_PARTNER_KEY", "LYRSHOP_SHIP_MARKUP", "LYRSHOP_DELIVERY_MARKUP"]) if (process.env[k]) cur[k] = process.env[k];
       // Mobile sign-in: the Lyrtrip Twilio Verify service (the account itself comes from the lyrshop/twilio secret)
       if (process.env.TWILIO_VERIFY_SERVICE_SID) cur.TWILIO_VERIFY_SERVICE_SID = process.env.TWILIO_VERIFY_SERVICE_SID;
       // Dash courier delivery: Uber Direct
@@ -105,7 +107,7 @@ aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admi
 }"
 echo "admin policy on ${ROLE_ARN##*/}"
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/delivery/{proxy+}" "POST /api/ride/{proxy+}" "POST /api/jobs" "POST /api/study" "POST /api/events" "POST /api/packages" "POST /api/helicopter" "POST /api/freight" "POST /api/legal" "POST /api/donations" "POST /api/client-error" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n" "POST /api/auth/phone/{proxy+}"; do
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/delivery/{proxy+}" "POST /api/ride/{proxy+}" "POST /api/jobs" "POST /api/study" "POST /api/events" "POST /api/packages" "POST /api/helicopter" "POST /api/freight" "POST /api/legal" "POST /api/donations" "POST /api/client-error" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n" "POST /api/auth/phone/{proxy+}" "POST /api/partner/{proxy+}"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
     echo "exists: $ROUTE"
   else

@@ -7,6 +7,7 @@ import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import * as rw from './rewards.mjs';
+import { handlePartner, isPartnerRoute } from './partner.mjs';
 import {
   AdminCreateUserCommand,
   AdminDeleteUserCommand,
@@ -8358,6 +8359,14 @@ async function handleClientError(event) {
   return json(204, {});
 }
 
+// What the partner shipping API (partner.mjs) reuses from Lyrtrip's own Shipping and Courier tabs
+const partnerDeps = {
+  json, getDb, withMarkup, sendEmail, bookingsAlertEmail, STALE_PROCESSING_MS,
+  cleanShipAddress, cleanParcel, easyshipRates, easyshipFetch, shipmentResult,
+  cleanDeliveryStop, cleanDeliveryItem, courierQuote, uberDeliveryError, uberDeliveryCreate, doordashDeliveryCreate,
+  deliveryResult, fetchCourierDelivery,
+};
+
 async function routeRequest(event) {
   const method = event.requestContext?.http?.method || event.httpMethod;
   const path   = event.rawPath || event.path || '/';
@@ -8365,6 +8374,7 @@ async function routeRequest(event) {
   if (method === 'OPTIONS') return json(204, {});
 
   try {
+    if (isPartnerRoute(path)                         && method === 'POST')         return handlePartner(event, partnerDeps);
     if (path.endsWith('/api/search'))                                               return handleSearch(event);
     if (path.endsWith('/api/auth/wechat')            && method === 'POST')         return handleWeChatAuth(event);
     if (path.includes('/api/auth/phone/')            && method === 'POST')         return handlePhoneAuth(event, path.split('/').pop());
