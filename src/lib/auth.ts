@@ -638,3 +638,55 @@ export interface GoogleAutocompleteSuggestion {
     placeId?: string;
     id?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Sign-in with Lyrshop, both ways. The app the person starts in makes a
+// random state; the other app (where they're signed in) hands back a
+// short-lived signed token for that state, and the API checks both
+// (infra/lambda/sso.mjs).
+// ---------------------------------------------------------------------------
+
+const LYRSHOP_SITE = 'https://lyrshop.com';
+const LYRSHOP_STATE_KEY = 'lyrtrip:lyrshop-state';
+
+export function signInWithLyrshop() {
+  const state = generateRandomString(24);
+  window.sessionStorage.setItem(LYRSHOP_STATE_KEY, state);
+  window.location.href = `${LYRSHOP_SITE}/auth.html?connect=lyrtrip&state=${encodeURIComponent(state)}`;
+}
+
+export async function completeLyrshopSignIn(token: string, state: string) {
+  try {
+    const expectedState = window.sessionStorage.getItem(LYRSHOP_STATE_KEY);
+    window.sessionStorage.removeItem(LYRSHOP_STATE_KEY);
+    if (!expectedState || expectedState !== state) {
+      throw new Error("That Lyrshop sign-in didn't start here. Please try again.");
+    }
+    const response = await fetch('/api/auth/lyrshop', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, state }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || !body.success) throw new Error(body.error || 'Lyrshop sign-in failed.');
+    const { accessToken, idToken, refreshToken, expiresIn } = body.tokens;
+    setStoredSession({ accessToken, idToken, refreshToken, expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : undefined });
+    return { error: null };
+  } catch (error) {
+    return { error: error as Error };
+  }
+}
+
+// Where to send the signed-in traveller so Lyrshop signs them in, for the state Lyrshop made.
+export async function lyrshopHandoffUrl(state: string): Promise<string> {
+  const session = await getSession();
+  if (!session?.idToken) throw new Error('Please sign in again.');
+  const response = await fetch('/api/auth/handoff', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ idToken: session.idToken, app: 'lyrshop', state }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.token) throw new Error(body.error || 'Signing in to Lyrshop failed.');
+  return `${body.url}#lyrtrip=${encodeURIComponent(body.token)}&state=${encodeURIComponent(state)}`;
+}

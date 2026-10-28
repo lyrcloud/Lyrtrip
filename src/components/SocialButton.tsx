@@ -1,6 +1,6 @@
 'use client';
 
-type Provider = 'google' | 'facebook' | 'wechat';
+type Provider = 'google' | 'facebook' | 'wechat' | 'lyrshop';
 
 interface SocialButtonProps {
   provider: Provider;
@@ -49,6 +49,9 @@ const icons: Record<Provider, React.ReactNode> = {
         d="M23.5 14.85c0-3.16-3.13-5.72-6.99-5.72-3.87 0-7 2.56-7 5.72s3.13 5.71 7 5.71c.65 0 1.27-.08 1.86-.22l1.85 1.06a.38.38 0 0 0 .57-.44l-.46-1.65c1.9-1.07 3.17-2.79 3.17-4.46zm-9.21-1.07a.89.89 0 1 1 0-1.79.89.89 0 0 1 0 1.79zm4.43 0a.89.89 0 1 1 0-1.79.89.89 0 0 1 0 1.79z"
       />
     </svg>
+  ),
+  lyrshop: (
+    <span className="flex h-5 w-5 items-center justify-center text-base leading-none" aria-hidden="true">🛍️</span>
   ),
 };
 

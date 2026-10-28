@@ -20,10 +20,11 @@ import { createHmac } from 'node:crypto';
  * See SETUP_GUIDE.md for the full command.
  */
 
+// openid is whoever the API already identified: a WeChat openid, or "lyrshop:<username>" for sign-in with Lyrshop.
 function expectedAnswer(openid) {
-  const secret = process.env.WECHAT_AUTH_SHARED_SECRET;
+  const secret = process.env.AUTH_BRIDGE_SECRET || process.env.WECHAT_AUTH_SHARED_SECRET;
   if (!secret) {
-    throw new Error('WECHAT_AUTH_SHARED_SECRET is not configured.');
+    throw new Error('AUTH_BRIDGE_SECRET is not configured.');
   }
   return createHmac('sha256', secret).update(openid).digest('hex');
 }

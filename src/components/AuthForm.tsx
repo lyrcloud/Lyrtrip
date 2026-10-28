@@ -15,6 +15,7 @@ import {
   signInWithFacebook,
   signInWithGoogle,
   signInWithWeChat,
+  signInWithLyrshop,
   signUp,
   signUpWithPhone,
 } from '@/lib/auth';
@@ -93,11 +94,12 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
     setInfo(null);
   };
 
-  const handleSocial = async (provider: 'google' | 'facebook' | 'wechat') => {
+  const handleSocial = async (provider: 'google' | 'facebook' | 'wechat' | 'lyrshop') => {
     setError(null);
     setSocialLoading(provider);
     try {
       if (provider === 'wechat') return signInWithWeChat();
+      if (provider === 'lyrshop') return signInWithLyrshop();
       const { openedInTab } = await (provider === 'google' ? signInWithGoogle() : signInWithFacebook());
       // In the app the page stays put behind the Custom Tab; free the button
       // in case the user closes the tab without signing in.
@@ -407,6 +409,12 @@ export function AuthForm({ mode = 'signin' }: AuthFormProps) {
           provider="wechat"
           label={t('Continue with {provider}', { provider: 'WeChat' })}
           onClick={() => handleSocial('wechat')}
+          disabled={socialLoading !== null}
+        />
+        <SocialButton
+          provider="lyrshop"
+          label={t('Continue with {provider}', { provider: 'Lyrshop' })}
+          onClick={() => handleSocial('lyrshop')}
           disabled={socialLoading !== null}
         />
       </div>

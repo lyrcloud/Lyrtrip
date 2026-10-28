@@ -8,6 +8,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-sec
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import * as rw from './rewards.mjs';
 import { handlePartner, isPartnerRoute } from './partner.mjs';
+import { STATE_PATTERN, handoffKey, issueHandoff, readHandoff } from './sso.mjs';
 import {
   AdminCreateUserCommand,
   AdminDeleteUserCommand,
@@ -664,6 +665,142 @@ async function handlePhoneAuth(event, action) {
   }
 
   return json(404, { error: 'Not found' });
+}
+
+// ---------------------------------------------------------------------------
+// Sign-in with Lyrshop, and Lyrtrip vouching for its user to Lyrshop (sso.mjs)
+// ---------------------------------------------------------------------------
+
+const LYRSHOP_SITE = 'https://lyrshop.com';
+
+function lyrshopHandoffKey() {
+  const partnerKey = process.env.LYRSHOP_PARTNER_KEY;
+  return partnerKey ? handoffKey(partnerKey) : null;
+}
+
+// Cognito's answer for a bridged sign-in; auth-challenge.mjs computes the same from the same secret.
+function bridgeSecret() {
+  return process.env.AUTH_BRIDGE_SECRET || process.env.WECHAT_AUTH_SHARED_SECRET || '';
+}
+
+// Real Cognito tokens for a user Lyrtrip has already identified, through the CUSTOM_AUTH bridge.
+async function bridgedTokens(cognito, username, subject) {
+  const userPoolId = process.env.COGNITO_USER_POOL_ID, clientId = process.env.COGNITO_USER_POOL_CLIENT_ID;
+  const initiate = await cognito.send(new AdminInitiateAuthCommand({
+    UserPoolId: userPoolId, ClientId: clientId, AuthFlow: 'CUSTOM_AUTH',
+    AuthParameters: { USERNAME: username }, ClientMetadata: { openid: subject },
+  }));
+  if (!initiate.ChallengeName || !initiate.Session) return null;
+  const answer = await cognito.send(new AdminRespondToAuthChallengeCommand({
+    UserPoolId: userPoolId, ClientId: clientId, ChallengeName: initiate.ChallengeName, Session: initiate.Session,
+    ChallengeResponses: { USERNAME: username, ANSWER: challengeAnswerFor(subject, bridgeSecret()) },
+  }));
+  return answer.AuthenticationResult?.AccessToken ? answer.AuthenticationResult : null;
+}
+
+// The pool user with this verified email (not a mobile stand-in), else null.
+async function userByEmail(cognito, userPoolId, email) {
+  const { Users = [] } = await cognito.send(new ListUsersCommand({ UserPoolId: userPoolId, Filter: `email = "${email.replace(/"/g, '')}"`, Limit: 5 }));
+  return Users.find(user => user.Enabled !== false && user.UserStatus !== 'UNCONFIRMED') ?? null;
+}
+
+// POST /api/auth/lyrshop { token, state }: sign in as the person Lyrshop vouches for, making the account on first use.
+async function handleLyrshopAuth(event) {
+  const key = lyrshopHandoffKey();
+  const userPoolId = process.env.COGNITO_USER_POOL_ID;
+  if (!key || !userPoolId || !bridgeSecret()) return json(503, { error: 'Signing in with Lyrshop is not available right now.' });
+  let body;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch {
+    return json(400, { error: 'Invalid request.' });
+  }
+  const claims = readHandoff(key, body.token, { issuer: 'lyrshop', audience: 'lyrtrip', state: String(body.state ?? '') });
+  if (!claims) return json(401, { error: 'Lyrshop sign-in failed or expired. Please try again.' });
+  try {
+    const db = await getDb();
+    await db.collection('auth_handoffs').insertOne({ _id: claims.jti, at: new Date() });
+  } catch (error) {
+    if (error.code === 11000) return json(401, { error: 'This Lyrshop sign-in was already used. Please try again.' });
+    throw error;
+  }
+
+  const cognito = getCognitoClient();
+  const email = String(claims.email || '').toLowerCase();
+  const phone = normalizePhone(claims.phone);
+  const name = String(claims.name || '').trim().slice(0, 100);
+  try {
+    let username = null;
+    if (email) username = (await userByEmail(cognito, userPoolId, email))?.Username ?? null;
+    if (!username && phone) {
+      const existing = await getPhoneUser(cognito, userPoolId, phone);
+      if (existing && !existing.stale) username = existing.Username;
+    }
+    if (!username) {
+      // New here: an account under the address Lyrshop confirmed, with a random password nobody knows (they can
+      // set one with "Forgot password?"), so it's confirmed and signs in through the bridge.
+      username = email || phoneLoginEmail(phone);
+      // An unconfirmed sign-up under this address was never finished; Lyrshop has confirmed who owns it.
+      const stale = await cognito.send(new AdminGetUserCommand({ UserPoolId: userPoolId, Username: username })).catch(() => null);
+      if (stale?.UserStatus === 'UNCONFIRMED') await cognito.send(new AdminDeleteUserCommand({ UserPoolId: userPoolId, Username: username }));
+      await cognito.send(new AdminCreateUserCommand({
+        UserPoolId: userPoolId, Username: username, MessageAction: 'SUPPRESS',
+        UserAttributes: [
+          { Name: 'email', Value: username },
+          { Name: 'email_verified', Value: email ? 'true' : 'false' },
+          ...(phone ? [{ Name: 'phone_number', Value: phone }, { Name: 'phone_number_verified', Value: 'true' }] : []),
+          ...(name ? [{ Name: 'name', Value: name }] : []),
+        ],
+      }));
+      await cognito.send(new AdminSetUserPasswordCommand({
+        UserPoolId: userPoolId, Username: username, Password: `${randomBytes(24).toString('base64url')}aA1!`, Permanent: true,
+      }));
+    }
+    const result = await bridgedTokens(cognito, username, `lyrshop:${username}`);
+    if (!result) return json(503, { error: 'Signing in with Lyrshop is not available right now.' });
+    return json(200, {
+      success: true,
+      tokens: { accessToken: result.AccessToken, idToken: result.IdToken, refreshToken: result.RefreshToken, expiresIn: result.ExpiresIn },
+    });
+  } catch (error) {
+    console.error('Lyrshop sign-in failed:', error);
+    return json(500, { error: 'Signing in with Lyrshop is not available right now.' });
+  }
+}
+
+let handoffVerifier;
+
+// POST /api/auth/handoff { idToken, app: 'lyrshop', state }: a handoff for the signed-in traveller to take to Lyrshop.
+async function handleAuthHandoff(event) {
+  const key = lyrshopHandoffKey();
+  if (!key || !process.env.COGNITO_USER_POOL_ID) return json(503, { error: 'Signing in to Lyrshop is not available right now.' });
+  let body;
+  try {
+    body = JSON.parse(event.body || '{}');
+  } catch {
+    return json(400, { error: 'Invalid request.' });
+  }
+  const state = String(body.state ?? '');
+  if (body.app !== 'lyrshop' || !STATE_PATTERN.test(state)) {
+    return json(400, { error: "This sign-in link isn't valid. Start again from Lyrshop." });
+  }
+  let claims;
+  try {
+    handoffVerifier ??= CognitoJwtVerifier.create({
+      userPoolId: process.env.COGNITO_USER_POOL_ID, tokenUse: 'id', clientId: process.env.COGNITO_USER_POOL_CLIENT_ID,
+    });
+    claims = await handoffVerifier.verify(String(body.idToken ?? ''));
+  } catch {
+    return json(401, { error: 'Please sign in again.' });
+  }
+  // Only addresses that are confirmed travel, so Lyrshop can trust them: Cognito's own check, or Google's.
+  const rawEmail = String(claims.email ?? '').toLowerCase();
+  const fromGoogle = JSON.stringify(claims.identities ?? '').includes('"providerName":"Google"');
+  const email = rawEmail && !isPhoneLoginEmail(rawEmail) && (String(claims.email_verified) === 'true' || fromGoogle) ? rawEmail : '';
+  const phone = String(claims.phone_number_verified) === 'true' ? String(claims.phone_number ?? '') : '';
+  if (!email && !phone) return json(409, { error: 'Confirm your email or mobile number on Lyrtrip first.' });
+  const token = issueHandoff(key, { issuer: 'lyrtrip', audience: 'lyrshop', state, email, phone, name: String(claims.name ?? '') });
+  return json(200, { token, url: `${LYRSHOP_SITE}/auth.html` });
 }
 
 // The Stay tab's property types, as Google Hotels understands them
@@ -8377,6 +8514,8 @@ async function routeRequest(event) {
     if (isPartnerRoute(path)                         && method === 'POST')         return handlePartner(event, partnerDeps);
     if (path.endsWith('/api/search'))                                               return handleSearch(event);
     if (path.endsWith('/api/auth/wechat')            && method === 'POST')         return handleWeChatAuth(event);
+    if (path.endsWith('/api/auth/lyrshop')           && method === 'POST')         return handleLyrshopAuth(event);
+    if (path.endsWith('/api/auth/handoff')           && method === 'POST')         return handleAuthHandoff(event);
     if (path.includes('/api/auth/phone/')            && method === 'POST')         return handlePhoneAuth(event, path.split('/').pop());
     if (path.endsWith('/api/stripe-checkout')        && method === 'POST')         return handleStripeCheckout(event);
     if (path.endsWith('/api/flight/places')          && method === 'POST')         return handleFlightPlaces(event);
