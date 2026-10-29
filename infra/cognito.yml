@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Dedicated Cognito User Pool for Lyrtrip (email/password + Google/Facebook/WeChat sign-in).
+Description: Shared Lyr account pool for Lyrtrip, Lyrshop and Lyrpay (email/password + Google/Facebook/WeChat sign-in).
 
 Parameters:
   DomainPrefix:
@@ -33,6 +33,18 @@ Parameters:
     Default: ""
     Description: Facebook app secret.
 
+  LyrpayClientId:
+    Type: String
+    Default: 38ah4ulj51l3urmn6n3gngqn3m
+    Description: Lyrpay's app client (made by Lyrpay's stack); its code emails are branded Lyrpay.
+  EmailDomain:
+    Type: String
+    Default: lyrcloud.com
+    Description: SES-verified domain the code emails are sent from. It needs an identity policy letting Cognito send.
+  EmailFrom:
+    Type: String
+    Default: Lyr Account <no-reply@lyrcloud.com>
+
 Conditions:
   HasGoogle:
     Fn::Not:
@@ -44,8 +56,18 @@ Conditions:
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
+    # Cognito must be allowed to call the message function before the pool starts using it
+    DependsOn: MessageFunctionPermission
     Properties:
       UserPoolName: lyrtrip-users
+      # Through SES rather than Cognito's own sender (50 a day, often in spam)
+      EmailConfiguration:
+        EmailSendingAccount: DEVELOPER
+        SourceArn: !Sub 'arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${EmailDomain}'
+        From: !Ref EmailFrom
+      # Brands each code email for the app it came from; the template below is the fallback
+      LambdaConfig:
+        CustomMessage: !GetAtt MessageFunction.Arn
       AutoVerifiedAttributes:
         - email
       # Also used for forgot-password codes, so the wording stays generic.
@@ -83,6 +105,106 @@ Resources:
           AttributeDataType: String
           Mutable: false
           Required: false
+
+  MessageFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  MessageFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: lyr-auth-messages
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 5
+      MemorySize: 128
+      Role: !GetAtt MessageFunctionRole.Arn
+      Environment:
+        Variables:
+          LYRPAY_CLIENT_ID: !Ref LyrpayClientId
+      Code:
+        ZipFile: |
+          # Writes the verification-code emails for the shared Lyr account pool, branded for the app the person is using
+          # (the pool's app client): Lyrpay for lyrpay-web, Lyrtrip otherwise. Anything unexpected returns the event as it
+          # came, so Cognito sends its plain message and a code always goes out.
+          import html
+          import logging
+          import os
+
+          BRANDS = {
+              "lyrpay": {"name": "Lyrpay", "color": "#5b5bf6", "url": "https://lyrpay.com"},
+              "lyrtrip": {"name": "Lyrtrip", "color": "#ff3d00", "url": "https://www.lyrtrip.com"},
+          }
+          CLIENTS = {os.environ.get("LYRPAY_CLIENT_ID", ""): "lyrpay"}
+
+          # trigger -> (subject, heading, sentence, how long the code lasts)
+          MESSAGES = {
+              "CustomMessage_SignUp": ("Your {name} verification code", "Confirm your email",
+                                       "Welcome to {name}! Enter this code to confirm your email and finish creating your account.", "24 hours"),
+              "CustomMessage_ResendCode": ("Your {name} verification code", "Confirm your email",
+                                           "Here's a new code to confirm your email for {name}.", "24 hours"),
+              "CustomMessage_ForgotPassword": ("Reset your {name} password", "Reset your password",
+                                               "Enter this code in {name} to choose a new password.", "1 hour"),
+              "CustomMessage_UpdateUserAttribute": ("Confirm your new email for {name}", "Confirm your new email",
+                                                    "Enter this code in {name} to confirm your new email address.", "24 hours"),
+              "CustomMessage_VerifyUserAttribute": ("Your {name} verification code", "Confirm your email",
+                                                    "Enter this code in {name} to confirm your email address.", "24 hours"),
+          }
+
+          logger = logging.getLogger()
+
+
+          def render(brand, heading, sentence, code, lasts):
+              color, name = brand["color"], html.escape(brand["name"])
+              return (
+                  '<!doctype html><html><body style="margin:0;background:#f5f6fb;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">'
+                  '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">'
+                  '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#fff;border-radius:14px">'
+                  f'<tr><td style="padding:24px 28px 0"><a href="{brand["url"]}" style="color:{color};font-size:24px;font-weight:800;'
+                  f'letter-spacing:-0.5px;text-decoration:none">{name}</a></td></tr>'
+                  f'<tr><td style="padding:12px 28px 28px"><h1 style="font-size:21px;margin:0 0 10px;color:#111827">{html.escape(heading)}</h1>'
+                  f'<p style="margin:0 0 20px;font-size:15px;line-height:1.55;color:#1f2937">{html.escape(sentence)}</p>'
+                  f'<p style="margin:0 0 20px;padding:16px;border-radius:12px;background:#f5f6fb;text-align:center;font-size:32px;'
+                  f'font-weight:800;letter-spacing:8px;color:{color};font-family:ui-monospace,Menlo,Consolas,monospace">{code}</p>'
+                  f'<p style="margin:0;font-size:13px;line-height:1.5;color:#6b7280">The code works for {lasts}. '
+                  "If you didn't ask for it, you can ignore this email: nothing changes without the code.</p></td></tr></table>"
+                  '<p style="font-size:12px;color:#6b7280;max-width:520px;line-height:1.5">One Lyr account works on Lyrtrip, Lyrshop and Lyrpay.</p>'
+                  '</td></tr></table></body></html>'
+              )
+
+
+          def handler(event, context):
+              try:
+                  message = MESSAGES.get(event.get("triggerSource"))
+                  code = (event.get("request") or {}).get("codeParameter")
+                  if not message or not code:
+                      return event
+                  client = (event.get("callerContext") or {}).get("clientId", "")
+                  brand = BRANDS[CLIENTS.get(client, "lyrtrip")]
+                  subject, heading, sentence, lasts = message
+                  event["response"]["emailSubject"] = subject.format(name=brand["name"])
+                  event["response"]["emailMessage"] = render(brand, heading, sentence.format(name=brand["name"]), code, lasts)
+              except Exception:
+                  logger.exception("Custom message failed; Cognito sends its default")
+              return event
+
+  MessageFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MessageFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      # The pool's ARN would make a cycle (the pool refers to the function), so this is scoped to the account
+      SourceAccount: !Ref AWS::AccountId
 
   UserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
