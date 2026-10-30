@@ -4929,10 +4929,12 @@ function rideTierName(displayName) {
   return null;
 }
 
-// The cheapest upfront fare per tier, in RIDE_TIERS order
+// The cheapest upfront fare per tier, in RIDE_TIERS order. Products with no cars nearby are skipped,
+// so the rider is never charged a hold for a ride that can't be booked.
 function rideOptions(data) {
   const best = new Map();
   for (const e of data?.product_estimates ?? []) {
+    if (e.estimate_info?.no_cars_available) continue;
     const fare = e.estimate_info?.fare;
     const tier = rideTierName(e.product?.display_name);
     const value = Number(fare?.value);
