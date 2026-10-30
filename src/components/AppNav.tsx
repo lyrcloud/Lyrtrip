@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { useLocale } from '@/i18n/LocaleContext';
 import { getNavTab, requestNavTab, subscribeNavTab } from '@/lib/navTab';
+import { playIconMotion } from '@/lib/iconMotion';
 
 interface Service {
   tab: string;
@@ -39,9 +40,9 @@ const services = (t: (text: string) => string): Service[] => [
 ];
 
 const accountLinks = (t: (text: string) => string) => [
-  { href: '/dashboard', icon: '🧳', label: t('My trips') },
-  { href: '/rewards', icon: '🎁', label: t('Rewards & gift cards') },
-  { href: '/jobs/profile', icon: '🪪', label: t('Job profile') },
+  { href: '/dashboard', icon: '🧳', label: t('My trips'), motion: 'nav-trips' },
+  { href: '/rewards', icon: '🎁', label: t('Rewards & gift cards'), motion: 'nav-rewards' },
+  { href: '/jobs/profile', icon: '🪪', label: t('Job profile'), motion: 'nav-profile' },
 ];
 
 const RAIL_KEY = 'lyrtrip:rail';
@@ -50,6 +51,16 @@ const subscribeRail = (listener: () => void) => {
   railListeners.add(listener);
   return () => { railListeners.delete(listener); };
 };
+
+// The same icon animations as the home page's tiles: the icon inside the hovered or clicked shortcut plays its data-motion
+const motionHandlers = {
+  onMouseEnter: (e: React.MouseEvent<HTMLElement>) => playShortcut(e.currentTarget, false),
+  onPointerDown: (e: React.PointerEvent<HTMLElement>) => playShortcut(e.currentTarget, true),
+};
+function playShortcut(target: HTMLElement, restart: boolean) {
+  const el = target.querySelector<HTMLElement>('[data-motion]');
+  if (el) playIconMotion(el, el.dataset.motion ?? '', restart);
+}
 
 const startsWith = (pathname: string, path: string) => pathname === path || pathname.startsWith(`${path}/`);
 
@@ -70,7 +81,7 @@ function useOpenService() {
   };
 }
 
-function Icon({ name }: { name: 'home' | 'grid' | 'trips' | 'gift' | 'user' }) {
+function Icon({ name, motion }: { name: 'home' | 'grid' | 'trips' | 'gift' | 'user'; motion?: string }) {
   const paths = {
     home: <path d="M3 11l9-8 9 8M5 9.5V20h5v-6h4v6h5V9.5" />,
     grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></>,
@@ -79,9 +90,11 @@ function Icon({ name }: { name: 'home' | 'grid' | 'trips' | 'gift' | 'user' }) {
     user: <><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" /></>,
   };
   return (
-    <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
-      {paths[name]}
-    </svg>
+    <span aria-hidden data-motion={motion} className="relative inline-block will-change-transform">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6">
+        {paths[name]}
+      </svg>
+    </span>
   );
 }
 
@@ -140,9 +153,10 @@ export function SideNav() {
                 aria-current={current ? 'page' : undefined}
                 title={s.label}
                 className={item(current)}
+                {...motionHandlers}
               >
                 {bar(current)}
-                <span aria-hidden className="text-xl leading-none transition-transform group-hover:scale-110 rail-wide:text-lg">{s.icon}</span>
+                <span aria-hidden className="relative"><span data-motion={s.tab} className="inline-block text-xl leading-none will-change-transform rail-wide:text-lg">{s.icon}</span></span>
                 <span className="max-w-full truncate">{s.label}</span>
               </Link>
             );
@@ -161,9 +175,10 @@ export function SideNav() {
                 aria-current={current ? 'page' : undefined}
                 title={link.label}
                 className={item(current)}
+                {...motionHandlers}
               >
                 {bar(current)}
-                <span aria-hidden className="text-xl leading-none transition-transform group-hover:scale-110 rail-wide:text-lg">{link.icon}</span>
+                <span aria-hidden className="relative"><span data-motion={link.motion} className="inline-block text-xl leading-none will-change-transform rail-wide:text-lg">{link.icon}</span></span>
                 <span className="max-w-full truncate">{link.label}</span>
               </Link>
             );
@@ -254,10 +269,11 @@ export function BottomNav() {
                         key={s.tab}
                         href={`/?tab=${s.tab}`}
                         onClick={e => { openService(e, s.tab); setSheet(null); }}
+                        {...motionHandlers}
                         className={`flex flex-col items-center gap-1.5 rounded-2xl px-1 py-3 text-center text-xs font-medium leading-tight ${
                           current ? 'bg-brand-50 text-brand-700 ring-1 ring-brand-200' : 'text-gray-700 active:bg-gray-50'}`}
                       >
-                        <span aria-hidden className="flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-50 text-2xl">{s.icon}</span>
+                        <span aria-hidden className="relative flex h-11 w-11 items-center justify-center rounded-2xl bg-brand-50"><span data-motion={s.tab} className="inline-block text-2xl leading-none will-change-transform">{s.icon}</span></span>
                         {s.label}
                       </Link>
                     );
@@ -280,8 +296,8 @@ export function BottomNav() {
                 </div>
                 <div className="flex flex-col divide-y divide-gray-100 rounded-2xl ring-1 ring-gray-100">
                   {accountItems.map(link => (
-                    <Link key={link.href} href={link.href} onClick={() => setSheet(null)} className="flex items-center gap-3 px-4 py-3.5 text-sm font-medium text-gray-800 active:bg-gray-50">
-                      <span aria-hidden className="text-xl">{link.icon}</span>{link.label}
+                    <Link key={link.href} href={link.href} onClick={() => setSheet(null)} {...motionHandlers} className="flex items-center gap-3 px-4 py-3.5 text-sm font-medium text-gray-800 active:bg-gray-50">
+                      <span aria-hidden className="relative"><span data-motion={link.motion} className="inline-block text-xl leading-none will-change-transform">{link.icon}</span></span>{link.label}
                     </Link>
                   ))}
                   <button type="button" onClick={handleSignOut} className="flex items-center gap-3 px-4 py-3.5 text-start text-sm font-medium text-red-600 active:bg-red-50">
@@ -302,31 +318,31 @@ export function BottomNav() {
           href="/"
           onClick={e => { setSheet(null); if (onHome) { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); } }}
           aria-current={isCurrent.home ? 'page' : undefined}
-          className={tabClass(isCurrent.home)}
+          className={tabClass(isCurrent.home)} {...motionHandlers}
         >
-          {topBar(isCurrent.home)}<Icon name="home" />{label(t('Home'))}
+          {topBar(isCurrent.home)}<Icon name="home" motion="nav-home" />{label(t('Home'))}
         </Link>
-        <button type="button" onClick={() => setSheet(s => (s === 'explore' ? null : 'explore'))} aria-expanded={sheet === 'explore'} className={tabClass(isCurrent.explore)}>
-          {topBar(isCurrent.explore)}<Icon name="grid" />{label(t('Explore'))}
+        <button type="button" onClick={() => setSheet(s => (s === 'explore' ? null : 'explore'))} aria-expanded={sheet === 'explore'} className={tabClass(isCurrent.explore)} {...motionHandlers}>
+          {topBar(isCurrent.explore)}<Icon name="grid" motion="nav-explore" />{label(t('Explore'))}
         </button>
-        <Link href={user ? '/dashboard' : '/login'} aria-current={isCurrent.trips ? 'page' : undefined} className={tabClass(isCurrent.trips)}>
-          {topBar(isCurrent.trips)}<Icon name="trips" />{label(t('Trips'))}
+        <Link href={user ? '/dashboard' : '/login'} aria-current={isCurrent.trips ? 'page' : undefined} className={tabClass(isCurrent.trips)} {...motionHandlers}>
+          {topBar(isCurrent.trips)}<Icon name="trips" motion="nav-trips" />{label(t('Trips'))}
         </Link>
-        <Link href={user ? '/rewards' : '/login'} aria-current={isCurrent.rewards ? 'page' : undefined} className={tabClass(isCurrent.rewards)}>
-          {topBar(isCurrent.rewards)}<Icon name="gift" />{label(t('Rewards'))}
+        <Link href={user ? '/rewards' : '/login'} aria-current={isCurrent.rewards ? 'page' : undefined} className={tabClass(isCurrent.rewards)} {...motionHandlers}>
+          {topBar(isCurrent.rewards)}<Icon name="gift" motion="nav-rewards" />{label(t('Rewards'))}
         </Link>
         {user ? (
-          <button type="button" onClick={() => setSheet(s => (s === 'account' ? null : 'account'))} aria-expanded={sheet === 'account'} className={tabClass(isCurrent.account)}>
+          <button type="button" onClick={() => setSheet(s => (s === 'account' ? null : 'account'))} aria-expanded={sheet === 'account'} className={tabClass(isCurrent.account)} {...motionHandlers}>
             {topBar(isCurrent.account)}
             {user.picture ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={user.picture} alt="" className={`h-6 w-6 rounded-full object-cover ${isCurrent.account ? 'ring-2 ring-brand-500' : ''}`} />
-            ) : <Icon name="user" />}
+            ) : <Icon name="user" motion="nav-account" />}
             {label(t('Account'))}
           </button>
         ) : (
-          <Link href="/login" aria-current={isCurrent.account ? 'page' : undefined} className={tabClass(isCurrent.account)}>
-            {topBar(isCurrent.account)}<Icon name="user" />{label(t('Sign In'))}
+          <Link href="/login" aria-current={isCurrent.account ? 'page' : undefined} className={tabClass(isCurrent.account)} {...motionHandlers}>
+            {topBar(isCurrent.account)}<Icon name="user" motion="nav-account" />{label(t('Sign In'))}
           </Link>
         )}
       </nav>
