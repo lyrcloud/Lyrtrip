@@ -24,6 +24,7 @@ import CharityPanel, { CHARITY_EVENT_TYPES } from '@/components/CharityPanel';
 import HelicopterPanel from '@/components/HelicopterPanel';
 import FreightPanel from '@/components/FreightPanel';
 import LegalPanel from '@/components/LegalPanel';
+import { onNavTabRequest, setNavTab } from '@/lib/navTab';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
 
 interface FlightLeg {
@@ -981,6 +982,18 @@ export default function Home() {
     setUberPickup(null);
     setUberPickerKey(k => k + 1);
   };
+
+  // The side panel and bottom bar highlight the open tab and can switch it in place
+  useEffect(() => {
+    setNavTab(activeTab);
+  }, [activeTab]);
+  useEffect(() => () => setNavTab(null), []);
+  const switchTabRef = useRef(switchTab);
+  useEffect(() => { switchTabRef.current = switchTab; });
+  useEffect(() => onNavTabRequest(tab => {
+    switchTabRef.current(tab);
+    document.getElementById('services')?.scrollIntoView({ behavior: motionOk() ? 'smooth' : 'auto', block: 'start' });
+  }), []);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -2246,7 +2259,7 @@ export default function Home() {
         )}
 
         {/* Search Tabs */}
-        <div className="bg-white rounded-2xl shadow-xl ring-1 ring-gray-100">
+        <div id="services" className="scroll-mt-22 bg-white rounded-2xl shadow-xl ring-1 ring-gray-100">
           {/* Option tiles */}
           <div
             role="tablist"
@@ -2963,7 +2976,7 @@ export default function Home() {
 
         {/* Success toast */}
         {bookingSuccess && (
-          <div className="fixed bottom-6 right-6 z-50 bg-green-600 text-white px-6 py-3 rounded-xl shadow-lg font-medium">
+          <div className="fixed bottom-[calc(1.5rem+var(--bottom-bar-h))] right-6 z-50 bg-green-600 text-white px-6 py-3 rounded-xl shadow-lg font-medium">
             ✓ Booking confirmed! View it in your dashboard.
           </div>
         )}

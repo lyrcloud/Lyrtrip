@@ -164,13 +164,13 @@ export default function Lyrbot() {
   ];
 
   return (
-    <div className="fixed end-4 bottom-4 z-40 flex flex-col items-end gap-3">
+    <div className="fixed end-4 bottom-[calc(1rem+var(--bottom-bar-h))] z-40 flex flex-col items-end gap-3">
       {open && (
         <section
           id="lyrbot-panel"
           role="dialog"
           aria-label={t('Lyrbot AI assistant')}
-          className="lyrbot-panel flex flex-col w-[min(370px,calc(100vw-2rem))] h-[min(540px,calc(100dvh-8rem))] bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden"
+          className="lyrbot-panel flex flex-col w-[min(370px,calc(100vw-2rem))] h-[min(540px,calc(100dvh-8rem-var(--bottom-bar-h)))] bg-white border border-gray-200 rounded-2xl shadow-2xl overflow-hidden"
         >
           <header className="flex items-center gap-2.5 px-4 py-3 bg-gradient-to-br from-brand-500 to-brand-700 text-white">
             <span className="grid place-items-center w-9 h-9 rounded-full bg-white/20">

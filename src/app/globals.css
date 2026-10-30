@@ -29,6 +29,44 @@
   --color-btn-hover: #ff5722;
 }
 
+/* Room for the side panel (tablets and up) and the bottom bar (phones), from AppNav.tsx.
+   Computers get the wide trip.com-style panel unless it was collapsed (html[data-rail="slim"]). */
+:root {
+  --rail-w: 0px;
+  --bottom-bar-h: calc(3.75rem + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 768px) {
+  :root {
+    --rail-w: 4.75rem;
+    --bottom-bar-h: 0px;
+  }
+}
+
+@media (min-width: 1024px) {
+  :root:not([data-rail="slim"]) {
+    --rail-w: 13.5rem;
+  }
+}
+
+@custom-variant rail-wide {
+  @media (min-width: 1024px) {
+    :root:not([data-rail="slim"]) & {
+      @slot;
+    }
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes sheetUp {
+  from { transform: translateY(100%); }
+  to { transform: none; }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
