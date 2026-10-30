@@ -86,7 +86,7 @@ function Icon({ name }: { name: 'home' | 'grid' | 'trips' | 'gift' | 'user' }) {
 }
 
 /**
- * trip.com-style panel down the left edge on tablets and computers: every service, then the account pages.
+ * trip.com-style panel down the left edge on tablets and computers, for signed-in visitors: every service, then the account pages.
  * Computers get icons with labels (collapsible to a slim rail); tablets get the slim rail.
  */
 export function SideNav() {
@@ -97,6 +97,12 @@ export function SideNav() {
   const accountItems = accountLinks(t);
   const active = useActiveService(serviceItems);
   const openService = useOpenService();
+  // The page makes room for the panel only while someone is signed in
+  useEffect(() => {
+    if (user) document.documentElement.dataset.auth = 'in';
+    else delete document.documentElement.dataset.auth;
+  }, [user]);
+
   // The layout's head script sets html[data-rail] from localStorage before the first paint
   const slim = useSyncExternalStore(subscribeRail, () => document.documentElement.dataset.rail === 'slim', () => false);
 
@@ -107,6 +113,8 @@ export function SideNav() {
     try { localStorage.setItem(RAIL_KEY, next ? 'slim' : 'wide'); } catch { /* private mode */ }
     railListeners.forEach(listener => listener());
   };
+
+  if (!user) return null;
 
   const item = (current: boolean) => `group relative flex flex-col items-center gap-0.5 rounded-xl px-1 py-2 text-center text-[0.66rem] leading-tight transition-colors rail-wide:flex-row rail-wide:gap-3 rail-wide:px-3 rail-wide:py-2 rail-wide:text-start rail-wide:text-sm ${
     current ? 'bg-brand-50 font-semibold text-brand-700' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'}`;
@@ -149,7 +157,7 @@ export function SideNav() {
             return (
               <Link
                 key={link.href}
-                href={user ? link.href : '/login'}
+                href={link.href}
                 aria-current={current ? 'page' : undefined}
                 title={link.label}
                 className={item(current)}

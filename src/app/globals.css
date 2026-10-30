@@ -30,6 +30,7 @@
 }
 
 /* Room for the side panel (tablets and up) and the bottom bar (phones), from AppNav.tsx.
+   The panel is for signed-in visitors only (html[data-auth="in"], set by SideNav).
    Computers get the wide trip.com-style panel unless it was collapsed (html[data-rail="slim"]). */
 :root {
   --rail-w: 0px;
@@ -38,13 +39,16 @@
 
 @media (min-width: 768px) {
   :root {
-    --rail-w: 4.75rem;
     --bottom-bar-h: 0px;
+  }
+
+  :root[data-auth="in"] {
+    --rail-w: 4.75rem;
   }
 }
 
 @media (min-width: 1024px) {
-  :root:not([data-rail="slim"]) {
+  :root[data-auth="in"]:not([data-rail="slim"]) {
     --rail-w: 13.5rem;
   }
 }
