@@ -7972,16 +7972,16 @@ async function heliAdmin(db, body) {
         const rows = heliRows(r);
         if (status === 'quoted') {
           const t = heliTotals(set.quote.amount);
-          rows.push(['Charter', `USD ${t.amount.toFixed(2)}`], [`Lyrtrip service (${HELI_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]);
+          rows.push([heliService(r).rental ? 'Rental' : 'Charter', `USD ${t.amount.toFixed(2)}`], [`Lyrtrip service (${HELI_SERVICE_RATE * 100}%)`, `USD ${t.service.toFixed(2)}`], ['Total to pay', `USD ${t.total.toFixed(2)}`]);
           if (set.quote.details) rows.push(['Details', set.quote.details]);
         }
         if (status === 'refunded') rows.push(['Refunded', `USD ${set.refund.amount.toFixed(2)} to your card (allow 5 to 10 days)`]);
         if (message) rows.push(['Message from Lyrtrip', message]);
-        const foot = status === 'quoted' ? `Pay within ${HELI_QUOTE_HOURS} hours at ${SITE_URL}/helicopter/requests: operator prices and slots change.`
+        const foot = status === 'quoted' ? `Pay within ${HELI_QUOTE_HOURS} hours at ${SITE_URL}/helicopter/requests: ${heliService(r).rental ? 'rental shop' : 'operator'} prices and slots change.`
           : status === 'info_needed' ? `Update your request at ${SITE_URL}/helicopter/requests.` : `See ${SITE_URL}/helicopter/requests.`;
         await sendEmail({
           to: r.contact.email, subject: `${HELI_STATUS[status]}: ${heliName(r)} ${heliRoute(r)}`,
-          html: jobAppEmail(HELI_STATUS[status], rows, `${foot} Please keep all contact about this charter through Lyrtrip.`),
+          html: jobAppEmail(HELI_STATUS[status], rows, `${foot} Please keep all contact about this ${heliService(r).rental ? 'rental' : 'charter'} through Lyrtrip.`),
           text: `${HELI_STATUS[status]}: ${heliName(r)} ${heliRoute(r)}.${message ? `\n\n${message}` : ''} ${foot}`,
         });
       }

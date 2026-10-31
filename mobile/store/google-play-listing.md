@@ -24,6 +24,7 @@ STAYS
 
 RIDES
 • Compare ride prices for cars, taxis, limos and motorcycles on your route
+• Rent a bike, e-bike, moped or scooter by the hour, the day or the week
 
 SHIPPING AND COURIER
 • Send parcels anywhere with live rates from USPS, FedEx, UPS, DHL and more
