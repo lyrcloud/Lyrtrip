@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { type AuthenticatedUser, getUser, signOut as signOutUser } from '@/lib/auth';
+import { rewardsCall } from '@/lib/rewards';
 
 interface AuthContextValue {
   user: AuthenticatedUser | null;
@@ -32,6 +33,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // The server sends a new account's welcome email once; this only saves repeat calls from this browser
+  useEffect(() => {
+    if (!user?.id || !user.email) return;
+    const key = `lyrtrip_welcomed_${user.id}`;
+    try {
+      if (localStorage.getItem(key)) return;
+    } catch {}
+    rewardsCall<{ retry?: boolean }>({ action: 'welcome' })
+      .then(r => { if (!r.retry) try { localStorage.setItem(key, '1'); } catch {} })
+      .catch(() => {});
+  }, [user?.id, user?.email]);
 
   const signOut = useCallback(async () => {
     await signOutUser();

@@ -1687,7 +1687,7 @@ async function requireUser(idToken) {
   const claims = await idVerifier.verify(String(idToken ?? ''));
   const email = String(claims.email ?? '').toLowerCase();
   // Mobile-number accounts carry a stand-in address that must never be mailed
-  return { sub: String(claims.sub), email: isPhoneLoginEmail(email) ? '' : email, phone: String(claims.phone_number ?? ''), name: String(claims.name ?? '') };
+  return { sub: String(claims.sub), username: String(claims['cognito:username'] ?? ''), email: isPhoneLoginEmail(email) ? '' : email, phone: String(claims.phone_number ?? ''), name: String(claims.name ?? '') };
 }
 
 // The booking's signed-in traveller, if any (checkout also works as a guest).
@@ -1722,16 +1722,72 @@ const usd = n => `USD ${Number(n).toFixed(2)}`;
 
 function hotelEmailHtml(title, lines, cta) {
   const rows = lines.map(([k, v]) => `<tr><td style="padding:6px 0;color:#6b7280;font-size:13px;width:40%">${esc(k)}</td><td style="padding:6px 0;color:#111827;font-size:14px;font-weight:600">${esc(v)}</td></tr>`).join('');
+  return emailFrame(title, `<table width="100%" cellpadding="0" cellspacing="0">${rows}</table>`, cta);
+}
+
+// Paragraphs instead of detail rows (the welcome email); a paragraph's lines are kept
+function messageEmailHtml(title, paragraphs, cta, footer = '') {
+  const body = paragraphs.map(p => `<p style="margin:0 0 14px;font-size:15px;line-height:1.5;color:#1f2937">${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
+  return emailFrame(title, body, cta, footer);
+}
+
+function emailFrame(title, inner, cta, footer = '') {
   return `<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,sans-serif">
   <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
   <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;border-radius:12px;overflow:hidden">
     <tr><td style="padding:20px 28px;border-bottom:4px solid #4f46e5"><img src="${SITE_URL}/logo.png" alt="Lyrtrip" height="36"></td></tr>
     <tr><td style="padding:24px 28px"><h1 style="margin:0 0 16px;font-size:20px;color:#111827">${esc(title)}</h1>
-      <table width="100%" cellpadding="0" cellspacing="0">${rows}</table>
+      ${inner}
       ${cta ? `<p style="margin:24px 0 0"><a href="${esc(cta.url)}" style="background:#4f46e5;color:#fff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:bold;display:inline-block">${esc(cta.label)}</a></p>` : ''}
     </td></tr>
-    <tr><td style="padding:16px 28px;background:#f9fafb;color:#9ca3af;font-size:11px">Lyrtrip · www.lyrtrip.com · support@lyrtrip.com</td></tr>
+    <tr><td style="padding:16px 28px;background:#f9fafb;color:#9ca3af;font-size:11px">Lyrtrip · www.lyrtrip.com · support@lyrtrip.com${footer ? `<br>${esc(footer)}` : ''}</td></tr>
   </table></td></tr></table></body></html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Welcome email (like Lyrshop's): sent once, the first time a new account is
+// signed in on the site. Accounts made before this existed are marked without
+// an email, so only people who sign up from now on get it.
+// ---------------------------------------------------------------------------
+
+const WELCOME_NEW_ACCOUNT_MS = 7 * 86400 * 1000;
+
+async function sendWelcome(db, user) {
+  const accounts = db.collection('accounts');
+  if (!user.email) return { sent: false };   // mobile-number accounts have no address to mail
+  let created = null;
+  try {
+    const u = await getCognitoClient().send(new AdminGetUserCommand({ UserPoolId: process.env.COGNITO_USER_POOL_ID, Username: user.username || user.email }));
+    created = u.UserCreateDate ? new Date(u.UserCreateDate).getTime() : null;
+  } catch (err) {
+    console.error('Welcome: user lookup failed:', err.message);
+    return { sent: false, retry: true };   // try again on the next visit
+  }
+  const isNew = created && Date.now() - created < WELCOME_NEW_ACCOUNT_MS;
+  // Claim first so two tabs can't both send it
+  const claimed = await accounts.findOneAndUpdate(
+    { _id: user.sub, welcomedAt: { $exists: false } },
+    { $set: { welcomedAt: new Date().toISOString(), welcomeSkipped: !isNew } },
+  );
+  if (!claimed || !isNew) return { sent: false };
+  const first = String(user.name ?? '').trim().split(/\s+/)[0] || 'there';
+  const paragraphs = [
+    'Your Lyrtrip account is ready. Here\'s what you can do now:',
+    '• Book flights and hotels, and send parcels or a same-day courier.\n'
+    + '• Request tours and pilgrimages, event tickets, air charters, freight, and tax or legal help: we quote and book it for you.\n'
+    + '• Apply for study places and jobs with your Lyrtrip profile.\n'
+    + '• Earn reward points on every booking and use them at checkout.',
+    'We\'ll email your booking confirmations, and tracking updates as your shipments and couriers move.',
+  ];
+  const sent = await sendEmail({
+    to: user.email,
+    subject: 'Welcome to Lyrtrip!',
+    html: messageEmailHtml(`Welcome to Lyrtrip, ${first}!`, paragraphs, { url: SITE_URL, label: 'Plan your trip' }, 'You\'re getting this because you just created a Lyrtrip account.'),
+    text: [`Welcome to Lyrtrip, ${first}!`, ...paragraphs, `Plan your trip: ${SITE_URL}`, '— Lyrtrip · support@lyrtrip.com'].join('\n\n'),
+  });
+  // A failed send is retried on the next visit
+  if (!sent) await accounts.updateOne({ _id: user.sub }, { $unset: { welcomedAt: '', welcomeSkipped: '' } });
+  return { sent, retry: !sent };
 }
 
 // Re-prices one property from SerpAPI so the charge never trusts a price sent by the browser
@@ -3025,7 +3081,9 @@ export async function handler(event) {
   try {
     // An EventBridge schedule (every few minutes) settles rides nobody is watching
     if (event?.source === 'aws.events') {
-      if (ridesEnabled()) await sweepRides(await getDb());
+      const db = await getDb();
+      if (ridesEnabled()) await sweepRides(db);
+      await sweepTracking(db).catch(err => console.error('Tracking sweep failed:', err.message));
       return { ok: true };
     }
     return await routeRequest(event);
@@ -3830,6 +3888,12 @@ async function handleRewards(event) {
         });
       }
 
+      // Called by the site after sign-in; sends the welcome email once for a new account
+      case 'welcome': {
+        signedIn();
+        return json(200, await sendWelcome(db, user));
+      }
+
       case 'summary': {
         await releaseExpiredHolds(db).catch(err => console.error('Release sweep failed:', err.message));
         return json(200, await rw.rewardsSummary(db, signedIn(), SITE_URL));
@@ -4225,7 +4289,8 @@ function shipmentResult(s) {
   return {
     easyshipId:  s.easyship_shipment_id,
     labelState:  s.label_state,
-    tracking:    (s.trackings ?? []).map(t => ({ number: t.tracking_number, courier: t.handler ?? null })).filter(t => t.number),
+    deliveryState: s.delivery_state ?? null,
+    tracking:   (s.trackings ?? []).map(t => ({ number: t.tracking_number, courier: t.handler ?? null })).filter(t => t.number),
     trackingUrl: s.tracking_page_url ?? null,
     documents:   (s.shipping_documents ?? []).filter(d => d.url).map(d => ({ category: d.category, url: d.url, format: d.format ?? null })),
   };
@@ -4835,6 +4900,100 @@ async function finishDelivery(db, coll, order, session, result) {
     text: `Your Lyrtrip courier is booked for ${order.item.description}. Track it: ${SITE_URL}/booking/success?session_id=${session.id}&type=delivery`,
   });
   return json(200, deliveryReceipt(done));
+}
+
+// ---------------------------------------------------------------------------
+// Tracking emails (like Lyrshop's shipped / delivered updates). The EventBridge
+// schedule checks shipments and live courier deliveries every few minutes and
+// emails the customer once per step. Each step is claimed in `trackingEmailed`
+// before sending, so overlapping runs never send it twice.
+// ---------------------------------------------------------------------------
+
+const TRACK_PER_RUN = 30;
+const SHIP_TRACK_DAYS = 45;
+const COURIER_TRACK_DAYS = 2;
+// Easyship delivery_state → what the sender is told
+const SHIP_STEPS = {
+  in_transit:       { subject: 'On its way', heading: 'Your parcel is on its way', note: 'The courier has your parcel and it is moving.' },
+  out_for_delivery: { subject: 'Out for delivery', heading: 'Your parcel is out for delivery', note: 'It should arrive today.' },
+  failed_attempt:   { subject: 'Delivery attempt missed', heading: 'The courier couldn\'t deliver your parcel', note: 'The courier will usually try again. Check the tracking page for what to do next.' },
+  delivered:        { subject: 'Delivered', heading: 'Your parcel was delivered', note: 'Thanks for shipping with Lyrtrip!' },
+  exception:        { subject: 'Problem with your shipment', heading: 'Your shipment has a problem', note: 'The courier reported an issue. Reply to this email and we\'ll sort it out with them.' },
+  lost:             { subject: 'Problem with your shipment', heading: 'Your shipment has a problem', note: 'The courier reported your parcel as lost. Reply to this email and we\'ll open a claim with them.' },
+};
+const SHIP_FINAL = ['delivered', 'lost', 'returned_to_sender', 'expired'];
+// Courier step (deliveryResult's uberStatus) → what the sender is told
+const COURIER_STEPS = {
+  pickup_complete: { subject: 'Picked up', heading: 'Your item was picked up', note: 'The courier is taking it to the drop-off now.' },
+  delivered:       { subject: 'Delivered', heading: 'Your item was delivered', note: 'Thanks for using the Lyrtrip courier!' },
+  canceled:        { subject: 'Delivery cancelled', heading: 'Your courier delivery was cancelled', note: 'Reply to this email and we\'ll help you rebook or refund it.' },
+  returned:        { subject: 'Returned to you', heading: 'Your item was returned', note: 'The courier couldn\'t complete the drop-off and brought it back. Reply to this email if you need help.' },
+};
+
+// Claims the step in trackingEmailed, then sends; a failed send gives the claim back for the next run
+async function sendTrackingStep(coll, b, step, mail) {
+  const claim = await coll.updateOne({ _id: b._id, trackingEmailed: { $ne: step } }, { $addToSet: { trackingEmailed: step } });
+  if (!claim.modifiedCount) return;
+  if (!(await sendEmail(mail))) await coll.updateOne({ _id: b._id }, { $pull: { trackingEmailed: step } });
+}
+
+async function sweepTracking(db) {
+  const now = Date.now();
+  const checked = { trackingCheckedAt: new Date(now).toISOString() };
+
+  const shipments = db.collection('shipments');
+  const parcels = await shipments.find({
+    status: 'confirmed', easyshipId: { $ne: null }, deliveryState: { $nin: SHIP_FINAL },
+    confirmedAt: { $gte: new Date(now - SHIP_TRACK_DAYS * 86400 * 1000).toISOString() },
+  }).sort({ trackingCheckedAt: 1 }).limit(TRACK_PER_RUN).toArray();
+  for (const b of parcels) {
+    let s;
+    try {
+      s = (await easyshipFetch(`/shipments/${b.easyshipId}`, { timeoutMs: 8000 })).shipment;
+    } catch (err) {
+      console.error('Tracking: Easyship lookup failed:', b.easyshipId, err.message);
+      await shipments.updateOne({ _id: b._id }, { $set: checked });
+      continue;
+    }
+    const result = shipmentResult(s);
+    await shipments.updateOne({ _id: b._id }, { $set: { ...result, ...checked } });
+    const step = SHIP_STEPS[result.deliveryState];
+    if (!step || !b.from?.contact_email) continue;
+    const numbers = result.tracking.map(t => t.number).join(', ');
+    const trackUrl = result.trackingUrl ?? `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=shipping`;
+    await sendTrackingStep(shipments, b, result.deliveryState, {
+      to: b.from.contact_email,
+      subject: `${step.subject}: your ${b.rate.courier} parcel to ${b.to.city}`,
+      html: hotelEmailHtml(step.heading, [
+        ['Courier', b.rate.courier], ['To', `${b.to.contact_name}, ${b.to.city}, ${b.to.country_alpha2}`],
+        ['Tracking', numbers || '—'], ['Update', step.note],
+      ], { url: trackUrl, label: 'Track your parcel' }),
+      text: `${step.heading}. ${step.note} ${numbers ? `Tracking: ${numbers}. ` : ''}Track it: ${trackUrl}`,
+    });
+  }
+
+  const deliveries = db.collection('deliveries');
+  const couriers = await deliveries.find({
+    confirmedAt: { $gte: new Date(now - COURIER_TRACK_DAYS * 86400 * 1000).toISOString() },
+    // Live ones, plus any whose last step (seen by a receipt refresh) hasn't been emailed yet
+    $or: [{ status: 'active' }, { uberStatus: { $in: Object.keys(COURIER_STEPS) }, $expr: { $not: { $in: ['$uberStatus', { $ifNull: ['$trackingEmailed', []] }] } } }],
+  }).sort({ trackingCheckedAt: 1 }).limit(TRACK_PER_RUN).toArray();
+  for (const b of couriers) {
+    const fresh = await refreshDelivery(deliveries, b);
+    await deliveries.updateOne({ _id: b._id }, { $set: checked });
+    const step = COURIER_STEPS[fresh.uberStatus];
+    if (!step || !b.email) continue;
+    const trackUrl = `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=delivery`;
+    await sendTrackingStep(deliveries, b, fresh.uberStatus, {
+      to: b.email,
+      subject: `${step.subject}: ${b.item.description}`,
+      html: hotelEmailHtml(step.heading, [
+        ['Item', b.item.description], ['Pickup', `${b.pickup.name}, ${b.pickup.label}`], ['Drop-off', `${b.dropoff.name}, ${b.dropoff.label}`],
+        ['Update', step.note],
+      ], { url: trackUrl, label: 'View your delivery' }),
+      text: `${step.heading}. ${step.note} Details: ${trackUrl}`,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
