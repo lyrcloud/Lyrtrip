@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import HelicopterForm from '@/components/HelicopterForm';
-import { heliCall, heliDraftFrom, HELI_ICON, HELI_STATUS_STYLE, type HeliDraft, type HeliOptions, type HeliRequest } from '@/lib/helicopter';
+import { heliCall, heliDraftFrom, HELI_ICON, HELI_RENTALS, HELI_STATUS_STYLE, type HeliDraft, type HeliOptions, type HeliRequest } from '@/lib/helicopter';
 import { rememberReturnTo } from '@/lib/returnTo';
 
 const card = 'bg-white rounded-2xl shadow-sm ring-1 ring-gray-100 p-5 sm:p-6';
@@ -12,7 +12,7 @@ const primary = 'px-5 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg
 const small = 'px-3 py-1.5 bg-btn text-white rounded-lg text-xs font-semibold disabled:bg-gray-300';
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
-// Air charters (helicopter, seaplane, air ambulance) requested through Lyrtrip: quotes to pay, details to fix, bookings confirmed
+// Air charters (helicopter, seaplane, air ambulance) and bike, e-bike and moped rentals requested through Lyrtrip: quotes to pay, details to fix, bookings confirmed
 export default function HelicopterRequestsPage() {
   const { user, loading } = useAuth();
   const [rows, setRows] = useState<HeliRequest[] | null>(null);
@@ -68,8 +68,8 @@ export default function HelicopterRequestsPage() {
   if (!loading && !user) {
     return (
       <div className="flex-1 bg-gray-50 py-16 px-4 text-center">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">My air charters</h1>
-        <p className="text-gray-600 mb-6 max-w-lg mx-auto">Request a helicopter, seaplane or air ambulance from the Transport tab. Lyrtrip finds an operator, tells you the price and books it for you.</p>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">My charters & rentals</h1>
+        <p className="text-gray-600 mb-6 max-w-lg mx-auto">Request a helicopter, seaplane, air ambulance, bike, e-bike or moped from the Transport tab. Lyrtrip finds an operator or rental shop, tells you the price and books it for you.</p>
         <Link href="/login" onClick={() => rememberReturnTo('/helicopter/requests')} className={primary}>Sign in</Link>
       </div>
     );
@@ -80,7 +80,7 @@ export default function HelicopterRequestsPage() {
     <div className="flex-1 bg-gray-50 py-8 px-4">
       <div className="max-w-3xl mx-auto space-y-5">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">My air charters</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">My charters & rentals</h1>
           <p className="text-gray-600 text-sm">Lyrtrip finds the operator, quotes the price (charter plus a {pct}% service charge), and books it once you pay.</p>
         </div>
         {notice && <p role="status" className="rounded-xl bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800 ring-1 ring-emerald-200">{notice}</p>}
@@ -97,7 +97,7 @@ export default function HelicopterRequestsPage() {
                     <p className="text-gray-600">
                       {r.charterLabel.replace(/ \(.*\)$/, '')} · {r.date}{r.time ? ` ${r.time}` : ''}{r.roundTrip ? `, back ${r.returnDate}${r.returnTime ? ` ${r.returnTime}` : ''}` : ''}{r.hours ? ` · ${r.hours} h` : ''}
                     </p>
-                    <p className="text-xs text-gray-400">{r.passengers.length} passenger(s) · {r.aircraft} · requested {new Date(r.createdAt).toLocaleDateString()}</p>
+                    <p className="text-xs text-gray-400">{r.passengers.length} {HELI_RENTALS.includes(r.service) ? 'rider(s)' : 'passenger(s)'} · {r.aircraft} · requested {new Date(r.createdAt).toLocaleDateString()}</p>
                     <p className="text-xs text-gray-500 mt-0.5">{r.passengers.map(p => p.fullName).join(', ')}</p>
                     {r.quote && (
                       <p className="mt-1 text-gray-700">

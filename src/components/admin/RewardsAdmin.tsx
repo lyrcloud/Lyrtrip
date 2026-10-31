@@ -1382,12 +1382,12 @@ export function HeliRequestsPanel({ call }: { call: Call }) {
                   <p className="text-xs font-semibold uppercase text-gray-500">Flight</p>
                   <p className="text-gray-700">{route(r)}</p>
                   <p className="text-gray-700">{r.date}{r.time ? ` ${r.time}` : ''}{r.roundTrip ? `, back ${r.returnDate}${r.returnTime ? ` ${r.returnTime}` : ''}` : ''}{r.flexibleDates ? ' · dates flexible' : ''}{r.hours ? ` · ${r.hours} h flying` : ''}</p>
-                  <p className="text-gray-700">{r.aircraft} · luggage {r.luggageKg || 0} kg · total passenger weight {r.passengers.reduce((s, p) => s + p.weightKg, 0)} kg</p>
+                  <p className="text-gray-700">{r.aircraft}{r.passengers.some(p => p.weightKg) && ` · luggage ${r.luggageKg || 0} kg · total passenger weight ${r.passengers.reduce((s, p) => s + p.weightKg, 0)} kg`}</p>
                   <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Customer</p>
                   <p className="text-gray-700">{r.contact.name} · {r.contact.email} · {r.contact.phone} · {r.contact.country}</p>
                   {r.accountEmail && r.accountEmail !== r.contact.email && <p className="text-xs text-gray-500">Account: {r.accountEmail}</p>}
                   <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Passengers</p>
-                  {r.passengers.map((p, i) => <p key={i} className="text-gray-700">{i + 1}. {p.fullName} · {p.weightKg} kg · born {p.dateOfBirth} · {p.nationality} · {p.idType} {p.idNumber}</p>)}
+                  {r.passengers.map((p, i) => <p key={i} className="text-gray-700">{i + 1}. {p.fullName}{p.weightKg ? ` · ${p.weightKg} kg` : ''} · born {p.dateOfBirth} · {p.nationality} · {p.idType} {p.idNumber}</p>)}
                   {r.medical && (<>
                     <p className="text-xs font-semibold uppercase text-gray-500 pt-2">Medical</p>
                     <p className="text-gray-700 whitespace-pre-line">{r.medical.condition}</p>

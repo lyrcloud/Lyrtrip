@@ -3263,7 +3263,8 @@ What you know about Lyrtrip:
 - Accounts: sign in or create an account at lyrtrip.com/login with email, Google, Facebook or WeChat. New email accounts confirm a 6-digit code sent by email; "Forgot password?" on the sign-in form emails a reset code. The dashboard (lyrtrip.com/dashboard) shows the traveller's tours and bookings.
 - Flights: booked and ticketed directly on Lyrtrip, paid securely by card through Stripe. After payment the e-ticket and booking reference arrive by email and on the receipt page. Baggage allowance and change or refund rules depend on the fare and are set by the airline.
 - Hotels: the guest pays the hotel's total plus a 12% Lyrtrip service fee, and Lyrtrip books the room directly with the property, then emails the hotel's confirmation number. If the hotel can't confirm, the guest is refunded in full (allow 5-10 business days for the card refund). Check-in times, deposits and cancellation rules are set by the hotel.
-- Rides: the car, taxi, limo and motorcycle options show fare estimates; booking rides, bikes, e-bikes and scooters on Lyrtrip opens soon.
+- Rides: the car, taxi, limo and motorcycle options show fare estimates; booking car rides on Lyrtrip opens soon.
+- Bike, e-bike, moped and scooter rentals (by the hour, full day, several days or a guided tour): requests get a quote from Lyrtrip (the rental shop's price plus a 10% service charge), paid by card, and are followed at lyrtrip.com/helicopter/requests. Mopeds and scooters need each rider's driving licence.
 - Air charters and ambulances: helicopter, seaplane, air ambulance and ground ambulance (the Ambulance ride option) requests get a quote from Lyrtrip (the operator's price plus a 10% service charge), paid by card, and are followed at lyrtrip.com/helicopter/requests. Air and ground ambulance bookings are not an emergency service: for a life-threatening emergency, tell the traveller to call their local emergency number.
 - Trucks, cargo and containers: requests get a quote from Lyrtrip (the carrier's price plus a 10% service charge), paid by card, with booking and tracking updates at lyrtrip.com/freight/requests. Duties, taxes and port charges not in the quote are the customer's.
 - Tax & Legal (the tile after Job): tax services, legal services and lawyers. Lyrtrip finds a licensed professional and quotes their fee. For tax services the customer pays Lyrtrip that fee plus a 10% service charge; for lawyers and legal services the customer pays the professional's fee to them directly and pays Lyrtrip only a 10% booking fee by card, with progress at lyrtrip.com/legal/requests. Lyrtrip arranges the service and does not give tax or legal advice itself.
@@ -7595,6 +7596,7 @@ async function donationsAdmin(db, body) {
 // planning) and the charter type, plus the patient's medical details for an air ambulance; an admin
 // finds an operator and quotes the price, and the customer pays it plus Lyrtrip's 10%. Once paid, the
 // admin books the operator; if they can't, the payment is refunded. Stored in heli_requests.
+// Bike, e-bike and moped rentals use the same flow, booked with a local rental shop.
 // ---------------------------------------------------------------------------
 
 const HELI_SERVICE_RATE = 0.10;
@@ -7655,7 +7657,25 @@ const HELI_SERVICES = {
     },
     aircraft: ['Any (nearest available)', 'Patient transport (non-emergency)', 'Basic life support (BLS)', 'Advanced life support (ALS / ICU)', 'Neonatal ambulance', 'Bariatric ambulance'],
   },
+  // Rentals (Bike, E-bike and Moped & scooter ride options): Lyrtrip books them with a local rental shop.
+  // `aircraft` is the bike type; riders give ID but no weight; "multiday" needs the return date.
+  bike: {
+    label: 'Bike rental', rental: true, loop: ['hourly', 'tour'],
+    charters: { hourly: 'By the hour', daily: 'Full day', multiday: 'Several days', tour: 'Guided bike tour' },
+    aircraft: ['Any (best value)', 'City bike', 'Hybrid bike', 'Mountain bike', 'Road bike', "Kids' bike", 'Tandem'],
+  },
+  ebike: {
+    label: 'E-bike rental', rental: true, loop: ['hourly', 'tour'],
+    charters: { hourly: 'By the hour', daily: 'Full day', multiday: 'Several days', tour: 'Guided e-bike tour' },
+    aircraft: ['Any (best value)', 'City e-bike', 'E-mountain bike', 'Cargo e-bike', 'Folding e-bike'],
+  },
+  moped: {
+    label: 'Moped & scooter rental', rental: true, licence: true, loop: ['hourly', 'tour'],
+    charters: { hourly: 'By the hour', daily: 'Full day', multiday: 'Several days', tour: 'Guided scooter tour' },
+    aircraft: ['Any (best value)', 'Scooter up to 50cc', 'Scooter 110 to 125cc', 'Electric scooter or moped', 'Maxi-scooter 150cc or more'],
+  },
 };
+const HELI_RENTAL_MIN_AGE = 16;
 const HELI_MEDICAL = ['ambulance', 'roadambulance'];
 const heliService = r => HELI_SERVICES[r.service] ?? HELI_SERVICES.helicopter;
 const HELI_MOBILITY = ['Walks unaided', 'Wheelchair', 'Stretcher', 'Intensive care (ventilated / ICU)'];
@@ -7689,39 +7709,43 @@ function cleanHeliRequest(b) {
   const service = HELI_SERVICES[b.service] ? b.service : 'helicopter';
   const svc = HELI_SERVICES[service];
   const ambulance = HELI_MEDICAL.includes(service);
+  const rental = !!svc.rental;
   const charter = Object.keys(svc.charters).includes(b.charter) ? b.charter : '';
-  if (!charter) throw new JobError('Choose the kind of charter');
-  const roundTrip = !!b.roundTrip;
+  if (!charter) throw new JobError(rental ? 'Choose how long you want to rent for' : 'Choose the kind of charter');
+  // A rental's "return" is the day the bikes go back, needed only for several days
+  const roundTrip = rental ? charter === 'multiday' : !!b.roundTrip;
   const from = s(b.from, 160), to = s(b.to, 160);
-  if (from.length < 2) throw new JobError(ambulance ? 'Enter where the patient is now (hospital and city)' : 'Enter where you take off from (helipad, airport, jetty, city or address)');
+  if (from.length < 2) throw new JobError(ambulance ? 'Enter where the patient is now (hospital and city)' : rental ? 'Enter where you want to pick up (hotel, address or city)' : 'Enter where you take off from (helipad, airport, jetty, city or address)');
   const loop = svc.loop.includes(charter);
-  if (!loop && to.length < 2) throw new JobError(ambulance ? 'Enter the receiving hospital and city' : 'Enter where you are flying to');
+  if (!loop && !rental && to.length < 2) throw new JobError(ambulance ? 'Enter the receiving hospital and city' : 'Enter where you are flying to');
   const date = day(b.date);
   const today = new Date().toISOString().slice(0, 10);
-  if (!date || date < today) throw new JobError('Choose a flight date from today on');
+  if (!date || date < today) throw new JobError(rental ? 'Choose a pickup date from today on' : 'Choose a flight date from today on');
   const returnDate = roundTrip ? day(b.returnDate) : '';
-  if (roundTrip && (!returnDate || returnDate < date)) throw new JobError('Choose a return date on or after the flight date');
+  if (roundTrip && (!returnDate || returnDate < date)) throw new JobError(rental ? 'Choose the return date, on or after the pickup date' : 'Choose a return date on or after the flight date');
   const hours = loop ? Math.round(Number(b.hours) * 2) / 2 : null;
-  if (loop && !(hours >= 0.5 && hours <= 12)) throw new JobError('Enter the flying time you want, 0.5 to 12 hours');
+  if (loop && !(hours >= 0.5 && hours <= 12)) throw new JobError(rental ? 'Enter how many hours you want, 0.5 to 12' : 'Enter the flying time you want, 0.5 to 12 hours');
 
   const list = Array.isArray(b.passengers) ? b.passengers.slice(0, HELI_MAX_PASSENGERS + 1) : [];
-  if (list.length < 1) throw new JobError('Add at least one passenger');
+  if (list.length < 1) throw new JobError(rental ? 'Add at least one rider' : 'Add at least one passenger');
   if (list.length > HELI_MAX_PASSENGERS) throw new JobError(`Up to ${HELI_MAX_PASSENGERS} passengers per request; send another request for more`);
   const passengers = list.map((p, i) => {
     const row = {
       fullName: s(p?.fullName, 80), dateOfBirth: born(p?.dateOfBirth), nationality: s(p?.nationality, 60),
-      weightKg: Math.round(Number(p?.weightKg)), idType: HELI_ID_TYPES.includes(p?.idType) ? p.idType : '', idNumber: s(p?.idNumber, 30).toUpperCase(),
+      weightKg: rental ? 0 : Math.round(Number(p?.weightKg)), idType: HELI_ID_TYPES.includes(p?.idType) ? p.idType : '', idNumber: s(p?.idNumber, 30).toUpperCase(),
     };
-    const who = list.length > 1 ? `Passenger ${i + 1}: ` : '';
+    const who = list.length > 1 ? `${rental ? 'Rider' : 'Passenger'} ${i + 1}: ` : '';
     const fail = m => { throw new JobError(who ? who + m : m[0].toUpperCase() + m.slice(1)); };
     if (row.fullName.length < 2) fail(`enter the full name as on their ID`);
     if (!row.dateOfBirth || Date.parse(row.dateOfBirth) > Date.now()) fail(`enter a valid date of birth`);
     if (!row.nationality) fail(`enter the nationality`);
-    if (!(row.weightKg >= 3 && row.weightKg <= 250)) fail(`enter the body weight in kg (operators need it for safe loading)`);
+    if (!rental && !(row.weightKg >= 3 && row.weightKg <= 250)) fail(`enter the body weight in kg (operators need it for safe loading)`);
     if (!row.idType || row.idNumber.length < 3) fail(`choose the photo ID they will bring and enter its number`);
+    if (svc.licence && row.idType !== "Driver's licence") fail(`mopeds and scooters need a driving licence: choose Driver's licence and enter its number`);
+    if (svc.licence && Date.parse(row.dateOfBirth) > Date.parse(date) - HELI_RENTAL_MIN_AGE * 365.25 * 86400 * 1000) fail(`riders must be at least ${HELI_RENTAL_MIN_AGE}`);
     return row;
   });
-  const luggageKg = Math.max(0, Math.min(1000, Math.round(Number(b.luggageKg) || 0)));
+  const luggageKg = rental ? 0 : Math.max(0, Math.min(1000, Math.round(Number(b.luggageKg) || 0)));
   const budget = b.budget === '' || b.budget == null ? null : Math.round(Number(b.budget) * 100) / 100;
   if (budget != null && !(budget > 0 && budget <= 500000)) throw new JobError('Your budget must be a positive amount in USD');
   let medical = null;
@@ -7735,10 +7759,10 @@ function cleanHeliRequest(b) {
     if (medical.condition.length < 3) throw new JobError("Describe the patient's condition or diagnosis");
     if (!medical.mobility) throw new JobError('Choose how the patient travels (seated, wheelchair, stretcher or intensive care)');
   }
-  if (!b.acceptTerms) throw new JobError('Please accept the charter terms');
+  if (!b.acceptTerms) throw new JobError(rental ? 'Please accept the rental terms' : 'Please accept the charter terms');
   return {
     service, medical, contact: { name, email, phone: phone.number, country }, charter, roundTrip, from, to,
-    date, time: time(b.time), returnDate, returnTime: roundTrip ? time(b.returnTime) : '', flexibleDates: !!b.flexibleDates,
+    date, time: time(b.time), returnDate, returnTime: roundTrip ? time(b.returnTime) : '', flexibleDates: !rental && !!b.flexibleDates,
     hours, aircraft: svc.aircraft.includes(b.aircraft) ? b.aircraft : svc.aircraft[0],
     passengers, luggageKg, budget, note: s(b.note, 2000),
   };
@@ -7756,9 +7780,11 @@ const customerHeliRequest = r => ({
 
 const heliRoute = r => (r.to ? `${r.from} → ${r.to}` : r.from);
 const heliRows = r => [
-  ['Service', heliService(r).label], ['Charter', heliService(r).charters[r.charter] ?? r.charter], ['Route', heliRoute(r) + (r.roundTrip ? ' (return)' : '')],
+  ['Service', heliService(r).label], [heliService(r).rental ? 'Rental' : 'Charter', heliService(r).charters[r.charter] ?? r.charter],
+  heliService(r).rental ? ['Pick up / drop off', heliRoute(r)] : ['Route', heliRoute(r) + (r.roundTrip ? ' (return)' : '')],
+  ...(heliService(r).rental ? [['Bike type', r.aircraft]] : []),
   ['Date', `${r.date}${r.time ? ` ${r.time}` : ''}${r.roundTrip ? `, back ${r.returnDate}${r.returnTime ? ` ${r.returnTime}` : ''}` : ''}${r.flexibleDates ? ' (flexible)' : ''}`],
-  ['Flying time', r.hours ? `${r.hours} h` : ''], ['Passengers', String(r.passengers.length)],
+  [heliService(r).rental ? 'Hours' : 'Flying time', r.hours ? `${r.hours} h` : ''], [heliService(r).rental ? 'Riders' : 'Passengers', String(r.passengers.length)],
   ...(r.medical ? [['Patient', r.medical.condition], ['Travels', `${r.medical.mobility}${r.medical.oxygen ? ', needs oxygen' : ''}`], ['Medical escort', r.medical.escort], ['Urgency', r.medical.urgency]] : []),
 ].filter(([, v]) => v);
 // "helicopter", "seaplane", "air ambulance" in email text; urgent air ambulance requests are flagged for the admin
@@ -7778,7 +7804,7 @@ async function settleHeliPayment(db, r) {
       to: superAdminEmail(), subject: `${heliUrgent(r)}${heliService(r).label} paid: ${r.contact.name}, ${heliRoute(r)}`,
       html: jobAppEmail(`Paid: book the ${heliName(r)}`, [...heliRows(r), ['Customer', r.contact.name], ['Paid', `USD ${set['quote.charged'].toFixed(2)}`]],
         `Open ${SITE_URL}/admin, Air charters, to book the operator.`),
-      text: `${r.contact.name} paid for a ${heliName(r)} charter ${heliRoute(r)} on ${r.date}. See ${SITE_URL}/admin.`,
+      text: `${r.contact.name} paid for a ${heliName(r)} ${heliRoute(r)} on ${r.date}. See ${SITE_URL}/admin.`,
     });
   }
   return { ...r, status: 'processing', quote: { ...r.quote, paidAt: now } };
@@ -7811,7 +7837,7 @@ async function handleHeliRequests(event) {
           sendEmail({
             to: clean.contact.email, subject: `We have your ${heliName(r)} request: ${heliRoute(r)}`,
             html: jobAppEmail(`We have your ${heliName(r)} request`, heliRows(r),
-              `Lyrtrip finds an operator and emails you the price: the charter plus our ${HELI_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/helicopter/requests.`),
+              `Lyrtrip finds ${heliService(r).rental ? 'a rental shop' : 'an operator'} and emails you the price: the ${heliService(r).rental ? 'rental' : 'charter'} plus our ${HELI_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/helicopter/requests.`),
             text: `We received your ${heliName(r)} request ${heliRoute(r)} on ${r.date}. We will email you the price to pay. See ${SITE_URL}/helicopter/requests`,
           }),
           sendEmail({

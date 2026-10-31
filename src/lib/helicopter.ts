@@ -6,7 +6,10 @@ export interface HeliContact { name: string; email: string; phone: string; count
 // Air ambulance only: the patient (passenger 1) and the care they need on board
 export interface HeliMedical { condition: string; mobility: string; oxygen: boolean; escort: string; urgency: string; bedConfirmed: boolean; doctor: string; insurance: string }
 
-export type HeliService = 'helicopter' | 'seaplane' | 'ambulance' | 'roadambulance';
+export type HeliService = 'helicopter' | 'seaplane' | 'ambulance' | 'roadambulance' | 'bike' | 'ebike' | 'moped';
+
+// Bike, e-bike and moped rentals: booked with a local rental shop through the same request flow
+export const HELI_RENTALS: string[] = ['bike', 'ebike', 'moped'];
 
 // Services that carry a patient and ask for their medical needs
 export const HELI_MEDICAL: string[] = ['ambulance', 'roadambulance'];
@@ -29,10 +32,10 @@ export interface HeliRequest {
   createdAt: string; updatedAt: string;
 }
 
-export interface HeliServiceSpec { label: string; charters: Record<string, string>; aircraft: string[]; loop: string[] }
+export interface HeliServiceSpec { label: string; charters: Record<string, string>; aircraft: string[]; loop: string[]; rental?: boolean; licence?: boolean }
 export interface HeliOptions { services: Record<HeliService, HeliServiceSpec>; mobility: string[]; escorts: string[]; urgency: string[]; idTypes: string[]; maxPassengers: number; serviceRate: number; quoteHours: number }
 
-export const HELI_ICON: Record<string, string> = { helicopter: '🚁', seaplane: '🛩️', ambulance: '🚑', roadambulance: '🚨' };
+export const HELI_ICON: Record<string, string> = { helicopter: '🚁', seaplane: '🛩️', ambulance: '🚑', roadambulance: '🚨', bike: '🚲', ebike: '⚡', moped: '🛵' };
 
 export const HELI_STATUS_STYLE: Record<string, string> = {
   submitted: 'bg-sky-100 text-sky-800', info_needed: 'bg-orange-100 text-orange-800', quoted: 'bg-amber-100 text-amber-900',

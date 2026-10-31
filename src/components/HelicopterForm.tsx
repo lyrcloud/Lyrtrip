@@ -1,13 +1,14 @@
 'use client';
 
-import { HELI_MEDICAL, NEW_PASSENGER, type HeliContact, type HeliDraft, type HeliMedical, type HeliOptions, type HeliPassenger } from '@/lib/helicopter';
+import { HELI_MEDICAL, HELI_RENTALS, NEW_PASSENGER, type HeliContact, type HeliDraft, type HeliMedical, type HeliOptions, type HeliPassenger } from '@/lib/helicopter';
 
 const input = 'w-full px-3 py-2.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100';
 const label = 'block text-xs font-semibold text-gray-600 mb-1';
 const req = <span className="text-red-500">*</span>;
 
 // Everything an operator needs to price a charter: route, date, aircraft, each passenger's ID and weight,
-// and for an air ambulance the patient's condition and the care needed on board
+// and for an air ambulance the patient's condition and the care needed on board. Bike, e-bike and moped
+// rentals reuse it with pickup, rental time, bike type and each rider's ID.
 export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliDraft; setDraft: (d: HeliDraft) => void; opts: HeliOptions }) {
   const set = <K extends keyof HeliDraft>(k: K, v: HeliDraft[K]) => setDraft({ ...draft, [k]: v });
   const setMedical = <K extends keyof HeliMedical>(k: K, v: HeliMedical[K]) => set('medical', { ...draft.medical, [k]: v });
@@ -21,13 +22,15 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
   const svc = opts.services[draft.service];
   const ambulance = HELI_MEDICAL.includes(draft.service);
   const road = draft.service === 'roadambulance';
+  const rental = HELI_RENTALS.includes(draft.service);
   const loop = svc.loop.includes(draft.charter);
   const today = new Date().toISOString().slice(0, 10);
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Charter type">
+      <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={rental ? 'Rental time' : 'Charter type'}>
         {Object.entries(svc.charters).map(([id, name]) => (
-          <button key={id} type="button" role="radio" aria-checked={draft.charter === id} onClick={() => set('charter', id)}
+          <button key={id} type="button" role="radio" aria-checked={draft.charter === id}
+            onClick={() => setDraft({ ...draft, charter: id, ...(rental && { roundTrip: id === 'multiday' }) })}
             className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${draft.charter === id ? 'bg-btn text-white shadow-sm' : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-brand-300'}`}>
             {name.replace(/ \(.*\)$/, '')}
           </button>
@@ -36,12 +39,12 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
       {draft.service === 'helicopter' && draft.charter === 'pilgrimage' && <p className="text-xs text-gray-500">e.g. Kedarnath, Char Dham, Do Dham, Vaishno Devi, Amarnath, Kailash Mansarovar. Seasonal shuttles sell out early: send the request as soon as you know your dates.</p>}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div><label className={label}>{road && loop ? 'Event venue' : ambulance ? 'Patient is now at' : loop ? 'Take off from' : 'From'} {req}</label>
-          <input className={input} value={draft.from} maxLength={160} onChange={e => set('from', e.target.value)} placeholder={ambulance ? 'Hospital name and city' : draft.service === 'seaplane' ? 'Airport, jetty, resort or island' : 'Helipad, airport, city or address'} /></div>
-        <div><label className={label}>{road && loop ? 'Event name (optional)' : ambulance ? 'Receiving hospital' : loop ? 'Fly over / route (optional)' : 'To'} {!loop && req}</label>
-          <input className={input} value={draft.to} maxLength={160} onChange={e => set('to', e.target.value)} placeholder={ambulance ? 'Hospital name and city' : loop ? 'e.g. Grand Canyon, Manhattan skyline' : draft.service === 'seaplane' ? 'Resort, island or jetty' : 'Helipad, airport, city or address'} /></div>
+        <div><label className={label}>{rental ? 'Pick up at' : road && loop ? 'Event venue' : ambulance ? 'Patient is now at' : loop ? 'Take off from' : 'From'} {req}</label>
+          <input className={input} value={draft.from} maxLength={160} onChange={e => set('from', e.target.value)} placeholder={rental ? 'Hotel, address or city' : ambulance ? 'Hospital name and city' : draft.service === 'seaplane' ? 'Airport, jetty, resort or island' : 'Helipad, airport, city or address'} /></div>
+        <div><label className={label}>{rental ? 'Drop off at (if somewhere else)' : road && loop ? 'Event name (optional)' : ambulance ? 'Receiving hospital' : loop ? 'Fly over / route (optional)' : 'To'} {!loop && !rental && req}</label>
+          <input className={input} value={draft.to} maxLength={160} onChange={e => set('to', e.target.value)} placeholder={rental ? 'Leave blank to return it where you picked it up' : ambulance ? 'Hospital name and city' : loop ? 'e.g. Grand Canyon, Manhattan skyline' : draft.service === 'seaplane' ? 'Resort, island or jetty' : 'Helipad, airport, city or address'} /></div>
       </div>
-      {!loop && !ambulance && (
+      {!loop && !ambulance && !rental && (
         <div className="inline-grid grid-cols-2 rounded-full bg-gray-100 p-1 text-sm font-semibold" role="radiogroup" aria-label="Trip type">
           {[[false, 'One way'], [true, 'Return']].map(([v, l]) => (
             <button key={String(v)} type="button" role="radio" aria-checked={draft.roundTrip === v} onClick={() => set('roundTrip', v as boolean)}
@@ -50,28 +53,30 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
         </div>
       )}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div><label className={label}>Date {req}</label><input className={input} type="date" min={today} value={draft.date} onChange={e => set('date', e.target.value)} /></div>
+        <div><label className={label}>{rental ? 'Pickup date' : 'Date'} {req}</label><input className={input} type="date" min={today} value={draft.date} onChange={e => set('date', e.target.value)} /></div>
         <div><label className={label}>Time</label><input className={input} type="time" value={draft.time} onChange={e => set('time', e.target.value)} /></div>
         {draft.roundTrip && !loop && (<>
           <div><label className={label}>Return date {req}</label><input className={input} type="date" min={draft.date || today} value={draft.returnDate} onChange={e => set('returnDate', e.target.value)} /></div>
           <div><label className={label}>Return time</label><input className={input} type="time" value={draft.returnTime} onChange={e => set('returnTime', e.target.value)} /></div>
         </>)}
-        {loop && <div><label className={label}>{road ? 'Standby hours' : 'Flying time (hours)'} {req}</label><input className={input} type="number" min={0.5} max={12} step={0.5} value={draft.hours} onChange={e => set('hours', e.target.value)} placeholder="1" /></div>}
+        {loop && <div><label className={label}>{rental ? 'Hours' : road ? 'Standby hours' : 'Flying time (hours)'} {req}</label><input className={input} type="number" min={0.5} max={12} step={0.5} value={draft.hours} onChange={e => set('hours', e.target.value)} placeholder="1" /></div>}
       </div>
-      <label className="flex items-center gap-2 text-sm text-gray-700">
-        <input type="checkbox" checked={draft.flexibleDates} onChange={e => set('flexibleDates', e.target.checked)} /> My dates are flexible (weather or a cheaper slot)
-      </label>
+      {!rental && (
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={draft.flexibleDates} onChange={e => set('flexibleDates', e.target.checked)} /> My dates are flexible (weather or a cheaper slot)
+        </label>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div><label className={label}>{ambulance ? 'People flying (patient + companions)' : 'Passengers'} {req}</label>
+        <div><label className={label}>{rental ? 'Riders (one bike each)' : ambulance ? 'People flying (patient + companions)' : 'Passengers'} {req}</label>
           <select className={input} value={draft.passengers.length} onChange={e => setCount(Number(e.target.value))}>
             {Array.from({ length: opts.maxPassengers }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
           </select></div>
-        <div className="col-span-2 sm:col-span-1"><label className={label}>{road ? 'Ambulance type' : 'Aircraft'}</label>
+        <div className="col-span-2 sm:col-span-1"><label className={label}>{rental ? (draft.service === 'moped' ? 'Moped or scooter' : 'Bike type') : road ? 'Ambulance type' : 'Aircraft'}</label>
           <select className={input} value={draft.aircraft} onChange={e => set('aircraft', e.target.value)}>
             {svc.aircraft.map(a => <option key={a}>{a}</option>)}
           </select></div>
-        <div><label className={label}>Luggage (kg, total)</label><input className={input} type="number" min={0} max={1000} value={draft.luggageKg} onChange={e => set('luggageKg', e.target.value)} placeholder="0" /></div>
+        {!rental && <div><label className={label}>Luggage (kg, total)</label><input className={input} type="number" min={0} max={1000} value={draft.luggageKg} onChange={e => set('luggageKg', e.target.value)} placeholder="0" /></div>}
         <div><label className={label}>Budget (USD)</label><input className={input} type="number" min={1} value={draft.budget} onChange={e => set('budget', e.target.value)} placeholder="Optional" /></div>
       </div>
 
@@ -119,15 +124,15 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
 
       {draft.passengers.map((p, i) => (
         <fieldset key={i} className="space-y-3 rounded-xl ring-1 ring-gray-100 p-3">
-          <legend className="px-1 text-sm font-bold text-gray-900">{ambulance ? (i === 0 ? 'Patient' : `Companion ${i}`) : `Passenger ${i + 1}`}</legend>
-          <p className="text-xs text-gray-500">As on the photo ID they will bring. {road ? 'The crew needs each weight for the stretcher and safe loading.' : 'The pilot needs each weight to balance the aircraft safely.'}</p>
+          <legend className="px-1 text-sm font-bold text-gray-900">{ambulance ? (i === 0 ? 'Patient' : `Companion ${i}`) : rental ? `Rider ${i + 1}` : `Passenger ${i + 1}`}</legend>
+          <p className="text-xs text-gray-500">As on the photo ID they will bring. {rental ? (svc.licence ? `The shop checks each rider's driving licence (valid for mopeds) when they collect it.` : 'The shop checks it when they collect the bike.') : road ? 'The crew needs each weight for the stretcher and safe loading.' : 'The pilot needs each weight to balance the aircraft safely.'}</p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="sm:col-span-2"><label className={label}>Full name as on ID {req}</label><input className={input} value={p.fullName} maxLength={80} onChange={e => setPassenger(i, 'fullName', e.target.value)} /></div>
-            <div><label className={label}>Weight (kg) {req}</label><input className={input} type="number" min={3} max={250} value={p.weightKg} onChange={e => setPassenger(i, 'weightKg', e.target.value)} /></div>
+            <div className={rental ? 'sm:col-span-3' : 'sm:col-span-2'}><label className={label}>Full name as on ID {req}</label><input className={input} value={p.fullName} maxLength={80} onChange={e => setPassenger(i, 'fullName', e.target.value)} /></div>
+            {!rental && <div><label className={label}>Weight (kg) {req}</label><input className={input} type="number" min={3} max={250} value={p.weightKg} onChange={e => setPassenger(i, 'weightKg', e.target.value)} /></div>}
             <div><label className={label}>Date of birth {req}</label><input className={input} type="date" max={today} value={p.dateOfBirth} onChange={e => setPassenger(i, 'dateOfBirth', e.target.value)} /></div>
             <div><label className={label}>Nationality {req}</label><input className={input} value={p.nationality} maxLength={60} onChange={e => setPassenger(i, 'nationality', e.target.value)} /></div>
             <div>
-              <label className={label}>Photo ID {req}</label>
+              <label className={label}>{svc.licence ? 'Photo ID (driving licence)' : 'Photo ID'} {req}</label>
               <select className={input} value={p.idType} onChange={e => setPassenger(i, 'idType', e.target.value)}>
                 <option value="">Choose…</option>
                 {opts.idTypes.map(t => <option key={t}>{t}</option>)}
@@ -140,7 +145,7 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
 
       <div>
         <label className={label}>Anything else (optional)</label>
-        <textarea className={input} rows={2} maxLength={2000} value={draft.note} onChange={e => set('note', e.target.value)} placeholder={ambulance ? 'e.g. medical equipment on board, ground ambulance needed at either end' : 'e.g. doors-off flight, champagne, wheelchair, pet on board'} />
+        <textarea className={input} rows={2} maxLength={2000} value={draft.note} onChange={e => set('note', e.target.value)} placeholder={rental ? "e.g. helmets, child seat, lock, deliver to my hotel, riders' heights" : ambulance ? 'e.g. medical equipment on board, ground ambulance needed at either end' : 'e.g. doors-off flight, champagne, wheelchair, pet on board'} />
       </div>
     </div>
   );

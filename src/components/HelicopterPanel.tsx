@@ -4,20 +4,25 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import HelicopterForm from '@/components/HelicopterForm';
-import { heliCall, HELI_ICON, HELI_MEDICAL, HELI_STATUS_STYLE, NEW_MEDICAL, NEW_PASSENGER, type HeliDraft, type HeliOptions, type HeliRequest, type HeliService } from '@/lib/helicopter';
+import { heliCall, HELI_ICON, HELI_MEDICAL, HELI_RENTALS, HELI_STATUS_STYLE, NEW_MEDICAL, NEW_PASSENGER, type HeliDraft, type HeliOptions, type HeliRequest, type HeliService } from '@/lib/helicopter';
 import { rememberReturnTo } from '@/lib/returnTo';
 
 const primary = 'px-5 py-3 bg-btn text-white rounded-xl font-bold hover:bg-btn-hover disabled:bg-gray-300 transition';
 
-const NAME: Record<HeliService, string> = { helicopter: 'helicopter', seaplane: 'seaplane', ambulance: 'air ambulance', roadambulance: 'ambulance' };
+const NAME: Record<HeliService, string> = { helicopter: 'helicopter', seaplane: 'seaplane', ambulance: 'air ambulance', roadambulance: 'ambulance', bike: 'bike', ebike: 'e-bike', moped: 'moped or scooter' };
+// The home tab each service lives on (for coming back after signing in)
+const TAB: Record<HeliService, string> = { helicopter: 'helicopter', seaplane: 'seaplane', ambulance: 'airambulance', roadambulance: 'ambulance', bike: 'bike', ebike: 'ebike', moped: 'scooter' };
 const INTRO: Record<HeliService, [string, string]> = {
   helicopter: ['Helicopter charters through Lyrtrip', 'Transfers, airport hops, scenic tours, pilgrimages, weddings and filming.'],
   seaplane: ['Seaplane flights through Lyrtrip', 'Resort and island transfers, island hopping, scenic flights and remote lodges.'],
   ambulance: ['Air ambulance through Lyrtrip', 'Air ambulance jets and helicopters, airline stretcher escorts and medical repatriation, with doctors or nurses on board.'],
   roadambulance: ['Ambulance service through Lyrtrip', 'Booked ambulance transfers: hospital to hospital, discharge home, dialysis and scan trips, ICU ambulances, long-distance transfers and event standby.'],
+  bike: ['Bike rental through Lyrtrip', 'City, hybrid, mountain, road and kids\' bikes by the hour, the day or the week, or a guided bike tour.'],
+  ebike: ['E-bike rental through Lyrtrip', 'City e-bikes, e-mountain bikes, cargo and folding e-bikes by the hour, the day or the week, or a guided e-bike tour.'],
+  moped: ['Moped & scooter rental through Lyrtrip', 'Scooters from 50cc to maxi-scooters and electric mopeds by the hour, the day or the week, or a guided scooter tour.'],
 };
 
-// Helicopter, Seaplane and Air ambulance tabs: charter through Lyrtrip. Lyrtrip finds the operator,
+// Helicopter, Seaplane and Air ambulance tabs (and the Ambulance, Bike, E-bike and Moped ride options): charter or rent through Lyrtrip. Lyrtrip finds the operator,
 // quotes one price (plus the service charge), and books it once the customer pays.
 export default function HelicopterPanel({ service }: { service: HeliService }) {
   const { user, loading } = useAuth();
@@ -46,7 +51,7 @@ export default function HelicopterPanel({ service }: { service: HeliService }) {
           };
         });
       })
-      .catch(err => setError(err instanceof Error ? err.message : 'Could not load the charter form.'));
+      .catch(err => setError(err instanceof Error ? err.message : 'Could not load the form.'));
   }, [user, service]);
 
   const submit = async () => {
@@ -63,13 +68,14 @@ export default function HelicopterPanel({ service }: { service: HeliService }) {
   };
 
   const pct = Math.round((opts?.serviceRate ?? 0.1) * 100);
+  const rental = HELI_RENTALS.includes(service);
   return (
     <div className="space-y-4">
       <div className="rounded-2xl bg-gradient-to-r from-sky-50 to-indigo-50 ring-1 ring-sky-100 p-4">
         <p className="font-bold text-gray-900">{HELI_ICON[service]} {INTRO[service][0]}</p>
         <p className="text-sm text-gray-600">
-          {INTRO[service][1]} Tell us the route and {HELI_MEDICAL.includes(service) ? 'the patient' : 'passengers'}: we find a licensed operator,
-          send you one all-in price (plus our {pct}% service charge), and book it once you pay. <Link href="/helicopter/requests" className="font-semibold text-brand-600">My charters →</Link>
+          {INTRO[service][1]} {rental ? 'Tell us where, when and who is riding: we find a rental shop' : <>Tell us the route and {HELI_MEDICAL.includes(service) ? 'the patient' : 'passengers'}: we find a licensed operator</>},
+          send you one all-in price (plus our {pct}% service charge), and book it once you pay. <Link href="/helicopter/requests" className="font-semibold text-brand-600">{rental ? 'My rentals →' : 'My charters →'}</Link>
         </p>
       </div>
       {HELI_MEDICAL.includes(service) && (
@@ -85,11 +91,11 @@ export default function HelicopterPanel({ service }: { service: HeliService }) {
         <div className="rounded-2xl ring-1 ring-gray-100 bg-white p-5 space-y-3">
           <p><span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${HELI_STATUS_STYLE[done.status] ?? ''}`}>{done.statusLabel}</span></p>
           <p className="text-sm text-gray-700">
-            Lyrtrip is checking {done.serviceLabel.toLowerCase()} operators for {done.to ? `${done.from} → ${done.to}` : done.from} on {done.date}. We will email you the price: the charter plus
+            Lyrtrip is checking {rental ? `rental shops near ${done.from}` : `${done.serviceLabel.toLowerCase()} operators for ${done.to ? `${done.from} → ${done.to}` : done.from}`} on {done.date}. We will email you the price: the {rental ? 'rental' : 'charter'} plus
             our {pct}% service charge. Nothing is charged until you pay that quote.
           </p>
           <div className="flex gap-3">
-            <Link href="/helicopter/requests" className="text-sm font-semibold text-brand-600">See my charters →</Link>
+            <Link href="/helicopter/requests" className="text-sm font-semibold text-brand-600">{rental ? 'See my rentals →' : 'See my charters →'}</Link>
             <button type="button" onClick={() => { setDone(null); setTerms(false); }} className="text-sm font-semibold text-gray-600 underline">Request another</button>
           </div>
         </div>
@@ -100,17 +106,25 @@ export default function HelicopterPanel({ service }: { service: HeliService }) {
           <HelicopterForm draft={draft} setDraft={setDraft} opts={opts} />
           <label className="flex items-start gap-2 text-xs text-gray-600">
             <input type="checkbox" className="mt-0.5" checked={terms} onChange={e => setTerms(e.target.checked)} />
-            <span>
-              I understand Lyrtrip books this {NAME[service]} charter for me with a licensed operator. I pay the quoted charter price plus Lyrtrip&apos;s {pct}% service charge;
-              the quote is valid for {opts.quoteHours} hours. Flights depend on weather and the operator&apos;s safety checks, and once booked they follow the
-              operator&apos;s cancellation rules. If Lyrtrip can&apos;t book it, I get a full refund.
-            </span>
+            {rental ? (
+              <span>
+                I understand Lyrtrip books this {NAME[service]} rental for me with a local rental shop. I pay the quoted rental price plus Lyrtrip&apos;s {pct}% service charge;
+                the quote is valid for {opts.quoteHours} hours. Each rider shows the ID given here when collecting{opts.services[service].licence ? ', and must hold a driving licence valid for mopeds and wear a helmet' : ''};
+                the shop may ask for a deposit, and its rules on damage, late returns and cancellation apply once booked. If Lyrtrip can&apos;t book it, I get a full refund.
+              </span>
+            ) : (
+              <span>
+                I understand Lyrtrip books this {NAME[service]} charter for me with a licensed operator. I pay the quoted charter price plus Lyrtrip&apos;s {pct}% service charge;
+                the quote is valid for {opts.quoteHours} hours. Flights depend on weather and the operator&apos;s safety checks, and once booked they follow the
+                operator&apos;s cancellation rules. If Lyrtrip can&apos;t book it, I get a full refund.
+              </span>
+            )}
           </label>
           {error && <div role="alert" className="rounded-lg p-3 text-sm bg-red-50 border border-red-200 text-red-700">{error}</div>}
           {!loading && !user ? (
-            <Link href="/login" onClick={() => rememberReturnTo('/?tab=helicopter')} className={`${primary} inline-block`}>Sign in to request a quote</Link>
+            <Link href="/login" onClick={() => rememberReturnTo(`/?tab=${TAB[service]}`)} className={`${primary} inline-block`}>Sign in to request a quote</Link>
           ) : (
-            <button type="button" onClick={submit} disabled={busy || !terms || loading} className={`${primary} w-full sm:w-auto`}>{busy ? 'Sending…' : 'Get a charter quote'}</button>
+            <button type="button" onClick={submit} disabled={busy || !terms || loading} className={`${primary} w-full sm:w-auto`}>{busy ? 'Sending…' : rental ? 'Get a rental quote' : 'Get a charter quote'}</button>
           )}
         </>
       )}

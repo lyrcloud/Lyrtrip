@@ -1238,9 +1238,9 @@ export default function Home() {
     { id: 'limo', icon: '🥂', label: t('Limo'), sub: t('Luxury rides') },
     { id: 'ambulance', icon: '🚨', label: t('Ambulance'), sub: t('Patient transfers') },
     { id: 'motorcycle', icon: '🏍️', label: t('Motorcycle'), sub: t('Bike taxis') },
-    { id: 'bike', icon: '🚲', label: t('Bike'), sub: t('Shared bikes') },
-    { id: 'ebike', icon: '⚡', label: t('E-bike'), sub: t('Electric bikes') },
-    { id: 'scooter', icon: '🛴', label: t('Moped & scooter'), sub: t('Scooters & mopeds') },
+    { id: 'bike', icon: '🚲', label: t('Bike'), sub: t('Bike rentals') },
+    { id: 'ebike', icon: '⚡', label: t('E-bike'), sub: t('E-bike rentals') },
+    { id: 'scooter', icon: '🛴', label: t('Moped & scooter'), sub: t('Moped & scooter rentals') },
     { id: 'hotels', icon: '🏨', label: t('Hotels'), sub: t('Places to stay') },
     { id: 'food', icon: '🍱', label: t('Food delivery'), sub: t('From any restaurant') },
     { id: 'dash', icon: '🛵', label: t('Courier'), sub: t('Same-day parcels') },
@@ -1265,10 +1265,6 @@ export default function Home() {
     motorcycle: { title: t('Book a motorcycle taxi'), none: t('No motorcycle taxis in this city right now. Try a car instead.'), tiers: ['Motorcycle'] },
   };
   const kindPrices = RIDE_KINDS[activeTab] ? uberPrices.filter(r => RIDE_KINDS[activeTab].tiers.includes(r.name)) : [];
-  // Bikes, e-bikes and scooters: not bookable yet
-  const MICRO_RIDES: Record<string, [string, string]> = {
-    bike: ['🚲', t('Bike rides')], ebike: ['⚡', t('E-bike rides')], scooter: ['🛴', t('Moped & scooter rides')],
-  };
 
   // The tiles: Transport, Stay, Shipping, Tax & Legal and Events group several tabs (shown as a row of options below)
   const TAB_GROUPS = [
@@ -2205,18 +2201,10 @@ export default function Home() {
           {/* Forms */}
           <div key={activeTab} role="tabpanel" className="p-5 sm:p-8 animate-[panelIn_250ms_ease-out]">
 
-            {/* Bike: no booking partner yet */}
-            {MICRO_RIDES[activeTab] && (
-              <div className="text-center py-10">
-                <p className="text-5xl mb-3" aria-hidden>{MICRO_RIDES[activeTab][0]}</p>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">{MICRO_RIDES[activeTab][1]}</h3>
-                <p className="text-gray-600 max-w-md mx-auto mb-5">{t('Booking bikes, e-bikes, mopeds and scooters on Lyrtrip opens soon. Need to get there now? Book a car or a motorcycle taxi.')}</p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  <button onClick={() => switchTab('car')} className="px-5 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover transition">{t('Book a car')}</button>
-                  <button onClick={() => switchTab('motorcycle')} className="px-5 py-2.5 bg-white text-gray-800 ring-1 ring-gray-200 rounded-xl font-semibold hover:ring-brand-300 transition">{t('Book a motorcycle taxi')}</button>
-                </div>
-              </div>
-            )}
+            {/* Bike, e-bike and moped rentals: quoted and booked by Lyrtrip with a local rental shop */}
+            {activeTab === 'bike' && <HelicopterPanel key="bike" service="bike" />}
+            {activeTab === 'ebike' && <HelicopterPanel key="ebike" service="ebike" />}
+            {activeTab === 'scooter' && <HelicopterPanel key="moped" service="moped" />}
 
             {/* Hotels */}
             {activeTab === 'hotels' && (
