@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { getPlacePredictions, getPlaceDetails } from "@/lib/PlacePrediction";
+import { getMyPlace, locationAllowed } from '@/lib/myPlace';
 
 interface Prediction {
   place_id: string;
@@ -19,17 +20,51 @@ interface LocationData {
 interface LocationPickerProps {
   onLocationSelect: (location: LocationData) => void;
   placeholder?: string;
+  /** Fill in the current place on load when the browser already allows location */
+  autoNearMe?: boolean;
+  /** 'city' for searches by area (stays), 'address' for pickups and drop-offs */
+  nearMeAs?: 'city' | 'address';
 }
 
-export default function LocationPicker({ 
-  onLocationSelect, 
-  placeholder = 'Select a location' 
+export default function LocationPicker({
+  onLocationSelect,
+  placeholder = 'Select a location',
+  autoNearMe = false,
+  nearMeAs = 'address',
 }: LocationPickerProps) {
   const [input, setInput] = useState('');
   const [suggestions, setSuggestions] = useState<Prediction[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [focused, setFocused] = useState(false);
+  const [locating, setLocating] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const onSelectRef = useRef(onLocationSelect);
+  useEffect(() => { onSelectRef.current = onLocationSelect; });
+
+  const fillMyLocation = async (quiet = false) => {
+    setLocating(true);
+    setError(null);
+    setSuggestions([]);
+    try {
+      const place = await getMyPlace();
+      const address = nearMeAs === 'city' ? place.city : place.address;
+      setInput(address);
+      onSelectRef.current({ lat: place.lat, lng: place.lng, address });
+    } catch (err) {
+      if (!quiet) setError((err as Error).message);
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!autoNearMe) return;
+    let live = true;
+    locationAllowed().then(ok => { if (ok && live) fillMyLocation(true); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoNearMe]);
 
   const handleInputChange = async (value: string) => {
     setInput(value);
@@ -37,17 +72,14 @@ export default function LocationPicker({
 
     if (!value.trim()) {
       setSuggestions([]);
-      console.log('Input empty');
       return;
     }
 
     setLoading(true);
-    console.log('Searching for:', value);
 
     try {
       const predictions = await getPlacePredictions(value);
       setSuggestions(predictions);
-      console.log('Suggestions set:', predictions.length);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Autocomplete error occurred';
       console.error('Autocomplete error:', err);
@@ -85,7 +117,9 @@ export default function LocationPicker({
         type="text"
         value={input}
         onChange={(e) => handleInputChange(e.target.value)}
-        placeholder={placeholder}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 200)}
+        placeholder={locating ? 'Finding your location…' : placeholder}
         className="w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border border-gray-200 rounded-xl shadow-sm transition-all duration-200 placeholder:text-gray-400 hover:border-brand-300 hover:bg-white focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100"
         autoComplete="off"
       />
@@ -98,6 +132,20 @@ export default function LocationPicker({
 
       {error && (
         <p className="text-red-600 text-sm mt-1">{error}</p>
+      )}
+
+      {focused && !input.trim() && suggestions.length === 0 && (
+        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl z-50">
+          <button
+            type="button"
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => { setFocused(false); fillMyLocation(); }}
+            className="w-full text-left px-4 py-3 hover:bg-brand-50 transition-colors focus:outline-none focus:bg-brand-50 rounded-lg"
+          >
+            <div className="font-semibold text-brand-700">📍 Use my current location</div>
+            <div className="text-sm text-gray-600">Show options near you</div>
+          </button>
+        </div>
       )}
 
       {suggestions.length > 0 && (

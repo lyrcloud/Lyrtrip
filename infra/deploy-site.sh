@@ -38,7 +38,7 @@ aws lambda publish-version --function-name $FUNCTION $R --description "before de
 
 echo "2/5 deploy API code from $(git rev-parse --short HEAD)"
 T=$(mktemp -d)
-for f in search.mjs rewards.mjs partner.mjs sso.mjs package.json package-lock.json i18n-strings.json; do git show "HEAD:infra/lambda/$f" > "$T/$f"; done
+for f in search.mjs rewards.mjs partner.mjs sso.mjs notify.mjs package.json package-lock.json i18n-strings.json; do git show "HEAD:infra/lambda/$f" > "$T/$f"; done
 (cd "$T" && npm ci --omit=dev --silent && zip -qr "$T.zip" .)
 aws lambda update-function-code --function-name $FUNCTION $R --zip-file "fileb://$T.zip" --query LastUpdateStatus --output text
 aws lambda wait function-updated-v2 --function-name $FUNCTION $R
@@ -63,6 +63,9 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       for (const k of ["LYRSHOP_PARTNER_KEY", "LYRSHOP_SHIP_MARKUP", "LYRSHOP_DELIVERY_MARKUP"]) if (process.env[k]) cur[k] = process.env[k];
       // Mobile sign-in: the Lyrtrip Twilio Verify service (the account itself comes from the lyrshop/twilio secret)
       if (process.env.TWILIO_VERIFY_SERVICE_SID) cur.TWILIO_VERIFY_SERVICE_SID = process.env.TWILIO_VERIFY_SERVICE_SID;
+      // Booking updates by text and push (notify.mjs): Twilio sender, Web Push keys, Firebase for the app,
+      // and the Duffel webhook secret for airline schedule changes
+      for (const k of ["SMS_ENABLED", "SMS_US_ENABLED", "TWILIO_SMS_FROM", "TWILIO_MESSAGING_SERVICE_SID", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "FCM_ENABLED", "DUFFEL_WEBHOOK_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
       // Dash courier delivery: Uber Direct
       for (const k of ["UBER_DIRECT_CUSTOMER_ID", "UBER_DIRECT_CLIENT_ID", "UBER_DIRECT_CLIENT_SECRET"]) if (process.env[k]) cur[k] = process.env[k];
       // Second courier provider: DoorDash Drive, used only when DOORDASH_ENABLED=true (never with sandbox keys)
@@ -118,7 +121,7 @@ aws lambda add-permission --function-name $FUNCTION $R --statement-id $RULE --ac
   --principal events.amazonaws.com --source-arn "$RULE_ARN" >/dev/null 2>&1 || echo "schedule permission exists"
 aws events put-targets --rule $RULE $R --targets "Id=$FUNCTION,Arn=$FUNCTION_ARN" --query FailedEntryCount --output text
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
-for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/delivery/{proxy+}" "POST /api/ride/{proxy+}" "POST /api/jobs" "POST /api/study" "POST /api/events" "POST /api/packages" "POST /api/helicopter" "POST /api/freight" "POST /api/legal" "POST /api/donations" "POST /api/client-error" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n" "POST /api/auth/phone/{proxy+}" "POST /api/auth/lyrshop" "POST /api/auth/handoff" "POST /api/partner/{proxy+}"; do
+for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/delivery/{proxy+}" "POST /api/ride/{proxy+}" "POST /api/jobs" "POST /api/study" "POST /api/events" "POST /api/packages" "POST /api/helicopter" "POST /api/freight" "POST /api/legal" "POST /api/donations" "POST /api/client-error" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n" "POST /api/auth/phone/{proxy+}" "POST /api/auth/lyrshop" "POST /api/auth/handoff" "POST /api/partner/{proxy+}" "POST /api/notify/{proxy+}"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then
     echo "exists: $ROUTE"
   else

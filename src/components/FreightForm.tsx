@@ -1,5 +1,6 @@
 'use client';
 
+import NearMeButton from '@/components/NearMeButton';
 import type { FreightCargo, FreightContact, FreightDraft, FreightOptions } from '@/lib/freight';
 
 const input = 'w-full px-3 py-2.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100';
@@ -28,7 +29,8 @@ export default function FreightForm({ draft, setDraft, opts }: { draft: FreightD
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label className={label}>{intl ? 'Collect from' : 'Pickup'} {req}</label>
-          <input className={input} value={draft.from} maxLength={200} onChange={e => set('from', e.target.value)} placeholder={intl ? 'Address, city or port (e.g. Shanghai port, China)' : 'Address and city'} /></div>
+          <input className={input} value={draft.from} maxLength={200} onChange={e => set('from', e.target.value)} placeholder={intl ? 'Address, city or port (e.g. Shanghai port, China)' : 'Address and city'} />
+          <NearMeButton onPick={v => set('from', v)} /></div>
         <div><label className={label}>{intl ? 'Deliver to' : 'Drop-off'} {req}</label>
           <input className={input} value={draft.to} maxLength={200} onChange={e => set('to', e.target.value)} placeholder={intl ? 'Address, city or port (e.g. Jebel Ali, Dubai)' : 'Address and city'} /></div>
         <div><label className={label}>Cargo ready on {req}</label><input className={input} type="date" min={today} value={draft.readyDate} onChange={e => set('readyDate', e.target.value)} /></div>

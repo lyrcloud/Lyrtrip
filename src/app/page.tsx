@@ -534,6 +534,7 @@ export default function Home() {
   const [applyEvent, setApplyEvent] = useState<TicketEvent | null>(null);
   const [bookTour, setBookTour] = useState<TourItem | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
+  const autoStaySearch = useRef(false);
   const [showLocationMap, setShowLocationMap] = useState(false);
   const [flightSearchError, setFlightSearchError] = useState<string | null>(null);
   const [priceInsights, setPriceInsights] = useState<PriceInsights | null>(null);
@@ -852,6 +853,7 @@ export default function Home() {
   };
 
   const switchTab = (tabId: string) => {
+    autoStaySearch.current = tabId === 'hotels';
     setActiveTab(tabId);
     setResults([]);
     setTrainResults([]);
@@ -864,6 +866,41 @@ export default function Home() {
     setUberPickup(null);
     setUberPickerKey(k => k + 1);
   };
+
+  // Tapping Stay with your location on shows places near you for tonight; typing a place searches there instead
+  useEffect(() => {
+    if (activeTab !== 'hotels' || !autoStaySearch.current || !formData.destination || hasSearched) return;
+    if (!formData.checkin || !formData.checkout) {
+      const day = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toLocaleDateString('en-CA'); };
+      setFormData(prev => ({ ...prev, checkin: prev.checkin || day(0), checkout: prev.checkout || day(1) }));
+      return;
+    }
+    autoStaySearch.current = false;
+    handleSearch('hotels');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, formData.destination, formData.checkin, formData.checkout]);
+
+  // Flights start from the nearest airport, and tours from the visitor's city, until they type another
+  const nearestAirportTried = useRef(false);
+  useEffect(() => {
+    if (locationLoading || locationError || nearestAirportTried.current) return;
+    nearestAirportTried.current = true;
+    const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+    fetch(`${baseUrl}/api/flight/places`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat: userLocation.lat, lng: userLocation.lng }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        const p = data.places?.[0];
+        if (p) setFormData(prev => (prev.from ? prev : { ...prev, from: `${p.name} (${p.code})` }));
+      })
+      .catch(() => {});
+  }, [userLocation, locationLoading, locationError]);
+  useEffect(() => {
+    if (uberCity) setTourForm(f => (f.origin ? f : { ...f, origin: uberCity }));
+  }, [uberCity]);
 
   // The side panel and bottom bar highlight the open tab and can switch it in place
   useEffect(() => {
@@ -2262,6 +2299,7 @@ export default function Home() {
                     <LocationPicker
                       onLocationSelect={(loc) => handleLocationSelect('destinationLocation', loc)}
                       placeholder={t('Where are you going?')}
+                      autoNearMe nearMeAs="city"
                     />
                   </div>
                   <div>

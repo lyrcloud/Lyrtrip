@@ -1,14 +1,14 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, sign as cryptoSign } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, sign as cryptoSign, timingSafeEqual } from 'node:crypto';
 import Stripe from 'stripe';
 import Anthropic from '@anthropic-ai/sdk';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { MongoClient, ObjectId } from 'mongodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
-import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import * as rw from './rewards.mjs';
 import { handlePartner, isPartnerRoute } from './partner.mjs';
 import { STATE_PATTERN, handoffKey, issueHandoff, readHandoff } from './sso.mjs';
+import { notifyCustomer, pushConfig, removePushSubscription, savePushSubscription, twilioAccount } from './notify.mjs';
 import {
   AdminCreateUserCommand,
   AdminDeleteUserCommand,
@@ -538,14 +538,10 @@ function normalizePhone(raw) {
   return /^\+[1-9]\d{7,14}$/.test(phone) ? phone : null;
 }
 
-let twilioCredentials;
-
 async function twilioVerify(path, form) {
-  twilioCredentials ??= JSON.parse((await new SecretsManagerClient({}).send(new GetSecretValueCommand({
-    SecretId: process.env.TWILIO_SECRET || 'lyrshop/twilio',
-  }))).SecretString);
-  const { account_sid: sid, auth_token: token } = twilioCredentials;
-  const service = process.env.TWILIO_VERIFY_SERVICE_SID || twilioCredentials.verify_service_sid;
+  const twilio = await twilioAccount();
+  const { account_sid: sid, auth_token: token } = twilio;
+  const service = process.env.TWILIO_VERIFY_SERVICE_SID || twilio.verify_service_sid;
   const res = await fetch(`https://verify.twilio.com/v2/Services/${service}/${path}`, {
     method: 'POST',
     headers: {
@@ -1412,6 +1408,22 @@ function publicCredits(c) {
   };
 }
 
+// Duffel gives local airport times ("2026-11-20T10:30:00") plus the airport's time zone
+function zonedToUtc(local, timeZone) {
+  const asUtc = Date.parse(`${local.slice(0, 19)}Z`);
+  if (!Number.isFinite(asUtc)) return null;
+  if (!timeZone) return new Date(asUtc).toISOString();
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      .formatToParts(asUtc).map(p => [p.type, p.value]));
+    const offset = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - asUtc;
+    return new Date(asUtc - offset).toISOString();
+  } catch {
+    return new Date(asUtc).toISOString();
+  }
+}
+
 function orderItinerary(duffelOrder) {
   const hhmm = t => (t ?? '').slice(11, 16);
   return (duffelOrder.slices ?? []).flatMap((slice, sliceIdx) => (slice.segments ?? []).map(seg => ({
@@ -1425,6 +1437,7 @@ function orderItinerary(duffelOrder) {
     toName:           seg.destination?.name ?? '',
     departureDate:    (seg.departing_at ?? '').slice(0, 10),
     departureTime:    hhmm(seg.departing_at),
+    departingAtUtc:   seg.departing_at ? zonedToUtc(seg.departing_at, seg.origin?.time_zone) : null,
     arrivalDate:      (seg.arriving_at ?? '').slice(0, 10),
     arrivalTime:      hhmm(seg.arriving_at),
     duration:         parseDuffelDuration(seg.duration) || null,
@@ -1652,10 +1665,144 @@ async function handleFlightConfirm(event) {
       console.error('SES email failed:', emailErr);
     }
   }
+  const first = receipt.itinerary[0];
+  await notifyBooking({
+    phone: order.passengers?.[0]?.phone, sub: order.userSub,
+    url: `${SITE_URL}/booking/success?session_id=${sessionId}&type=flight`,
+  }, paxEmail, `Flight booked: ${first ? `${first.flightNumber} ${first.from}→${first.to} on ${first.departureDate} at ${first.departureTime}` : 'your trip'}, booking ref ${receipt.pnr}`);
 
   return json(200, receipt);
 }
 
+
+// ---------------------------------------------------------------------------
+// Flight follow-ups: a check-in reminder (email, text, push) about 24 hours
+// before each direction departs, and alerts when the airline changes the
+// schedule (Duffel webhook, secret DUFFEL_WEBHOOK_SECRET). Boarding passes
+// come from the airline at check-in; Duffel doesn't issue them.
+// ---------------------------------------------------------------------------
+
+// Where each airline's online check-in starts (its home page has it); others get a web search
+const AIRLINE_SITES = {
+  AA: 'https://www.aa.com', DL: 'https://www.delta.com', UA: 'https://www.united.com', WN: 'https://www.southwest.com',
+  AS: 'https://www.alaskaair.com', B6: 'https://www.jetblue.com', NK: 'https://www.spirit.com', F9: 'https://www.flyfrontier.com',
+  AC: 'https://www.aircanada.com', WS: 'https://www.westjet.com', BA: 'https://www.britishairways.com', VS: 'https://www.virginatlantic.com',
+  LH: 'https://www.lufthansa.com', LX: 'https://www.swiss.com', OS: 'https://www.austrian.com', AF: 'https://www.airfrance.com',
+  KL: 'https://www.klm.com', IB: 'https://www.iberia.com', AZ: 'https://www.ita-airways.com', TP: 'https://www.flytap.com',
+  SK: 'https://www.flysas.com', AY: 'https://www.finnair.com', EI: 'https://www.aerlingus.com', FR: 'https://www.ryanair.com',
+  U2: 'https://www.easyjet.com', W6: 'https://wizzair.com', TK: 'https://www.turkishairlines.com', EK: 'https://www.emirates.com',
+  EY: 'https://www.etihad.com', QR: 'https://www.qatarairways.com', SV: 'https://www.saudia.com', GF: 'https://www.gulfair.com',
+  WY: 'https://www.omanair.com', FZ: 'https://www.flydubai.com', G9: 'https://www.airarabia.com', AI: 'https://www.airindia.com',
+  '6E': 'https://www.goindigo.in', SG: 'https://www.spicejet.com', IX: 'https://www.airindiaexpress.com', QP: 'https://www.akasaair.com',
+  UL: 'https://www.srilankan.com', SQ: 'https://www.singaporeair.com', TR: 'https://www.flyscoot.com', CX: 'https://www.cathaypacific.com',
+  MH: 'https://www.malaysiaairlines.com', AK: 'https://www.airasia.com', TG: 'https://www.thaiairways.com', GA: 'https://www.garuda-indonesia.com',
+  PR: 'https://www.philippineairlines.com', VN: 'https://www.vietnamairlines.com', JL: 'https://www.jal.co.jp/en/', NH: 'https://www.ana.co.jp/en/',
+  KE: 'https://www.koreanair.com', OZ: 'https://flyasiana.com', CA: 'https://www.airchina.com', MU: 'https://www.ceair.com',
+  CZ: 'https://www.csair.com', QF: 'https://www.qantas.com', VA: 'https://www.virginaustralia.com', NZ: 'https://www.airnewzealand.com',
+  ET: 'https://www.ethiopianairlines.com', KQ: 'https://www.kenya-airways.com', SA: 'https://www.flysaa.com', MS: 'https://www.egyptair.com',
+  AT: 'https://www.royalairmaroc.com', LA: 'https://www.latamairlines.com', AV: 'https://www.avianca.com', CM: 'https://www.copaair.com',
+  AM: 'https://aeromexico.com', Y4: 'https://www.volaris.com', G3: 'https://www.voegol.com.br', AD: 'https://www.voeazul.com.br',
+};
+const checkinUrl = (flightNumber, carrier) => AIRLINE_SITES[String(flightNumber ?? '').slice(0, 2).toUpperCase()]
+  ?? `https://www.google.com/search?q=${encodeURIComponent(`${carrier} online check-in`)}`;
+const CHECKIN_REMIND_HOURS = 24;
+
+const flightDeparts = seg => Date.parse(seg.departingAtUtc ?? `${seg.departureDate}T${seg.departureTime}:00Z`);
+
+async function sweepFlightReminders(db) {
+  const coll = db.collection('flight_bookings');
+  const now = Date.now();
+  const day = ms => new Date(ms).toISOString().slice(0, 10);
+  const rows = await coll.find({
+    status: 'confirmed', testBooking: { $ne: true },
+    itinerary: { $elemMatch: { departureDate: { $gte: day(now - 86400e3), $lte: day(now + 2 * 86400e3) } } },
+  }).limit(50).toArray();
+  for (const b of rows) {
+    for (const direction of ['Outbound', 'Return']) {
+      const seg = (b.itinerary ?? []).find(x => x.direction === direction);
+      if (!seg) continue;
+      const hours = (flightDeparts(seg) - now) / 3600e3;
+      if (!(hours > 1 && hours <= CHECKIN_REMIND_HOURS)) continue;
+      const claim = await coll.updateOne({ _id: b._id, checkinReminded: { $ne: direction } }, { $addToSet: { checkinReminded: direction } });
+      if (!claim.modifiedCount) continue;
+      const pax = b.passengers?.[0] ?? {};
+      const link = checkinUrl(seg.flightNumber, seg.carrier);
+      const flight = `${seg.flightNumber} ${seg.from}→${seg.to}`;
+      const subject = `Check in now: ${flight}, ${seg.departureDate} at ${seg.departureTime}`;
+      await sendEmail({
+        to: pax.email, notify: { phone: pax.phone, sub: b.userSub, url: link },
+        subject,
+        html: hotelEmailHtml('Online check-in is open', [
+          ['Flight', `${seg.carrier} ${flight}`], ['Departs', `${seg.departureDate} at ${seg.departureTime} (local time), ${seg.fromName}`],
+          ['Booking reference', b.pnr ?? '—'], ['Last name', (b.passengers ?? []).map(p => p.familyName).join(', ')],
+          ['Boarding pass', `Check in on the ${seg.carrier} website or app with your booking reference and last name. The airline then issues your boarding pass, which you can add to your phone's wallet.`],
+        ], { url: link, label: `Check in with ${seg.carrier}` }),
+        text: `Online check-in is open for ${seg.carrier} ${flight} on ${seg.departureDate} at ${seg.departureTime}. Booking reference ${b.pnr}. Check in: ${link}`,
+      });
+    }
+  }
+}
+
+const segKey = x => `${x.flightNumber}|${x.from}|${x.to}|${x.departureDate}T${x.departureTime}|${x.arrivalDate}T${x.arrivalTime}`;
+
+async function handleFlightWebhook(event) {
+  const secret = process.env.DUFFEL_WEBHOOK_SECRET;
+  if (!secret) return json(503, { error: 'Webhook not configured' });
+  const raw = event.isBase64Encoded ? Buffer.from(event.body ?? '', 'base64').toString('utf8') : String(event.body ?? '');
+  const header = Object.entries(event.headers ?? {}).find(([k]) => k.toLowerCase() === 'x-duffel-signature')?.[1] ?? '';
+  const parts = Object.fromEntries(header.split(',').map(p => p.split('=')));
+  const expected = createHmac('sha256', secret).update(`${parts.t}.${raw}`).digest('hex');
+  const given = Buffer.from(String(parts.v1 ?? ''), 'utf8');
+  if (!parts.t || given.length !== expected.length || !timingSafeEqual(given, Buffer.from(expected, 'utf8'))) {
+    return json(401, { error: 'Bad signature' });
+  }
+  const evt = JSON.parse(raw);
+  if (!['order.airline_initiated_change_detected', 'order.updated'].includes(evt.type)) return json(200, { ignored: evt.type });
+  const obj = evt.data?.object ?? {};
+  const duffelOrderId = obj.order_id ?? obj.id;
+  const db = await getDb();
+  const coll = db.collection('flight_bookings');
+  const b = duffelOrderId && await coll.findOne({ duffelOrderId });
+  if (!b) return json(200, { ignored: 'unknown order' });
+  // Duffel retries deliveries; each event is handled once
+  const claim = await coll.updateOne({ _id: b._id, webhookEvents: { $ne: evt.id } }, { $push: { webhookEvents: { $each: [evt.id], $slice: -50 } } });
+  if (!claim.modifiedCount) return json(200, { duplicate: true });
+
+  const order = (await duffelFetch(`/air/orders/${duffelOrderId}`)).data;
+  const itinerary = orderItinerary(order);
+  const changed = itinerary.map(segKey).join() !== (b.itinerary ?? []).map(segKey).join();
+  const pending = evt.type === 'order.airline_initiated_change_detected';
+  if (!changed && !pending) return json(200, { unchanged: true });
+
+  const now = new Date().toISOString();
+  const update = { $push: { scheduleChanges: { at: now, event: evt.type, before: b.itinerary ?? [] } }, $set: { updatedAt: now } };
+  if (changed) Object.assign(update.$set, { itinerary }, { checkinReminded: [] });
+  await coll.updateOne({ _id: b._id }, update);
+
+  const pax = b.passengers?.[0] ?? {};
+  const shown = changed ? itinerary : b.itinerary ?? [];
+  const rows = shown.map(x => [`${x.direction} ${x.flightNumber}`, `${x.from} ${x.departureDate} ${x.departureTime} → ${x.to} ${x.arrivalDate} ${x.arrivalTime}`]);
+  const subject = `Schedule change: your flight ${b.pnr ?? ''}`.trim();
+  await sendEmail({
+    to: pax.email, notify: { phone: pax.phone, sub: b.userSub, url: `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=flight` },
+    subject,
+    html: hotelEmailHtml('The airline changed your flight', [
+      ...rows,
+      ['What happens next', pending
+        ? 'The airline has proposed a new schedule. We are reviewing it and will contact you. If the new times don\'t work for you, reply to this email and we\'ll ask the airline for alternatives or a refund.'
+        : 'Your booking now shows the times above. If they don\'t work for you, reply to this email and we\'ll help.'],
+    ], { url: `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=flight`, label: 'View your booking' }),
+    text: `The airline changed your flight ${b.pnr}. ${rows.map(r => r.join(': ')).join('; ')}`,
+  });
+  await sendEmail({
+    to: bookingsAlertEmail(),
+    subject: `Airline schedule change: ${b.pnr} (${pending ? 'needs a decision in Duffel' : 'order updated'})`,
+    html: hotelEmailHtml('Airline-initiated schedule change', [['Booking', `${b.pnr} · Duffel ${duffelOrderId}`], ['Customer', `${pax.givenName ?? ''} ${pax.familyName ?? ''} · ${pax.email ?? ''} · ${pax.phone ?? ''}`], ...rows],
+      { url: `https://app.duffel.com/orders/${duffelOrderId}`, label: 'Open in Duffel' }),
+    text: `Schedule change on ${b.pnr} (Duffel ${duffelOrderId}).`,
+  });
+  return json(200, { notified: true });
+}
 
 // ---------------------------------------------------------------------------
 // Hotel booking requests — the guest pays Lyrtrip (hotel total + 12%), then
@@ -1706,7 +1853,10 @@ async function requireAdmin(idToken) {
   return { sub, email, role };
 }
 
-async function sendEmail({ to, subject, html, text }) {
+// A customer email can carry `notify: { phone, sub, url }`: the subject then also goes out as a
+// text to that phone and a push to the account's devices (see notify.mjs)
+async function sendEmail({ to, subject, html, text, notify }) {
+  if (notify) await notifyBooking(notify, to, subject);
   const from = process.env.SES_FROM_EMAIL;
   if (!from || !to || isPhoneLoginEmail(to)) return false;
   try {
@@ -1719,6 +1869,14 @@ async function sendEmail({ to, subject, html, text }) {
   } catch (err) {
     console.error('SES email failed:', to, err.message);
     return false;
+  }
+}
+
+async function notifyBooking(notify, email, title) {
+  try {
+    await notifyCustomer(await getDb(), { ...notify, email: isPhoneLoginEmail(email) ? '' : email, title });
+  } catch (err) {
+    console.error('Notify failed:', err.message);
   }
 }
 
@@ -1850,6 +2008,53 @@ function hotelReceipt(b) {
     declineReason:     b.declineReason ?? null,
     refunded:          !!b.refunded,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Notifications: devices that get push alerts, and the account's text/push switches.
+//   config       → { vapidPublicKey, fcm, sms } (no sign-in)
+//   subscribe    { kind: 'web', subscription } | { kind: 'fcm', token }
+//   unsubscribe  same body
+//   prefs        { sms?, push? } → { sms, push }
+// ---------------------------------------------------------------------------
+
+async function handleNotify(event, action) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  if (action === 'config') return json(200, pushConfig());
+  let user;
+  try {
+    user = await requireUser(body.idToken);
+  } catch {
+    return json(401, { error: 'Please sign in to manage notifications' });
+  }
+  const db = await getDb();
+  const kind = body.kind === 'fcm' ? 'fcm' : 'web';
+  const device = { kind, subscription: body.subscription, token: String(body.token ?? '').slice(0, 4096) };
+  if (kind === 'web' && !/^https:\/\/\S+$/.test(String(body.subscription?.endpoint ?? ''))) {
+    if (action === 'subscribe' || action === 'unsubscribe') return json(400, { error: 'Missing push subscription' });
+  }
+  switch (action) {
+    case 'subscribe':
+      await savePushSubscription(db, { ...device, user, userAgent: event.headers?.['user-agent'] });
+      return json(200, { ok: true });
+    case 'unsubscribe':
+      await removePushSubscription(db, device);
+      return json(200, { ok: true });
+    case 'prefs': {
+      const set = {};
+      for (const k of ['sms', 'push']) if (typeof body[k] === 'boolean') set[`notify.${k}`] = body[k];
+      const accounts = db.collection('accounts');
+      if (Object.keys(set).length) {
+        await rw.getAccount(db, user);
+        await accounts.updateOne({ _id: user.sub }, { $set: set });
+      }
+      const prefs = (await accounts.findOne({ _id: user.sub }, { projection: { notify: 1 } }))?.notify ?? {};
+      const devices = await db.collection('push_subscriptions').countDocuments({ sub: user.sub });
+      return json(200, { sms: prefs.sms !== false, push: prefs.push !== false, devices, phone: user.phone || null });
+    }
+    default:
+      return json(404, { error: 'Route not found' });
+  }
 }
 
 // The booking form asks for the exact price as soon as it opens, so Pay never meets a price change
@@ -2026,7 +2231,7 @@ async function handleHotelConfirm(event) {
     text: `New hotel request ${id}: ${fresh.hotel.name} ${fresh.checkin}→${fresh.checkout}. Manage at ${SITE_URL}/admin/hotels`,
   });
   await sendEmail({
-    to: fresh.guest.email,
+    to: fresh.guest.email, notify: { phone: fresh.guest.phone, sub: fresh.userSub, url: receiptUrl },
     subject: `We received your booking request — ${fresh.hotel.name}`,
     html: hotelEmailHtml('We’re booking your room', [
       ...details, ['What happens next', 'We are reserving your room directly with the hotel and will email your hotel confirmation number, usually within 24 hours. If the hotel can’t confirm, you’ll get a full refund.'],
@@ -2067,7 +2272,7 @@ async function handleHotelAdmin(event) {
     if (!b) return json(409, { error: 'This request is no longer awaiting confirmation' });
     await rw.earnRewards(await getDb(), coll, _id, `Hotel ${b.hotel.name.slice(0, 40)}`).catch(err => console.error('Rewards failed:', err));
     await sendEmail({
-      to: b.guest.email,
+      to: b.guest.email, notify: { phone: b.guest.phone, sub: b.userSub, url: `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=hotel` },
       subject: `Confirmed: ${b.hotel.name}, ${b.checkin} — confirmation ${conf}`,
       html: hotelEmailHtml('Your hotel is confirmed', [
         ['Hotel', b.hotel.name], ['Address', b.hotel.address || '—'], ['Hotel confirmation number', conf],
@@ -2100,7 +2305,7 @@ async function handleHotelAdmin(event) {
     if (!refunded) return json(500, { error: 'The refund failed, so the request was left open. Try again or refund it in Stripe.' });
     await rw.releaseCredits(await getDb(), coll, _id, `hotel request for ${b.hotel.name.slice(0, 40)} was declined`);
     await sendEmail({
-      to: b.guest.email,
+      to: b.guest.email, notify: { phone: b.guest.phone, sub: b.userSub, url: `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=hotel` },
       subject: `Refunded: we couldn't book ${b.hotel.name}`,
       html: hotelEmailHtml('We couldn’t book this room', [
         ['Hotel', b.hotel.name], ['Dates', `${b.checkin} → ${b.checkout}`], ['Reason', reason],
@@ -2256,6 +2461,16 @@ async function searchPlaces(query) {
   return places;
 }
 
+async function nearbyAirports(lat, lng) {
+  const data = await duffelFetch(`/places/suggestions?lat=${lat.toFixed(4)}&lng=${lng.toFixed(4)}&rad=150000`, { timeoutMs: 5000 });
+  const km = p => Math.hypot(p.latitude - lat, (p.longitude - lng) * Math.cos(lat * Math.PI / 180)) * 111;
+  return (data.data ?? [])
+    .filter(p => p.iata_code && p.type === 'airport' && Number.isFinite(p.latitude))
+    .sort((a, b) => km(a) - km(b))
+    .slice(0, 5)
+    .map(p => ({ code: p.iata_code, type: p.type, name: p.name, city: p.city_name ?? '', country: p.iata_country_code ?? '', km: Math.round(km(p)) }));
+}
+
 // "London (LON)", "lhr", "Heathrow", "Lagos" → IATA code, or null if nothing matches
 async function resolvePlace(input) {
   const trimmed = (input ?? '').trim();
@@ -2281,6 +2496,11 @@ async function handleFlightPlaces(event) {
   const query = String(body.query ?? '').slice(0, 100);
   if (!process.env.DUFFEL_API_KEY) return json(200, { places: [] });
   try {
+    // "Near me": airports within 150 km of the visitor, nearest first
+    const lat = Number(body.lat), lng = Number(body.lng);
+    if (!query && Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+      return json(200, { places: await nearbyAirports(lat, lng) });
+    }
     return json(200, { places: await searchPlaces(query) });
   } catch (err) {
     console.error('Duffel place search failed:', err.message);
@@ -3107,6 +3327,7 @@ export async function handler(event) {
       const db = await getDb();
       if (ridesEnabled()) await sweepRides(db);
       await sweepTracking(db).catch(err => console.error('Tracking sweep failed:', err.message));
+      await sweepFlightReminders(db).catch(err => console.error('Flight reminder sweep failed:', err.message));
       return { ok: true };
     }
     return await routeRequest(event);
@@ -3751,7 +3972,7 @@ async function handleAdmin(event) {
         } });
         if (status !== a.status || message) {
           await sendEmail({
-            to: a.applicant.email, subject: `${JOB_APP_STATUS[status]}: ${a.job.title}`,
+            to: a.applicant.email, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/jobs/profile` }, subject: `${JOB_APP_STATUS[status]}: ${a.job.title}`,
             html: jobAppEmail(JOB_APP_STATUS[status], [['Job', a.job.title], ['Location', a.job.location], ...(message ? [['Message from Lyrtrip', message]] : [])],
               `Reply to this email or see ${SITE_URL}/jobs/profile. Please keep all contact about this job through Lyrtrip.`),
             text: `${JOB_APP_STATUS[status]}: ${a.job.title}.${message ? `\n\n${message}` : ''}`,
@@ -4426,7 +4647,7 @@ async function handleShipConfirm(event) {
   const done = { ...order, ...confirmed };
   const label = result.documents.find(d => d.category === 'label')?.url;
   await sendEmail({
-    to: order.from.contact_email,
+    to: order.from.contact_email, notify: { phone: order.from.contact_phone, sub: order.userSub, url: `${SITE_URL}/booking/success?session_id=${order.stripeSessionId}&type=shipping` },
     subject: `Your shipping label: ${order.rate.courier} to ${order.to.city}`,
     html: hotelEmailHtml('Your shipping label is ready', [
       ['Courier', order.rate.courier], ['From', `${order.from.city}, ${order.from.country_alpha2}`], ['To', `${order.to.contact_name}, ${order.to.city}, ${order.to.country_alpha2}`],
@@ -4915,7 +5136,7 @@ async function finishDelivery(db, coll, order, session, result) {
   await rw.earnRewards(db, coll, _id, `Courier delivery to ${order.dropoff.label.split(',')[0]}`).catch(err => console.error('Rewards failed:', err));
   const done = { ...order, ...set };
   await sendEmail({
-    to: order.email,
+    to: order.email, notify: { phone: order.pickup.phone, sub: order.userSub, url: `${SITE_URL}/booking/success?session_id=${session.id}&type=delivery` },
     subject: `Your Lyrtrip courier is booked: ${order.item.description}`,
     html: hotelEmailHtml('Your courier is on the way', [
       ['Item', order.item.description], ['Pickup', `${order.pickup.name}, ${order.pickup.label}`], ['Drop-off', `${order.dropoff.name}, ${order.dropoff.label}`],
@@ -4954,10 +5175,13 @@ const COURIER_STEPS = {
   returned:        { subject: 'Returned to you', heading: 'Your item was returned', note: 'The courier couldn\'t complete the drop-off and brought it back. Reply to this email if you need help.' },
 };
 
-// Claims the step in trackingEmailed, then sends; a failed send gives the claim back for the next run
-async function sendTrackingStep(coll, b, step, mail) {
+// Claims the step in trackingEmailed, then sends; a failed email gives the claim back for the next run.
+// The text and push go once per step (trackingNotified), whether or not the email needs a retry.
+async function sendTrackingStep(coll, b, step, { notify, ...mail }) {
   const claim = await coll.updateOne({ _id: b._id, trackingEmailed: { $ne: step } }, { $addToSet: { trackingEmailed: step } });
   if (!claim.modifiedCount) return;
+  const first = await coll.updateOne({ _id: b._id, trackingNotified: { $ne: step } }, { $addToSet: { trackingNotified: step } });
+  if (first.modifiedCount) await notifyBooking(notify, mail.to, mail.subject);
   if (!(await sendEmail(mail))) await coll.updateOne({ _id: b._id }, { $pull: { trackingEmailed: step } });
 }
 
@@ -4986,7 +5210,7 @@ async function sweepTracking(db) {
     const numbers = result.tracking.map(t => t.number).join(', ');
     const trackUrl = result.trackingUrl ?? `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=shipping`;
     await sendTrackingStep(shipments, b, result.deliveryState, {
-      to: b.from.contact_email,
+      to: b.from.contact_email, notify: { phone: b.from.contact_phone, sub: b.userSub, url: trackUrl },
       subject: `${step.subject}: your ${b.rate.courier} parcel to ${b.to.city}`,
       html: hotelEmailHtml(step.heading, [
         ['Courier', b.rate.courier], ['To', `${b.to.contact_name}, ${b.to.city}, ${b.to.country_alpha2}`],
@@ -5009,7 +5233,7 @@ async function sweepTracking(db) {
     if (!step || !b.email) continue;
     const trackUrl = `${SITE_URL}/booking/success?session_id=${b.stripeSessionId}&type=delivery`;
     await sendTrackingStep(deliveries, b, fresh.uberStatus, {
-      to: b.email,
+      to: b.email, notify: { phone: b.pickup.phone, sub: b.userSub, url: trackUrl },
       subject: `${step.subject}: ${b.item.description}`,
       html: hotelEmailHtml(step.heading, [
         ['Item', b.item.description], ['Pickup', `${b.pickup.name}, ${b.pickup.label}`], ['Drop-off', `${b.dropoff.name}, ${b.dropoff.label}`],
@@ -5464,7 +5688,7 @@ async function handleRideConfirm(event) {
   const done = await refreshRide(coll, { ...order, ...set });
   const url = `${SITE_URL}/booking/success?session_id=${session.id}&type=ride`;
   await sendEmail({
-    to: order.email,
+    to: order.email, notify: { phone: order.guest?.phone, sub: order.userSub, url },
     subject: `Your Lyrtrip ride is booked: ${order.tier} to ${order.dropoff.label.split(',')[0]}`,
     html: hotelEmailHtml('Your ride is booked', [
       ['Ride', order.tier], ['Pickup', order.pickup.label], ['Destination', order.dropoff.label],
@@ -5955,7 +6179,7 @@ async function handleJobs(event) {
         await apps.replaceOne({ _id }, a, { upsert: true });
         await Promise.all([
           sendEmail({
-            to: p.email, subject: `Application received: ${job.title}`,
+            to: p.email, notify: { phone: p.phone, sub: me().sub, url: `${SITE_URL}/jobs/profile` }, subject: `Application received: ${job.title}`,
             html: jobAppEmail('We have your application', [['Job', job.title], ['Location', job.location]],
               `Lyrtrip reviews your application and sends it to the employer for you. Employers reply through Lyrtrip, and we email you any update. You can follow it at ${SITE_URL}/jobs/profile.`),
             text: `We received your application for ${job.title}. Lyrtrip sends it to the employer and emails you any update.`,
@@ -6370,7 +6594,7 @@ async function handleStudy(event) {
         const what = type === 'scholarship' ? 'scholarship application' : 'admission application';
         await Promise.all([
           sendEmail({
-            to: p.email, subject: `We have your ${what}: ${inst.name}`,
+            to: p.email, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/study/profile#applications` }, subject: `We have your ${what}: ${inst.name}`,
             html: jobAppEmail(`We have your ${what}`, [['Institution', inst.name], ['Program', program]],
               `Lyrtrip checks your documents, finds the institution's ${type} fee and emails you the amount to pay (the fee plus Lyrtrip's ${STUDY_SERVICE_RATE * 100}% service charge). Then we apply for you. Follow it at ${SITE_URL}/study/profile.`),
             text: `We received your ${what} for ${program} at ${inst.name}. We will email you the fee to pay, then apply for you.`,
@@ -6513,7 +6737,7 @@ async function studyAdmin(db, body) {
         }
         if (message) rows.push(['Message from Lyrtrip', message]);
         await sendEmail({
-          to: a.applicant.email, subject: `${STUDY_APP_STATUS[status]}: ${scrubJobContacts(a.institution.name)}`,
+          to: a.applicant.email, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/study/profile#applications` }, subject: `${STUDY_APP_STATUS[status]}: ${scrubJobContacts(a.institution.name)}`,
           html: jobAppEmail(STUDY_APP_STATUS[status], rows,
             `${status === 'fee_due' ? 'Pay at' : status === 'docs_needed' ? 'Upload the documents at' : 'See'} ${SITE_URL}/study/profile. Please keep all contact about this application through Lyrtrip.`),
           text: `${STUDY_APP_STATUS[status]}: ${a.program} at ${scrubJobContacts(a.institution.name)}.${message ? `\n\n${message}` : ''} See ${SITE_URL}/study/profile`,
@@ -6644,7 +6868,7 @@ async function handleEventTickets(event) {
         await reqs.insertOne(r);
         await Promise.all([
           sendEmail({
-            to: clean.contact.email, subject: `We have your ticket request: ${ev.name}`,
+            to: clean.contact.email, notify: { phone: clean.contact.phone, sub: r.sub, url: `${SITE_URL}/events/tickets` }, subject: `We have your ticket request: ${ev.name}`,
             html: jobAppEmail('We have your ticket request', eventRows(r),
               `Lyrtrip checks availability and emails you the price to pay: the ticket price plus our ${EVENT_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/events/tickets.`),
             text: `We received your request for ${r.attendees.length} ticket(s) to ${ev.name}. We will email you the price to pay. See ${SITE_URL}/events/tickets`,
@@ -6792,7 +7016,7 @@ async function eventTicketsAdmin(db, body) {
         const foot = status === 'quoted' ? `Pay within ${EVENT_QUOTE_HOURS} hours at ${SITE_URL}/events/tickets: ticket prices change and seats sell out.`
           : status === 'info_needed' ? `Update your request at ${SITE_URL}/events/tickets.` : `See ${SITE_URL}/events/tickets.`;
         await sendEmail({
-          to: r.contact.email, subject: `${EVENT_STATUS[status]}: ${scrubJobContacts(r.event.name)}`,
+          to: r.contact.email, notify: { phone: r.contact.phone, sub: r.sub, url: `${SITE_URL}/events/tickets` }, subject: `${EVENT_STATUS[status]}: ${scrubJobContacts(r.event.name)}`,
           html: jobAppEmail(EVENT_STATUS[status], rows, `${foot} Please keep all contact about these tickets through Lyrtrip.`),
           text: `${EVENT_STATUS[status]}: ${r.event.name}.${message ? `\n\n${message}` : ''} ${foot}`,
         });
@@ -7222,7 +7446,7 @@ async function handleTourRequests(event) {
         await reqs.insertOne(r);
         await Promise.all([
           sendEmail({
-            to: clean.contact.email, subject: `We have your request: ${spec.label}`,
+            to: clean.contact.email, notify: { phone: clean.contact.phone, sub: r.sub, url: `${SITE_URL}/tours/requests` }, subject: `We have your request: ${spec.label}`,
             html: jobAppEmail('We have your request', tourRows(r),
               `Lyrtrip checks availability and your documents, then emails you the price: the package plus our ${TOUR_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/tours/requests.`),
             text: `We received your ${spec.label} request. We will email you the price to pay. See ${SITE_URL}/tours/requests`,
@@ -7375,7 +7599,7 @@ async function tourRequestsAdmin(db, body) {
         const foot = status === 'quoted' ? `Pay within ${TOUR_QUOTE_HOURS} hours at ${SITE_URL}/tours/requests: prices and availability change.`
           : status === 'info_needed' ? `Update your request and upload documents at ${SITE_URL}/tours/requests.` : `See ${SITE_URL}/tours/requests.`;
         await sendEmail({
-          to: r.contact.email, subject: `${TOUR_STATUS[status]}: ${r.label}`,
+          to: r.contact.email, notify: { phone: r.contact.phone, sub: r.sub, url: `${SITE_URL}/tours/requests` }, subject: `${TOUR_STATUS[status]}: ${r.label}`,
           html: jobAppEmail(TOUR_STATUS[status], rows, `${foot} Please keep all contact about this booking through Lyrtrip.`),
           text: `${TOUR_STATUS[status]}: ${r.label}.${message ? `\n\n${message}` : ''} ${foot}`,
         });
@@ -7858,7 +8082,7 @@ async function handleHeliRequests(event) {
         await reqs.insertOne(r);
         await Promise.all([
           sendEmail({
-            to: clean.contact.email, subject: `We have your ${heliName(r)} request: ${heliRoute(r)}`,
+            to: clean.contact.email, notify: { phone: clean.contact.phone, sub: r.sub, url: `${SITE_URL}/helicopter/requests` }, subject: `We have your ${heliName(r)} request: ${heliRoute(r)}`,
             html: jobAppEmail(`We have your ${heliName(r)} request`, heliRows(r),
               `Lyrtrip finds ${heliService(r).rental ? 'a rental shop' : 'an operator'} and emails you the price: the ${heliService(r).rental ? 'rental' : 'charter'} plus our ${HELI_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/helicopter/requests.`),
             text: `We received your ${heliName(r)} request ${heliRoute(r)} on ${r.date}. We will email you the price to pay. See ${SITE_URL}/helicopter/requests`,
@@ -8003,7 +8227,7 @@ async function heliAdmin(db, body) {
         const foot = status === 'quoted' ? `Pay within ${HELI_QUOTE_HOURS} hours at ${SITE_URL}/helicopter/requests: ${heliService(r).rental ? 'rental shop' : 'operator'} prices and slots change.`
           : status === 'info_needed' ? `Update your request at ${SITE_URL}/helicopter/requests.` : `See ${SITE_URL}/helicopter/requests.`;
         await sendEmail({
-          to: r.contact.email, subject: `${HELI_STATUS[status]}: ${heliName(r)} ${heliRoute(r)}`,
+          to: r.contact.email, notify: { phone: r.contact.phone, sub: r.sub, url: `${SITE_URL}/helicopter/requests` }, subject: `${HELI_STATUS[status]}: ${heliName(r)} ${heliRoute(r)}`,
           html: jobAppEmail(HELI_STATUS[status], rows, `${foot} Please keep all contact about this ${heliService(r).rental ? 'rental' : 'charter'} through Lyrtrip.`),
           text: `${HELI_STATUS[status]}: ${heliName(r)} ${heliRoute(r)}.${message ? `\n\n${message}` : ''} ${foot}`,
         });
@@ -8191,7 +8415,7 @@ async function handleFreight(event) {
         await reqs.insertOne(r);
         await Promise.all([
           sendEmail({
-            to: clean.contact.email, subject: `We have your ${freightName(r)} request: ${freightRoute(r)}`,
+            to: clean.contact.email, notify: { phone: clean.contact.phone, sub: r.sub, url: `${SITE_URL}/freight/requests` }, subject: `We have your ${freightName(r)} request: ${freightRoute(r)}`,
             html: jobAppEmail(`We have your ${freightName(r)} request`, freightRows(r),
               `Lyrtrip finds a carrier and emails you the price: the freight plus our ${FREIGHT_SERVICE_RATE * 100}% service charge. Nothing is charged until you accept it. Follow it at ${SITE_URL}/freight/requests.`),
             text: `We received your ${freightName(r)} request ${freightRoute(r)}. We will email you the price to pay. See ${SITE_URL}/freight/requests`,
@@ -8336,7 +8560,7 @@ async function freightAdmin(db, body) {
         const foot = status === 'quoted' ? `Pay within ${FREIGHT_QUOTE_HOURS} hours at ${SITE_URL}/freight/requests: carrier rates and space change.`
           : status === 'info_needed' ? `Update your request at ${SITE_URL}/freight/requests.` : `See ${SITE_URL}/freight/requests.`;
         await sendEmail({
-          to: r.contact.email, subject: `${FREIGHT_STATUS[status]}: ${freightName(r)} ${freightRoute(r)}`,
+          to: r.contact.email, notify: { phone: r.contact.phone, sub: r.sub, url: `${SITE_URL}/freight/requests` }, subject: `${FREIGHT_STATUS[status]}: ${freightName(r)} ${freightRoute(r)}`,
           html: jobAppEmail(FREIGHT_STATUS[status], rows, `${foot} Please keep all contact about this shipment through Lyrtrip.`),
           text: `${FREIGHT_STATUS[status]}: ${freightName(r)} ${freightRoute(r)}.${message ? `\n\n${message}` : ''} ${foot}`,
         });
@@ -8522,7 +8746,7 @@ async function handleLegal(event) {
         await reqs.insertOne(r);
         await Promise.all([
           sendEmail({
-            to: clean.contact.email, subject: `We have your request: ${legalTitle(r)}`,
+            to: clean.contact.email, notify: { phone: clean.contact.phone, sub: r.sub, url: `${SITE_URL}/legal/requests` }, subject: `We have your request: ${legalTitle(r)}`,
             html: jobAppEmail('We have your request', legalRows(r),
               LEGAL_DIRECT.includes(r.service)
                 ? `Lyrtrip finds a licensed professional and emails you their fee, which you pay to them directly, and our ${LEGAL_SERVICE_RATE * 100}% booking fee. Nothing is charged until you accept it. Follow it at ${SITE_URL}/legal/requests.`
@@ -8672,7 +8896,7 @@ async function legalAdmin(db, body) {
         const foot = status === 'quoted' ? `Pay within ${LEGAL_QUOTE_HOURS} hours at ${SITE_URL}/legal/requests.`
           : status === 'info_needed' ? `Update your request at ${SITE_URL}/legal/requests.` : `See ${SITE_URL}/legal/requests.`;
         await sendEmail({
-          to: r.contact.email, subject: `${LEGAL_STATUS[status]}: ${legalTitle(r)}`,
+          to: r.contact.email, notify: { phone: r.contact.phone, sub: r.sub, url: `${SITE_URL}/legal/requests` }, subject: `${LEGAL_STATUS[status]}: ${legalTitle(r)}`,
           html: jobAppEmail(LEGAL_STATUS[status], rows, foot),
           text: `${LEGAL_STATUS[status]}: ${legalTitle(r)}.${message ? `\n\n${message}` : ''} ${foot}`,
         });
@@ -8731,6 +8955,9 @@ async function routeRequest(event) {
     if (path.endsWith('/api/flight/places')          && method === 'POST')         return handleFlightPlaces(event);
     if (path.endsWith('/api/flight/checkout')        && method === 'POST')         return handleFlightCheckout(event);
     if (path.endsWith('/api/flight/confirm')         && method === 'POST')         return handleFlightConfirm(event);
+    if (path.endsWith('/api/flight/webhook')         && method === 'POST')         return handleFlightWebhook(event);
+    const notifyMatch = path.match(/\/api\/notify\/(config|subscribe|unsubscribe|prefs)$/);
+    if (notifyMatch && method === 'POST') return handleNotify(event, notifyMatch[1]);
     if (path.endsWith('/api/hotel/quote')            && method === 'POST')         return handleHotelQuote(event);
     if (path.endsWith('/api/hotel/checkout')         && method === 'POST')         return handleHotelCheckout(event);
     if (path.endsWith('/api/hotel/confirm')          && method === 'POST')         return handleHotelConfirm(event);

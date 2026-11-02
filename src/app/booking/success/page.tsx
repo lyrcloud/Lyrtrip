@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { getBookings, updateBookingStatus } from '@/lib/bookings';
 import { rewardsCall, type BookingCredits } from '@/lib/rewards';
 import LocationMap from '@/components/LocationMap';
+import NotificationSettings from '@/components/NotificationSettings';
 
 interface FlightLeg {
   airline: string;
@@ -400,6 +401,7 @@ export default function BookingSuccessPage() {
     const car = r.vehicle && [r.vehicle.color, r.vehicle.make, r.vehicle.model].filter(Boolean).join(' ');
     return (
       <div className="flex-1 bg-gray-50 py-10 px-4">
+        <NotificationSettings compact className="max-w-2xl mx-auto mb-4" />
         <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden">
           <div className="px-8 py-6 border-b border-gray-200 flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -473,6 +475,7 @@ export default function BookingSuccessPage() {
       : d.status === 'returned' ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700';
     return (
       <div className="flex-1 bg-gray-50 py-10 px-4">
+        <NotificationSettings compact className="max-w-2xl mx-auto mb-4" />
         <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden">
           <div className="px-8 py-6 border-b border-gray-200 flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -531,6 +534,7 @@ export default function BookingSuccessPage() {
     }[sh.status] ?? [sh.status, 'bg-gray-100 text-gray-700', sh.message ?? ''];
     return (
       <div className="flex-1 bg-gray-50 py-10 px-4">
+        <NotificationSettings compact className="max-w-2xl mx-auto mb-4" />
         <div className="max-w-2xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden">
           <div className="px-8 py-6 border-b border-gray-200 flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -615,6 +619,7 @@ export default function BookingSuccessPage() {
           <button onClick={() => window.print()} className="px-5 py-2.5 bg-btn text-white font-semibold rounded-xl hover:bg-btn-hover transition">🖨 Print / Save as PDF</button>
           <Link href="/" className="px-5 py-2.5 border border-gray-300 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to search</Link>
         </div>
+        <NotificationSettings compact className="max-w-3xl mx-auto mb-4" />
 
         <article className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden print:shadow-none print:rounded-none">
           {flightConfirm.testBooking && (
@@ -787,6 +792,7 @@ export default function BookingSuccessPage() {
           <button onClick={() => window.print()} className="px-5 py-2.5 bg-btn text-white font-semibold rounded-xl hover:bg-btn-hover transition">🖨 Print / Save as PDF</button>
           <Link href="/" className="px-5 py-2.5 border border-gray-300 bg-white text-gray-700 font-medium rounded-xl hover:bg-gray-50 transition">Back to search</Link>
         </div>
+        <NotificationSettings compact className="max-w-3xl mx-auto mb-4" />
         <article className="max-w-3xl mx-auto bg-white rounded-2xl shadow-lg overflow-hidden print:shadow-none print:rounded-none">
           <header className="flex items-center justify-between gap-4 px-8 py-6 border-b-4 border-brand-600">
             <img src="/logo.png" alt="Lyrtrip" className="h-12 w-auto" />

@@ -1,5 +1,6 @@
 'use client';
 
+import NearMeButton from '@/components/NearMeButton';
 import { HELI_MEDICAL, HELI_RENTALS, NEW_PASSENGER, type HeliContact, type HeliDraft, type HeliMedical, type HeliOptions, type HeliPassenger } from '@/lib/helicopter';
 
 const input = 'w-full px-3 py-2.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100';
@@ -40,7 +41,8 @@ export default function HelicopterForm({ draft, setDraft, opts }: { draft: HeliD
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div><label className={label}>{rental ? 'Pick up at' : road && loop ? 'Event venue' : ambulance ? 'Patient is now at' : loop ? 'Take off from' : 'From'} {req}</label>
-          <input className={input} value={draft.from} maxLength={160} onChange={e => set('from', e.target.value)} placeholder={rental ? 'Hotel, address or city' : ambulance ? 'Hospital name and city' : draft.service === 'seaplane' ? 'Airport, jetty, resort or island' : 'Helipad, airport, city or address'} /></div>
+          <input className={input} value={draft.from} maxLength={160} onChange={e => set('from', e.target.value)} placeholder={rental ? 'Hotel, address or city' : ambulance ? 'Hospital name and city' : draft.service === 'seaplane' ? 'Airport, jetty, resort or island' : 'Helipad, airport, city or address'} />
+          <NearMeButton onPick={v => set('from', v)} /></div>
         <div><label className={label}>{rental ? 'Drop off at (if somewhere else)' : road && loop ? 'Event name (optional)' : ambulance ? 'Receiving hospital' : loop ? 'Fly over / route (optional)' : 'To'} {!loop && !rental && req}</label>
           <input className={input} value={draft.to} maxLength={160} onChange={e => set('to', e.target.value)} placeholder={rental ? 'Leave blank to return it where you picked it up' : ambulance ? 'Hospital name and city' : loop ? 'e.g. Grand Canyon, Manhattan skyline' : draft.service === 'seaplane' ? 'Resort, island or jetty' : 'Helipad, airport, city or address'} /></div>
       </div>

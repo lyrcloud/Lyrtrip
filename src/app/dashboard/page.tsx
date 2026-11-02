@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { getAdminRole, listTours } from '@/lib/api';
 import { rewardsCall } from '@/lib/rewards';
+import NotificationSettings from '@/components/NotificationSettings';
 import type { Tour } from '@/types/database';
 import { getBookings, cancelBooking, type Booking } from '@/lib/bookings';
 
@@ -376,6 +377,15 @@ export default function DashboardPage() {
               ) : (
                 <div className="h-28 rounded-xl bg-amber-50/60 animate-pulse" />
               )}
+            </div>
+
+            {/* Notifications */}
+            <div className={`${card} p-5 sm:p-6`}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="w-8 h-8 rounded-lg bg-brand-50 text-lg flex items-center justify-center">🔔</span>
+                <h2 className="text-lg font-semibold text-slate-900">Booking updates</h2>
+              </div>
+              <NotificationSettings />
             </div>
 
             {/* Courier */}
