@@ -113,6 +113,8 @@ interface SearchResult {
   currency?: string;
   priceLevel?: string;
   pricePerNight?: number;
+  totalRate?: number | null;   // hotels: whole stay incl. taxes & fees for the searched dates
+  essentialInfo?: string[];    // rentals: "Entire apartment", "Sleeps 4"…
   imageUrl?: string;
   link?: string;
   checkIn?: string;
@@ -186,6 +188,7 @@ interface HotelRequestDraft {
   hotel: SearchResult;
   checkin: string;
   checkout: string;
+  searched: string;  // the dates the search priced, "checkin|checkout"
 }
 
 // Lyrtrip's margin on the hotel total; the server re-prices and applies the same rate
@@ -567,6 +570,9 @@ export default function Home() {
   const [hotelForm, setHotelForm] = useState({ givenName: '', familyName: '', email: '', phone: '', adults: 1, roomPreference: '', specialRequests: '' });
   // Price the server quoted for a given dates/guests combination, when it differs from search
   const [hotelServerQuote, setHotelServerQuote] = useState<{ key: string; totalPrice: number } | null>(null);
+  const [hotelQuoting, setHotelQuoting] = useState(false);
+  // Shown in amber when the price moved between the form and Pay (not an error: Pay again continues)
+  const [hotelNotice, setHotelNotice] = useState<string | null>(null);
   // Coupon, gift card and points for whichever booking modal is open
   const [extras, setExtras] = useState<CheckoutExtrasValue>({ couponCode: '', giftCardCode: '', usePoints: false });
   const [extrasQuote, setExtrasQuote] = useState<RewardsQuote | null>(null);
@@ -1110,9 +1116,10 @@ export default function Home() {
   };
 
   const openHotelRequest = (hotel: SearchResult) => {
-    setHotelDraft({ hotel, checkin: formData.checkin, checkout: formData.checkout });
+    setHotelDraft({ hotel, checkin: formData.checkin, checkout: formData.checkout, searched: `${formData.checkin}|${formData.checkout}` });
     setHotelServerQuote(null);
     setHotelError(null);
+    setHotelNotice(null);
     if (user && !hotelForm.email) {
       const [givenName = '', ...rest] = (user.name ?? '').split(' ');
       setHotelForm(f => ({ ...f, email: user.email ?? '', givenName: f.givenName || givenName, familyName: f.familyName || rest.join(' ') }));
@@ -1124,10 +1131,41 @@ export default function Home() {
   // Total shown to the guest: the server's quote when it has re-priced these dates, else the search price
   const hotelShownTotal = (d: HotelRequestDraft): number | null => {
     if (hotelServerQuote?.key === hotelQuoteKey(d)) return hotelServerQuote.totalPrice;
+    if (d.hotel.totalRate && d.searched === `${d.checkin}|${d.checkout}`) {
+      return Math.ceil(Number((d.hotel.totalRate * HOTEL_MARKUP * 100).toFixed(6))) / 100;
+    }
     const nights = calcNights(d.checkin, d.checkout);
     if (!d.hotel.pricePerNight || nights < 1) return null;
     return Math.ceil(Number((d.hotel.pricePerNight * nights * HOTEL_MARKUP * 100).toFixed(6))) / 100;
   };
+
+  // Ask the server for the exact price whenever the form's dates or guests change
+  const hotelQuoteFor = hotelDraft && hotelDraft.checkin && hotelDraft.checkout > hotelDraft.checkin && hotelDraft.hotel.propertyToken
+    ? { propertyToken: hotelDraft.hotel.propertyToken, checkin: hotelDraft.checkin, checkout: hotelDraft.checkout, adults: hotelForm.adults }
+    : null;
+  const hotelQuoteReq = hotelQuoteFor ? JSON.stringify(hotelQuoteFor) : '';
+  useEffect(() => {
+    if (!hotelQuoteReq) return;
+    const req = JSON.parse(hotelQuoteReq) as { propertyToken: string; checkin: string; checkout: string; adults: number };
+    const ctrl = new AbortController();
+    const timer = setTimeout(async () => {
+      setHotelQuoting(true);
+      try {
+        const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
+        const res = await fetch(`${baseUrl}/api/hotel/quote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...req, destination: formData.destination || formData.destinationLocation?.address || '' }),
+          signal: ctrl.signal,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.totalPrice) setHotelServerQuote({ key: `${req.checkin}|${req.checkout}|${req.adults}`, totalPrice: data.totalPrice });
+      } catch { /* the checkout re-prices anyway */ }
+      if (!ctrl.signal.aborted) setHotelQuoting(false);
+    }, 400);
+    return () => { clearTimeout(timer); ctrl.abort(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hotelQuoteReq]);
 
   const submitHotelRequest = async () => {
     if (!hotelDraft) return;
@@ -1144,6 +1182,7 @@ export default function Home() {
     const quotedTotal = hotelShownTotal(hotelDraft);
     setHotelSubmitting(true);
     setHotelError(null);
+    setHotelNotice(null);
     try {
       const baseUrl = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
       const res = await fetch(`${baseUrl}/api/hotel/checkout`, {
@@ -1166,7 +1205,11 @@ export default function Home() {
       });
       const data = await res.json().catch(() => ({}));
       if (data.url) { window.location.href = data.url; return; }
-      if (data.priceChanged) setHotelServerQuote({ key: hotelQuoteKey(hotelDraft), totalPrice: data.totalPrice });
+      if (data.priceChanged) {
+        setHotelServerQuote({ key: hotelQuoteKey(hotelDraft), totalPrice: data.totalPrice });
+        setHotelNotice(data.error);
+        return;
+      }
       setHotelError(data.error ?? 'Could not start the booking. Please try again.');
     } catch {
       setHotelError('Could not connect to the booking service. Please try again.');
@@ -1296,6 +1339,7 @@ export default function Home() {
   const STAY_TYPES: [string, string, string][] = [
     ['hotels', '🏨', t('Hotels')], ['homestays', '🏡', t('Homestays')], ['resorts', '🏝️', t('Resorts')], ['hostels', '🛏️', t('Hostels & dorms')],
     ['apartments', '🏢', t('Apartments')], ['villas', '🏘️', t('Villas')], ['guesthouses', '🛖', t('Guesthouses')], ['bnb', '☕', t('B&Bs')],
+    ['rentals', '🏠', t('Vacation rentals')],
   ];
   const subPill = (active: boolean) => `inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold whitespace-nowrap transition ${
     active ? 'bg-btn text-white shadow-sm' : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700'}`;
@@ -1392,6 +1436,9 @@ export default function Home() {
                 )}
                 {result.description && (
                   <p className="text-sm text-gray-600 mt-1 line-clamp-2">{result.description}</p>
+                )}
+                {result.essentialInfo && result.essentialInfo.length > 0 && (
+                  <p className="text-xs font-medium text-gray-700 mt-1">{result.essentialInfo.slice(0, 4).join(' · ')}</p>
                 )}
                 {result.amenities && result.amenities.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-2">
@@ -2854,8 +2901,9 @@ export default function Home() {
           const input  = 'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500';
           const label  = 'block text-xs font-medium text-gray-600 mb-1';
           const setF   = (k: keyof typeof hotelForm, v: string | number) => { setHotelForm(f => ({ ...f, [k]: v })); setHotelError(null); };
-          const setDate = (k: 'checkin' | 'checkout', v: string) => { setHotelDraft(h => h && { ...h, [k]: v }); setHotelError(null); };
-          const close  = () => { setHotelDraft(null); setHotelError(null); };
+          const setDate = (k: 'checkin' | 'checkout', v: string) => { setHotelDraft(h => h && { ...h, [k]: v }); setHotelError(null); setHotelNotice(null); };
+          const close  = () => { setHotelDraft(null); setHotelError(null); setHotelNotice(null); };
+          const exact  = hotelServerQuote?.key === hotelQuoteKey(d);
           return (
             <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 px-4 py-6 overflow-y-auto">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 my-auto">
@@ -2890,7 +2938,7 @@ export default function Home() {
                       <div className="flex justify-between text-gray-600"><span>{nights === 1 ? t('Room, 1 night, incl. taxes & fees') : t('Room, {n} nights, incl. taxes & fees', { n: nights })}</span><span>{money(total - (fee ?? 0))}</span></div>
                       <div className="flex justify-between text-gray-600 mt-1"><span>{t('Lyrtrip service fee (12%)')}</span><span>{money(fee ?? 0)}</span></div>
                       <div className="flex justify-between font-bold text-gray-900 text-base mt-2 pt-2 border-t border-brand-100"><span>{t('Total')}</span><span className="text-end"><Price amount={total} /></span></div>
-                      {!hotelServerQuote && <p className="text-xs text-gray-500 mt-2">Estimated from today&apos;s rate; the exact price is checked before you pay.</p>}
+                      {!exact && <p className="text-xs text-gray-500 mt-2">{hotelQuoting ? t('Checking the exact price…') : t('Estimated from today’s rate; the exact price is checked before you pay.')}</p>}
                     </>
                   ) : (
                     <p className="text-gray-600">{t('Choose your dates to see the price.')}</p>
@@ -2954,6 +3002,9 @@ export default function Home() {
                   usually within 24 hours. If the hotel can&apos;t confirm, we refund you in full.
                 </p>
 
+                {hotelNotice && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-sm text-amber-800">{hotelNotice}</div>
+                )}
                 {hotelError && (
                   <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-700">{hotelError}</div>
                 )}

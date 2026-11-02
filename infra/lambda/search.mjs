@@ -810,10 +810,12 @@ const STAY_QUERY = {
 };
 
 async function searchHotelsSerpApi({ destination, checkin, checkout, guests, stayType }) {
+  // Vacation rentals: whole homes and apartments as Google lists them from Airbnb, Vrbo, Booking.com and others
+  const rentals = stayType === 'rentals';
   const kind = STAY_QUERY[stayType] ?? STAY_QUERY.hotels;
   const params = new URLSearchParams({
     engine:   'google_hotels',
-    q:        destination ? `${kind} in ${destination}` : kind,
+    q:        rentals ? destination || 'Vacation rentals' : destination ? `${kind} in ${destination}` : kind,
     currency: 'USD',
     gl:       'us',
     hl:       'en',
@@ -822,6 +824,7 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests, sta
   });
   if (checkin)  params.set('check_in_date',  checkin);
   if (checkout) params.set('check_out_date', checkout);
+  if (rentals)  params.set('vacation_rentals', 'true');
 
   const res = await fetch(`https://serpapi.com/search.json?${params}`);
   if (!res.ok) {
@@ -841,6 +844,8 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests, sta
     amenities:    p.amenities ?? [],
     price:        p.rate_per_night?.extracted_lowest,
     pricePerNight: p.rate_per_night?.extracted_lowest,
+    totalRate:    p.total_rate?.extracted_lowest ?? null, // whole stay incl. taxes & fees, what checkout charges against
+    essentialInfo: p.essential_info ?? [],                 // rentals: "Entire apartment", "Sleeps 4", "2 bedrooms"
     unit:         '/night',
     currency:     'USD',
     imageUrl:     p.images?.[0]?.thumbnail,
@@ -1845,6 +1850,24 @@ function hotelReceipt(b) {
     declineReason:     b.declineReason ?? null,
     refunded:          !!b.refunded,
   };
+}
+
+// The booking form asks for the exact price as soon as it opens, so Pay never meets a price change
+async function handleHotelQuote(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const s = v => String(v ?? '').trim();
+  const propertyToken = s(body.propertyToken), checkin = s(body.checkin), checkout = s(body.checkout);
+  const adults = Number(body.adults ?? 1);
+  if (!propertyToken || !/^\d{4}-\d{2}-\d{2}$/.test(checkin) || !/^\d{4}-\d{2}-\d{2}$/.test(checkout) || checkout <= checkin) {
+    return json(400, { error: 'Please choose valid check-in and check-out dates' });
+  }
+  if (!Number.isInteger(adults) || adults < 1 || adults > 4) return json(400, { error: 'Guests must be between 1 and 4' });
+  try {
+    const quote = await serpHotelQuote({ propertyToken, destination: s(body.destination), checkin, checkout, adults });
+    return json(200, { totalPrice: withMarkup(quote.hotelTotal, HOTEL_MARKUP), hotelTotal: quote.hotelTotal, nightly: quote.nightly, nights: quote.nights });
+  } catch (err) {
+    return json(502, { error: err.message });
+  }
 }
 
 async function handleHotelCheckout(event) {
@@ -8708,6 +8731,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/flight/places')          && method === 'POST')         return handleFlightPlaces(event);
     if (path.endsWith('/api/flight/checkout')        && method === 'POST')         return handleFlightCheckout(event);
     if (path.endsWith('/api/flight/confirm')         && method === 'POST')         return handleFlightConfirm(event);
+    if (path.endsWith('/api/hotel/quote')            && method === 'POST')         return handleHotelQuote(event);
     if (path.endsWith('/api/hotel/checkout')         && method === 'POST')         return handleHotelCheckout(event);
     if (path.endsWith('/api/hotel/confirm')          && method === 'POST')         return handleHotelConfirm(event);
     if (path.endsWith('/api/hotel/admin')            && method === 'POST')         return handleHotelAdmin(event);
