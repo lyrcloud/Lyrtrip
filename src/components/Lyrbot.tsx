@@ -11,6 +11,8 @@ const STORAGE_KEY = 'lyrbotChat';
 const WHATSAPP_URL = 'https://wa.me/16615809465';
 const WHATSAPP_LABEL = '+1 661 580 9465';
 const SUPPORT_EMAIL = 'support@lyrtrip.com';
+// Lyr Chat (Lyrsoft's messaging app): opens a conversation with the support team.
+const LYRCHAT_URL = 'https://lyrsoft.com/chat/#/new?to=support&site=Lyrtrip';
 
 type ChatMessage = { role: 'user' | 'assistant'; content: string };
 type Bubble = ChatMessage & { error?: boolean };
@@ -257,6 +259,7 @@ export default function Lyrbot() {
               <WhatsAppIcon /> WhatsApp {WHATSAPP_LABEL}
             </a>
             <a href={`mailto:${SUPPORT_EMAIL}`} className="font-semibold text-brand-700 hover:underline">{SUPPORT_EMAIL}</a>
+            <a href={LYRCHAT_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-100 font-semibold text-violet-700 hover:underline">💬 Lyr Chat</a>
           </div>
         </section>
       )}
