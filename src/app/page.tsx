@@ -27,6 +27,7 @@ import LegalPanel from '@/components/LegalPanel';
 import { onNavTabRequest, setNavTab } from '@/lib/navTab';
 import { ICON_MOTION, playIconMotion, type IconMotion } from '@/lib/iconMotion';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
+import { LYRPAY_ENABLED } from '@/lib/lyrpay';
 
 interface FlightLeg {
   airline: string;
@@ -1204,7 +1205,7 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hotelQuoteReq]);
 
-  const submitHotelRequest = async () => {
+  const submitHotelRequest = async (payWith?: 'lyrpay') => {
     if (!hotelDraft) return;
     const today = new Date().toISOString().slice(0, 10);
     const missing: string[] = [];
@@ -1238,6 +1239,7 @@ export default function Home() {
           ...extras,
           ref:             getReferral(),
           idToken:         await idTokenOrNull(),
+          ...(payWith && { payWith }),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -3050,13 +3052,22 @@ export default function Home() {
                 <div className="flex gap-3">
                   <button onClick={close} className="flex-1 py-2.5 border border-gray-300 rounded-xl text-gray-700 font-medium hover:bg-gray-50 transition">Cancel</button>
                   <button
-                    onClick={submitHotelRequest}
+                    onClick={() => submitHotelRequest()}
                     disabled={hotelSubmitting}
                     className="flex-1 py-2.5 bg-btn text-white rounded-xl font-semibold hover:bg-btn-hover disabled:bg-gray-300 transition"
                   >
                     {hotelSubmitting ? t('Checking price…') : total != null ? `${t('Pay {amount}', { amount: original(extrasQuote?.listedTotal === total ? extrasQuote.amountDue : total) })} →` : t('Continue')}
                   </button>
                 </div>
+                {LYRPAY_ENABLED && total != null && (
+                  <button
+                    onClick={() => submitHotelRequest('lyrpay')}
+                    disabled={hotelSubmitting}
+                    className="w-full mt-3 py-2.5 border border-gray-300 rounded-xl text-gray-800 font-semibold hover:bg-gray-50 disabled:opacity-60 transition"
+                  >
+                    {t('Pay with Lyrpay balance')}
+                  </button>
+                )}
               </div>
             </div>
           );

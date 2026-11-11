@@ -6,6 +6,7 @@ import { MongoClient, ObjectId } from 'mongodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import * as rw from './rewards.mjs';
+import * as lyrpay from './lyrpay.mjs';
 import { handlePartner, isPartnerRoute } from './partner.mjs';
 import { STATE_PATTERN, handoffKey, issueHandoff, readHandoff } from './sso.mjs';
 import { notifyCustomer, pushConfig, removePushSubscription, savePushSubscription, twilioAccount } from './notify.mjs';
@@ -1465,6 +1466,32 @@ async function stripePaymentDetails(stripe, session) {
   }
 }
 
+// A checkout's session: Stripe's, or a Lyrpay payment in Stripe's shape (lyrpay.mjs)
+const checkoutSession = (stripe, id) => (lyrpay.isLyrpay(id) ? lyrpay.session(id) : stripe.checkout.sessions.retrieve(id));
+const paymentDetails = (stripe, session) => (lyrpay.isLyrpay(session.id) ? lyrpay.paymentDetails(session) : stripePaymentDetails(stripe, session));
+// Refunds a paid booking where it was paid: Lyrpay (back to the balance) or Stripe (back to the card)
+const refundPayment = (stripe, paymentIntent) => (lyrpay.isLyrpay(paymentIntent)
+  ? lyrpay.refund(paymentIntent) : stripe.refunds.create({ payment_intent: paymentIntent }));
+
+// Opens Pay with Lyrpay for a booking saved as pending_stripe; on failure gives back what it held
+async function lyrpayCheckout(db, coll, _id, { amountCents, description, metadata, type }) {
+  if (!lyrpay.enabled()) {
+    await coll.updateOne({ _id }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
+    await rw.releaseCredits(db, coll, _id, 'Pay with Lyrpay is off');
+    return json(503, { error: 'Pay with Lyrpay is not available yet. Please pay by card.' });
+  }
+  let payment;
+  try {
+    payment = await lyrpay.createCheckout({ amountCents, description, reference: `${type}-${_id}`, metadata, siteUrl: SITE_URL, type });
+  } catch (err) {
+    await coll.updateOne({ _id }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
+    await rw.releaseCredits(db, coll, _id, 'checkout could not start');
+    return json(err.status && err.status < 500 ? 400 : 502, { error: err.message });
+  }
+  await coll.updateOne({ _id }, { $set: { stripeSessionId: payment.id, paidWith: 'lyrpay' } });
+  return { url: payment.url };
+}
+
 // Some airlines take longer than API Gateway's 30s to ticket. The Lambda runs for up to 120s and
 // keeps going after the gateway gives up; the receipt page polls until the order settles.
 const DUFFEL_ORDER_TIMEOUT_MS = 90_000;
@@ -2153,6 +2180,14 @@ async function handleHotelCheckout(event) {
   };
   await coll.insertOne(doc);
 
+  if (body.payWith === 'lyrpay') {
+    const opened = await lyrpayCheckout(db, coll, insertedId, {
+      amountCents: rw.cents(credits.amountDue), type: 'hotel', metadata: { type: 'hotel_request', hotelBookingId },
+      description: `${quote.name}, ${checkin} → ${checkout}, ${quote.nights} night${quote.nights !== 1 ? 's' : ''}`,
+    });
+    return opened.url ? json(200, { url: opened.url, hotelBookingId }) : opened;
+  }
+
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
   let session;
   try {
@@ -2185,6 +2220,22 @@ async function handleHotelCheckout(event) {
   return json(200, { url: session.url, hotelBookingId });
 }
 
+// Lyrpay says a payment was paid (signed with LYRPAY_WEBHOOK_SECRET): run the same confirm step the receipt page
+// does, so the booking goes ahead even if the guest closed the tab. Confirm steps are safe to repeat.
+async function handleLyrpayCallback(event) {
+  const raw = Buffer.from(event.body ?? '', event.isBase64Encoded ? 'base64' : 'utf8');
+  const headers = Object.fromEntries(Object.entries(event.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
+  const message = lyrpay.verify(raw, headers['lyrpay-signature']);
+  if (!message) return json(400, { error: 'Invalid signature' });
+  const payment = message.payment ?? {};
+  if (message.type !== 'payment.paid' || payment.status !== 'paid') return json(200, { received: true });
+  const confirm = { hotel_request: handleHotelConfirm, shipment: handleShipConfirm }[payment.metadata?.type];
+  if (!confirm) return json(200, { received: true, ignored: payment.metadata?.type ?? null });
+  const result = await confirm({ body: JSON.stringify({ sessionId: payment.id }) });
+  console.log('Lyrpay callback', payment.id, payment.metadata?.type, result.statusCode);
+  return json(200, { received: true });
+}
+
 // Called by the receipt page after Stripe; also how the guest re-opens their booking later
 async function handleHotelConfirm(event) {
   const body = typeof event.body === 'string' ? JSON.parse(event.body) : (event.body ?? {});
@@ -2194,7 +2245,7 @@ async function handleHotelConfirm(event) {
   const stripe = new Stripe(secretKey, { apiVersion: '2024-06-20' });
 
   let session;
-  try { session = await stripe.checkout.sessions.retrieve(body.sessionId); } catch { return json(400, { error: 'Invalid session ID' }); }
+  try { session = await checkoutSession(stripe, body.sessionId); } catch { return json(400, { error: 'Invalid session ID' }); }
   if (session.metadata?.type !== 'hotel_request') return json(400, { error: 'Not a hotel booking' });
   if (session.payment_status !== 'paid') return json(402, { error: 'Payment not completed' });
   const id = session.metadata.hotelBookingId;
@@ -2202,7 +2253,7 @@ async function handleHotelConfirm(event) {
 
   const coll = (await getDb()).collection('hotel_bookings');
   const _id = new ObjectId(id);
-  const payment = await stripePaymentDetails(stripe, session);
+  const payment = await paymentDetails(stripe, session);
   const claimed = await coll.findOneAndUpdate(
     { _id, status: 'pending_stripe', stripeSessionId: session.id },
     { $set: { status: 'requested', payment, paymentIntent: session.payment_intent, requestedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } },
@@ -2295,7 +2346,7 @@ async function handleHotelAdmin(event) {
     if (!b) return json(409, { error: 'This request is no longer awaiting confirmation' });
     let refunded = false;
     try {
-      await new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' }).refunds.create({ payment_intent: b.paymentIntent });
+      await refundPayment(new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' }), b.paymentIntent);
       refunded = true;
     } catch (err) {
       console.error('Hotel refund failed:', err.message);
@@ -2309,7 +2360,7 @@ async function handleHotelAdmin(event) {
       subject: `Refunded: we couldn't book ${b.hotel.name}`,
       html: hotelEmailHtml('We couldn’t book this room', [
         ['Hotel', b.hotel.name], ['Dates', `${b.checkin} → ${b.checkout}`], ['Reason', reason],
-        ['Refund', `${usd(b.credits?.amountDue ?? b.totalPrice)} refunded to your card (allow 5–10 business days)${b.credits?.giftCardCents || b.credits?.points ? '; gift card balance and points returned to your account' : ''}`],
+        ['Refund', `${usd(b.credits?.amountDue ?? b.totalPrice)} refunded ${lyrpay.isLyrpay(b.paymentIntent) ? 'to your Lyrpay balance (already there)' : 'to your card (allow 5–10 business days)'}${b.credits?.giftCardCents || b.credits?.points ? '; gift card balance and points returned to your account' : ''}`],
       ], { url: `${SITE_URL}/`, label: 'Search other hotels' }),
       text: `We couldn't book ${b.hotel.name}: ${reason}. ${usd(b.credits?.amountDue ?? b.totalPrice)} has been refunded.`,
     });
@@ -4058,7 +4109,11 @@ const HELD = { $or: [{ 'credits.points': { $gt: 0 } }, { 'credits.giftCardCents'
 // Ends an unpaid checkout and gives back its coupon, gift card and points. Returns true if it did.
 async function releaseUnpaid(db, type, booking, stripe) {
   const coll = db.collection(BOOKING_COLLECTION[type]);
-  if (booking.stripeSessionId && stripe) {
+  if (lyrpay.isLyrpay(booking.stripeSessionId)) {
+    // Lyrpay payments last 30 minutes; one still open or already paid is left alone
+    const session = await lyrpay.session(booking.stripeSessionId).catch(() => null);
+    if (session?.status !== 'expired') return false;
+  } else if (booking.stripeSessionId && stripe) {
     let session = await stripe.checkout.sessions.retrieve(booking.stripeSessionId).catch(() => null);
     if (session?.status === 'open') session = await stripe.checkout.sessions.expire(session.id).catch(() => null);
     if (session?.status !== 'expired') return false;  // paid (or Stripe unreachable): leave it to the confirm step
@@ -4496,6 +4551,14 @@ async function handleShipCheckout(event) {
     baseCost: rate.total_charge, totalPrice, currency: 'USD', credits, createdAt: now, updatedAt: now,
   });
 
+  if (body.payWith === 'lyrpay') {
+    const opened = await lyrpayCheckout(db, coll, _id, {
+      amountCents: rw.cents(credits.amountDue), type: 'shipping', metadata: { type: 'shipment', shipmentId: orderId },
+      description: `${pub.courier} label: ${origin.city} → ${destination.city}, ${parcel.total_actual_weight} kg`,
+    });
+    return opened.url ? json(200, { url: opened.url, orderId }) : opened;
+  }
+
   let session;
   try {
     session = await stripe.checkout.sessions.create({
@@ -4547,7 +4610,7 @@ async function handleShipConfirm(event) {
   const stripe = mainStripe();
   if (!stripe) return json(500, { error: 'Payments are not configured' });
   let session;
-  try { session = await stripe.checkout.sessions.retrieve(String(body.sessionId ?? '')); } catch { return json(400, { error: 'Invalid session ID' }); }
+  try { session = await checkoutSession(stripe, String(body.sessionId ?? '')); } catch { return json(400, { error: 'Invalid session ID' }); }
   if (session.metadata?.type !== 'shipment') return json(400, { error: 'Not a shipping payment' });
   if (session.payment_status !== 'paid') return json(402, { error: 'Payment not completed' });
   const id = session.metadata.shipmentId;
@@ -4575,20 +4638,20 @@ async function handleShipConfirm(event) {
     return json(200, shipmentReceipt(await freshDocuments(existing)));
   }
 
-  const payment = await stripePaymentDetails(stripe, session);
+  const payment = await paymentDetails(stripe, session);
   await coll.updateOne({ _id }, { $set: { payment } });
 
   const fail = async (reason, label = 'label_failed') => {
     console.error('Shipping label failed:', reason);
     let refunded = false;
     try {
-      await stripe.refunds.create({ payment_intent: session.payment_intent });
+      await refundPayment(stripe, session.payment_intent);
       refunded = true;
     } catch (err) {
-      console.error('Stripe refund failed:', err.message);
+      console.error('Refund failed:', err.message);
     }
     const customerMessage = refunded
-      ? `The courier couldn't create this label, so your payment has been refunded in full. Please try another courier. Order ID: ${id}`
+      ? `The courier couldn't create this label, so your payment has been refunded in full${lyrpay.isLyrpay(session.id) ? ' to your Lyrpay balance' : ''}. Please try another courier. Order ID: ${id}`
       : `The courier couldn't create this label. Please contact support@lyrtrip.com with order ID ${id} for a refund.`;
     await coll.updateOne({ _id }, { $set: { status: refunded ? 'refunded' : label, labelError: String(reason), customerMessage, updatedAt: new Date().toISOString() } });
     await rw.releaseCredits(db, coll, _id, `shipment ${id.slice(-8)} had no label`);
@@ -8960,6 +9023,7 @@ async function routeRequest(event) {
     const notifyMatch = path.match(/\/api\/notify\/(config|subscribe|unsubscribe|prefs)$/);
     if (notifyMatch && method === 'POST') return handleNotify(event, notifyMatch[1]);
     if (path.endsWith('/api/hotel/quote')            && method === 'POST')         return handleHotelQuote(event);
+    if (path.endsWith('/api/lyrpay/callback')        && method === 'POST')         return handleLyrpayCallback(event);
     if (path.endsWith('/api/hotel/checkout')         && method === 'POST')         return handleHotelCheckout(event);
     if (path.endsWith('/api/hotel/confirm')          && method === 'POST')         return handleHotelConfirm(event);
     if (path.endsWith('/api/hotel/admin')            && method === 'POST')         return handleHotelAdmin(event);

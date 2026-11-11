@@ -3,12 +3,13 @@
 import Link from 'next/link';
 import { useEffect } from 'react';
 import { rewardsCall } from '@/lib/rewards';
+import { checkoutIdFrom } from '@/lib/lyrpay';
 
 export default function BookingCancelPage() {
   // End the unpaid checkout so any coupon, gift card or points it held come back now
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const sessionId = params.get('session_id');
+    const sessionId = checkoutIdFrom(params);
     if (sessionId) rewardsCall({ action: 'release', sessionId, type: params.get('type') }).catch(() => {});
   }, []);
 
