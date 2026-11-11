@@ -7,12 +7,31 @@ import Navigation from "@/components/Navigation";
 import { BottomNav, SideNav } from "@/components/AppNav";
 import { AuthProvider } from "@/context/AuthContext";
 import { LocaleProvider } from "@/i18n/LocaleContext";
+import { SITE_URL } from "@/lib/site";
 
 const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
+const SITE_TITLE = "Lyrtrip – Book Flights, Hotels, Rides & Tours";
+const SITE_DESCRIPTION =
+  "Search and book flights, compare hotels, send parcels, get rides and book tours, charters and event tickets – all in one travel app, in your own currency.";
+
 export const metadata: Metadata = {
-  title: "Lyrtrip",
-  description: "Get in Lyrtrip",
+  metadataBase: new URL(SITE_URL),
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
+  openGraph: {
+    type: "website",
+    siteName: "Lyrtrip",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Lyrtrip – flights, hotels, rides, tours, shipping" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: ["/og-image.png"],
+  },
 };
 
 export default function RootLayout({
