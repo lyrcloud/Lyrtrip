@@ -6,6 +6,7 @@ import { getBookings, updateBookingStatus } from '@/lib/bookings';
 import { rewardsCall, type BookingCredits } from '@/lib/rewards';
 import LocationMap from '@/components/LocationMap';
 import NotificationSettings from '@/components/NotificationSettings';
+import { checkoutIdFrom } from '@/lib/lyrpay';
 
 interface FlightLeg {
   airline: string;
@@ -202,7 +203,7 @@ export default function BookingSuccessPage() {
 
   useEffect(() => {
     const params    = new URLSearchParams(window.location.search);
-    const sessionId = params.get('session_id');
+    const sessionId = checkoutIdFrom(params);
     const type      = params.get('type');
     const baseUrl   = (process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '');
 
@@ -390,7 +391,7 @@ export default function BookingSuccessPage() {
     const cancel = async () => {
       if (!confirm('Cancel this ride? The hold on your card will be released.')) return;
       setRideCancel('busy');
-      const sessionId = new URLSearchParams(window.location.search).get('session_id');
+      const sessionId = checkoutIdFrom(new URLSearchParams(window.location.search));
       const res = await fetch(`${(process.env.NEXT_PUBLIC_SEARCH_LAMBDA_URL ?? '').replace(/\/$/, '')}/api/ride/cancel`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }),
       }).catch(() => null);

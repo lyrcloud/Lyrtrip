@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import CheckoutExtras from '@/components/CheckoutExtras';
 import { getReferral, idTokenOrNull, type CheckoutExtrasValue, type RewardsQuote } from '@/lib/rewards';
+import { LYRPAY_ENABLED } from '@/lib/lyrpay';
 
 interface Address {
   name: string; company: string; phone: string; email: string;
@@ -85,7 +86,7 @@ export default function ShippingTab({ user }: { user: { email?: string; name?: s
     }
   };
 
-  const pay = async () => {
+  const pay = async (payWith?: 'lyrpay') => {
     if (!chosen) return;
     if (!agree) { setError('Please confirm the parcel has no prohibited items.'); return; }
     setLoading('pay');
@@ -96,7 +97,7 @@ export default function ShippingTab({ user }: { user: { email?: string; name?: s
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...payload(), courierServiceId: chosen.id, quotedTotal: chosen.price, agreeProhibited: agree,
-          ...extras, ref: getReferral(), idToken: await idTokenOrNull(),
+          ...extras, ref: getReferral(), idToken: await idTokenOrNull(), ...(payWith && { payWith }),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -232,10 +233,16 @@ export default function ShippingTab({ user }: { user: { email?: string; name?: s
             <span>The parcel has no prohibited or dangerous items (e.g. lithium batteries shipped loose, flammable liquids, weapons, cash, illegal goods), and the details above are true.</span>
           </label>
           <p className="text-xs text-gray-500">After payment you get the label to print and a tracking link by email. Hand the parcel to the courier or book a pickup.</p>
-          <button onClick={pay} disabled={loading !== null}
+          <button onClick={() => pay()} disabled={loading !== null}
             className="w-full py-3 rounded-xl bg-btn text-white font-semibold hover:bg-btn-hover disabled:opacity-60">
             {loading === 'pay' ? 'Opening checkout…' : `Pay $${(amountDue ?? chosen.price).toFixed(2)} →`}
           </button>
+          {LYRPAY_ENABLED && (
+            <button onClick={() => pay('lyrpay')} disabled={loading !== null}
+              className="w-full py-3 rounded-xl border border-gray-300 text-gray-800 font-semibold hover:bg-gray-50 disabled:opacity-60">
+              Pay with Lyrpay balance
+            </button>
+          )}
         </div>
       )}
     </div>
