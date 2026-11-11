@@ -34,11 +34,12 @@ async function call(method, path, body) {
 
 // Opens a payment for amountCents (USD). Lyrpay sends the guest back to returnUrl / cancelUrl with
 // ?lyrpay_payment=<id>&lyrpay_status=…, which the booking pages read as the session id.
-export async function createCheckout({ amountCents, description, reference, metadata, siteUrl, type }) {
+// email only fills in Lyrpay's sign-up form; any Lyr account may still pay
+export async function createCheckout({ amountCents, description, reference, metadata, siteUrl, type, email }) {
   const payment = await call('POST', '/payments', {
     amount: (amountCents / 100).toFixed(2), currency: 'USD', reference, description: String(description).slice(0, 140),
     returnUrl: `${siteUrl}/booking/success?type=${type}`, cancelUrl: `${siteUrl}/booking/cancel?type=${type}`,
-    expiresInMinutes: 30, metadata,
+    expiresInMinutes: 30, metadata, ...(/^\S+@\S+\.\S+$/.test(email || '') ? { email } : {}),
   });
   return { id: payment.id, url: payment.url };
 }

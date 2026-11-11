@@ -1474,7 +1474,7 @@ const refundPayment = (stripe, paymentIntent) => (lyrpay.isLyrpay(paymentIntent)
   ? lyrpay.refund(paymentIntent) : stripe.refunds.create({ payment_intent: paymentIntent }));
 
 // Opens Pay with Lyrpay for a booking saved as pending_stripe; on failure gives back what it held
-async function lyrpayCheckout(db, coll, _id, { amountCents, description, metadata, type }) {
+async function lyrpayCheckout(db, coll, _id, { amountCents, description, metadata, type, email }) {
   if (!lyrpay.enabled()) {
     await coll.updateOne({ _id }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
     await rw.releaseCredits(db, coll, _id, 'Pay with Lyrpay is off');
@@ -1482,7 +1482,7 @@ async function lyrpayCheckout(db, coll, _id, { amountCents, description, metadat
   }
   let payment;
   try {
-    payment = await lyrpay.createCheckout({ amountCents, description, reference: `${type}-${_id}`, metadata, siteUrl: SITE_URL, type });
+    payment = await lyrpay.createCheckout({ amountCents, description, reference: `${type}-${_id}`, metadata, siteUrl: SITE_URL, type, email });
   } catch (err) {
     await coll.updateOne({ _id }, { $set: { status: 'checkout_failed', updatedAt: new Date().toISOString() } });
     await rw.releaseCredits(db, coll, _id, 'checkout could not start');
@@ -2182,7 +2182,7 @@ async function handleHotelCheckout(event) {
 
   if (body.payWith === 'lyrpay') {
     const opened = await lyrpayCheckout(db, coll, insertedId, {
-      amountCents: rw.cents(credits.amountDue), type: 'hotel', metadata: { type: 'hotel_request', hotelBookingId },
+      amountCents: rw.cents(credits.amountDue), type: 'hotel', metadata: { type: 'hotel_request', hotelBookingId }, email: guest.email,
       description: `${quote.name}, ${checkin} → ${checkout}, ${quote.nights} night${quote.nights !== 1 ? 's' : ''}`,
     });
     return opened.url ? json(200, { url: opened.url, hotelBookingId }) : opened;
@@ -4553,7 +4553,7 @@ async function handleShipCheckout(event) {
 
   if (body.payWith === 'lyrpay') {
     const opened = await lyrpayCheckout(db, coll, _id, {
-      amountCents: rw.cents(credits.amountDue), type: 'shipping', metadata: { type: 'shipment', shipmentId: orderId },
+      amountCents: rw.cents(credits.amountDue), type: 'shipping', metadata: { type: 'shipment', shipmentId: orderId }, email: account?.email,
       description: `${pub.courier} label: ${origin.city} → ${destination.city}, ${parcel.total_actual_weight} kg`,
     });
     return opened.url ? json(200, { url: opened.url, orderId }) : opened;
