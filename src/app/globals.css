@@ -156,3 +156,29 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .lyrbot-toggle svg, .lyrbot-toggle .lyrbot-eye, .lyrbot-panel, .lyrbot-typing i { animation: none; }
 }
+
+/* Stay map price pills (StayMap.tsx), Airbnb-style */
+.stay-pin {
+  position: absolute; transform: translate(-50%, -50%); white-space: nowrap; cursor: pointer;
+  padding: 4px 10px; border-radius: 9999px; background: #fff; color: #111827; font: 700 13px/1.2 system-ui, sans-serif;
+  box-shadow: 0 1px 4px rgba(0,0,0,.28), 0 0 0 1px rgba(0,0,0,.06); transition: transform .15s ease, background .15s ease, color .15s ease;
+}
+.stay-pin:hover, .stay-pin-hover { transform: translate(-50%, -50%) scale(1.08); z-index: 2; }
+.stay-pin-active { background: #111827; color: #fff; transform: translate(-50%, -50%) scale(1.12); z-index: 3; }
+
+/* Admin console (src/app/admin/page.tsx): one look for every panel inside .admin-shell */
+.admin-shell { --admin-accent: #4f46e5; }
+.admin-shell input:not([type=checkbox]):not([type=radio]), .admin-shell select, .admin-shell textarea {
+  border-radius: .6rem; transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.admin-shell input:not([type=checkbox]):not([type=radio]):focus, .admin-shell select:focus, .admin-shell textarea:focus {
+  outline: none; border-color: var(--admin-accent); box-shadow: 0 0 0 3px rgb(79 70 229 / .15);
+}
+.admin-shell input[type=checkbox] { accent-color: var(--admin-accent); }
+.admin-shell .admin-panel > .divide-y > *, .admin-shell .admin-panel.divide-y > * { transition: background .15s ease; }
+.admin-shell .admin-panel.divide-y > *:hover { background: #fafafe; }
+.admin-shell button { transition: background .15s ease, color .15s ease, box-shadow .15s ease, transform .1s ease; }
+.admin-shell button:active:not(:disabled) { transform: scale(.98); }
+.admin-fade { animation: admin-fade .22s ease both; }
+@keyframes admin-fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .admin-fade { animation: none; } .admin-shell button:active:not(:disabled) { transform: none; } }

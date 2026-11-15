@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import StayMap, { type StayPin } from '@/components/StayMap';
+import FareCalendar from '@/components/FareCalendar';
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -116,6 +118,11 @@ interface SearchResult {
   pricePerNight?: number;
   totalRate?: number | null;   // hotels: whole stay incl. taxes & fees for the searched dates
   essentialInfo?: string[];    // rentals: "Entire apartment", "Sleeps 4"…
+  lat?: number | null;         // stays: for the map
+  lng?: number | null;
+  monthlyPrice?: number | null; // monthly rooms: the 30-night price
+  checkinDate?: string;        // monthly rooms: the move-in and move-out dates that price is for
+  checkoutDate?: string;
   imageUrl?: string;
   link?: string;
   checkIn?: string;
@@ -527,8 +534,34 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState('flights');
   // Stay tab: the kind of property to search for
   const [stayType, setStayType] = useState('hotels');
+  // Stay results: list with a map beside it (Airbnb-style), list only or map only; sorted cheapest first by default
+  const [stayView, setStayView] = useState<'split' | 'list' | 'map'>('split');
+  const [staySort, setStaySort] = useState<'price' | 'rating' | 'reviews'>('price');
+  const [selectedStay, setSelectedStay] = useState<string | null>(null);
+  const [hoverStay, setHoverStay] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
+  // Stay results in the chosen order, and their map pins (memoised so the map is not rebuilt on hover)
+  const stayPrice = useCallback((r: SearchResult) => (stayType === 'monthly' ? r.monthlyPrice ?? null : r.pricePerNight ?? null), [stayType]);
+  const sortedStays = useMemo(() => {
+    if (activeTab !== 'hotels') return results;
+    const list = results.filter(r => !r.demo);
+    const by: Record<typeof staySort, (a: SearchResult, b: SearchResult) => number> = {
+      price: (a, b) => (stayPrice(a) ?? Infinity) - (stayPrice(b) ?? Infinity),
+      rating: (a, b) => (b.rating ?? 0) - (a.rating ?? 0),
+      reviews: (a, b) => (b.reviewCount ?? 0) - (a.reviewCount ?? 0),
+    };
+    return [...list].sort(by[staySort]);
+  }, [results, staySort, stayPrice, activeTab]);
+  const cheapestStayId = useMemo(() => {
+    const priced = sortedStays.filter(r => stayPrice(r));
+    return priced.length ? priced.reduce((m, r) => (stayPrice(r)! < stayPrice(m)! ? r : m)).id : null;
+  }, [sortedStays, stayPrice]);
+  const stayPins = useMemo<StayPin[]>(() => sortedStays
+    .filter(r => r.lat != null && r.lng != null && stayPrice(r))
+    .map(r => ({ id: r.id, lat: r.lat!, lng: r.lng!, price: money(stayPrice(r)!), name: r.name, imageUrl: r.imageUrl })),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [sortedStays, stayPrice]);
   const [applyJob, setApplyJob] = useState<ApplyJob | null>(null);
   const [openJobs, setOpenJobs] = useState<Record<string, boolean>>({});
   const [applyStudy, setApplyStudy] = useState<ApplyStudy | null>(null);
@@ -936,6 +969,7 @@ export default function Home() {
       body: JSON.stringify({
         service:     'hotels',
         stayType,
+        cheapest:    true,
         destination: formData.destination || formData.destinationLocation?.address || '',
         destinationLocation: formData.destinationLocation
           ? { lat: formData.destinationLocation.lat, lng: formData.destinationLocation.lng }
@@ -1154,7 +1188,10 @@ export default function Home() {
   };
 
   const openHotelRequest = (hotel: SearchResult) => {
-    setHotelDraft({ hotel, checkin: formData.checkin, checkout: formData.checkout, searched: `${formData.checkin}|${formData.checkout}` });
+    // Monthly rooms are priced for the 30 nights the search used, so the request keeps those dates
+    const checkin = hotel.checkinDate ?? formData.checkin;
+    const checkout = hotel.checkoutDate ?? formData.checkout;
+    setHotelDraft({ hotel, checkin, checkout, searched: `${checkin}|${checkout}` });
     setHotelServerQuote(null);
     setHotelError(null);
     setHotelNotice(null);
@@ -1378,7 +1415,7 @@ export default function Home() {
   const STAY_TYPES: [string, string, string][] = [
     ['hotels', '🏨', t('Hotels')], ['homestays', '🏡', t('Homestays')], ['resorts', '🏝️', t('Resorts')], ['hostels', '🛏️', t('Hostels & dorms')],
     ['apartments', '🏢', t('Apartments')], ['villas', '🏘️', t('Villas')], ['guesthouses', '🛖', t('Guesthouses')], ['bnb', '☕', t('B&Bs')],
-    ['rentals', '🏠', t('Vacation rentals')],
+    ['rentals', '🏠', t('Vacation rentals')], ['monthly', '🗓️', t('Monthly rooms')],
   ];
   const subPill = (active: boolean) => `inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold whitespace-nowrap transition ${
     active ? 'bg-btn text-white shadow-sm' : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-brand-300 hover:text-brand-700'}`;
@@ -1442,23 +1479,57 @@ export default function Home() {
         />
       );
     }
+    const monthly = stayType === 'monthly';
+    const showMap = stayView !== 'list' && stayPins.length > 0;
+    const showList = stayView !== 'map' || stayPins.length === 0;
+    const pick = (id: string) => {
+      setSelectedStay(id);
+      document.getElementById(`stay-${id}`)?.scrollIntoView({ behavior: motionOk() ? 'smooth' : 'auto', block: 'nearest' });
+    };
+    const chip = (on: boolean) => `px-3 py-1.5 rounded-full text-sm font-semibold transition ${on ? 'bg-gray-900 text-white' : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:ring-gray-400'}`;
     return (
-      <div className="mt-6 space-y-4">
-        {results.map(result => (
-          <div key={result.id} className="flex bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition">
+      <div className="mt-6">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-gray-500">{sortedStays.length} {monthly ? t('monthly rooms') : t('stays')}</span>
+            {([['price', t('Cheapest first')], ['rating', t('Top rated')], ['reviews', t('Most reviewed')]] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setStaySort(k)} className={chip(staySort === k)}>{l}</button>
+            ))}
+          </div>
+          {stayPins.length > 0 && (
+            <div className="inline-flex rounded-full bg-gray-100 p-1 text-sm font-semibold">
+              {([['split', t('List + map')], ['list', t('List')], ['map', t('Map')]] as const).map(([k, l]) => (
+                <button key={k} onClick={() => setStayView(k)} className={`px-3 py-1 rounded-full transition ${stayView === k ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-800'} ${k === 'split' ? 'hidden lg:inline-block' : ''}`}>{l}</button>
+              ))}
+            </div>
+          )}
+        </div>
+        {monthly && sortedStays[0]?.checkinDate && (
+          <p className="mb-3 text-sm text-gray-600">{t('Prices are for 30 nights')}: {sortedStays[0].checkinDate} → {sortedStays[0].checkoutDate}. {t('Change the move-in date to see other months.')}</p>
+        )}
+        <div className={showMap && showList ? 'grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]' : ''}>
+        {showList && (
+        <div className={`space-y-4 ${showMap ? 'lg:max-h-[46rem] lg:overflow-y-auto lg:pr-1' : ''} ${showMap && stayView === 'split' ? '' : ''}`}>
+        {sortedStays.map(result => (
+          <div key={result.id} id={`stay-${result.id}`}
+            onMouseEnter={() => setHoverStay(result.id)} onMouseLeave={() => setHoverStay(null)} onClick={() => setSelectedStay(result.id)}
+            className={`relative flex bg-white rounded-xl border overflow-hidden hover:shadow-md transition cursor-pointer ${selectedStay === result.id ? 'border-gray-900 ring-2 ring-gray-900/10' : 'border-gray-200'}`}>
+            {cheapestStayId === result.id && (
+              <span className="absolute left-2 top-2 z-10 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white shadow">{t('Cheapest')}</span>
+            )}
             {result.imageUrl ? (
-              <img src={result.imageUrl} alt={result.name} className="w-44 h-36 object-cover shrink-0" />
+              <img src={result.imageUrl} alt={result.name} loading="lazy" className="w-36 sm:w-44 h-36 object-cover shrink-0" />
             ) : (
-              <div className="w-44 h-36 bg-gray-100 flex items-center justify-center shrink-0 text-4xl">🏨</div>
+              <div className="w-36 sm:w-44 h-36 bg-gray-100 flex items-center justify-center shrink-0 text-4xl">🏨</div>
             )}
             <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
               <div>
                 <div className="flex items-start justify-between gap-2">
                   <h3 className="font-bold text-gray-900 text-base leading-tight">{result.name}</h3>
-                  {result.pricePerNight != null && result.pricePerNight > 0 && (
+                  {stayPrice(result) != null && stayPrice(result)! > 0 && (
                     <div className="shrink-0 text-right">
-                      <p className="text-xl font-bold text-brand-700"><Price amount={result.pricePerNight} currency={result.currency ?? 'USD'} /></p>
-                      <p className="text-xs text-gray-500">{t('per night')}</p>
+                      <p className="text-xl font-bold text-brand-700"><Price amount={stayPrice(result)!} currency={result.currency ?? 'USD'} /></p>
+                      <p className="text-xs text-gray-500">{monthly ? t('per month') : t('per night')}</p>
                     </div>
                   )}
                 </div>
@@ -1493,7 +1564,7 @@ export default function Home() {
                   <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
                 ) : result.propertyToken && result.pricePerNight ? (
                 <button
-                  onClick={() => openHotelRequest(result)}
+                  onClick={e => { e.stopPropagation(); openHotelRequest(result); }}
                   className="ml-auto px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
                 >
                   {t('Book')}
@@ -1506,6 +1577,14 @@ export default function Home() {
             </div>
           </div>
         ))}
+        </div>
+        )}
+        {showMap && (
+          <div className="lg:sticky lg:top-4 self-start">
+            <StayMap pins={stayPins} selectedId={selectedStay} hoverId={hoverStay} onSelect={pick} height={stayView === 'map' ? 'h-[36rem]' : 'h-80 lg:h-[46rem]'} />
+          </div>
+        )}
+        </div>
       </div>
     );
   };
@@ -2308,16 +2387,20 @@ export default function Home() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Check-in</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">{stayType === 'monthly' ? t('Move-in date') : 'Check-in'}</label>
                     <input type="date" name="checkin" value={formData.checkin} onChange={handleInputChange} className={inputClass} />
                   </div>
+                  {stayType === 'monthly' ? (
+                    <div className="flex items-end"><p className="text-sm text-gray-600 pb-3">{t('Monthly rooms are priced for a 30-night stay, cheapest first.')}</p></div>
+                  ) : (
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Check-out</label>
                     <input type="date" name="checkout" value={formData.checkout} onChange={handleInputChange} className={inputClass} />
                   </div>
+                  )}
                   {searchBtn('hotels')}
                 </div>
-                <HotelList />
+                {HotelList()}
               </div>
             )}
 
@@ -2435,6 +2518,15 @@ export default function Home() {
 
                   {searchBtn('flights', false, true)}
                 </div>
+                {(() => {
+                  const span = formData.depart && formData.return ? Math.round((Date.parse(formData.return) - Date.parse(formData.depart)) / 864e5) : 7;
+                  const tripDays = span >= 1 && span <= 30 ? span : 7;
+                  return (
+                    <FareCalendar key={`${formData.from}|${formData.to}|${tripType}|${tripDays}`} from={formData.from} to={formData.to}
+                      round={tripType === 'round'} tripDays={tripDays} adults={formData.flightPassengers || 1} selected={formData.depart}
+                      onPick={(depart, ret) => setFormData(prev => ({ ...prev, depart, return: tripType === 'round' ? ret ?? prev.return : '' }))} />
+                  );
+                })()}
                 <FlightList />
               </div>
             )}

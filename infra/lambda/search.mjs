@@ -806,10 +806,40 @@ const STAY_QUERY = {
   villas: 'Villas', guesthouses: 'Guest houses', bnb: 'Bed and breakfasts',
 };
 
-async function searchHotelsSerpApi({ destination, checkin, checkout, guests, stayType }) {
-  // Vacation rentals: whole homes and apartments as Google lists them from Airbnb, Vrbo, Booking.com and others
-  const rentals = stayType === 'rentals';
+// SerpAPI answers cached in Mongo (serp_cache, TTL index on expiresAt): the plan's monthly searches are few,
+// and the same city or route is often looked up many times a day
+async function serpCached(key, ttlHours, fn) {
+  const id = createHash('sha256').update(key).digest('hex');
+  let coll = null;
+  try {
+    coll = (await getDb()).collection('serp_cache');
+    const hit = await coll.findOne({ _id: id });
+    if (hit && Date.parse(hit.expiresAt) > Date.now()) return hit.value;
+  } catch (err) {
+    console.error('serp_cache read failed:', err.message);
+  }
+  const value = await fn();
+  if (coll) {
+    coll.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }).catch(() => {});
+    await coll.updateOne({ _id: id }, { $set: { value, key: key.slice(0, 300), expiresAt: new Date(Date.now() + ttlHours * 3600e3) } }, { upsert: true })
+      .catch(err => console.error('serp_cache write failed:', err.message));
+  }
+  return value;
+}
+
+const isoDay = d => d.toISOString().slice(0, 10);
+const addDays = (day, n) => { const d = new Date(`${day}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return isoDay(d); };
+
+async function searchHotelsSerpApi({ destination, checkin, checkout, guests, stayType, cheapest }) {
+  // Vacation rentals: whole homes and apartments as Google lists them from Airbnb, Vrbo, Booking.com and others.
+  // Monthly: the same rentals priced for a 30-night stay, shown per month (rooms and flats to rent by the month)
+  const monthly = stayType === 'monthly';
+  const rentals = stayType === 'rentals' || monthly;
   const kind = STAY_QUERY[stayType] ?? STAY_QUERY.hotels;
+  if (monthly) {
+    checkin = checkin && checkin >= isoDay(new Date()) ? checkin : addDays(isoDay(new Date()), 14);
+    checkout = addDays(checkin, 30);
+  }
   const params = new URLSearchParams({
     engine:   'google_hotels',
     q:        rentals ? destination || 'Vacation rentals' : destination ? `${kind} in ${destination}` : kind,
@@ -822,15 +852,25 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests, sta
   if (checkin)  params.set('check_in_date',  checkin);
   if (checkout) params.set('check_out_date', checkout);
   if (rentals)  params.set('vacation_rentals', 'true');
+  // Cheapest first (Google Hotels sort_by=3: lowest price); rentals and monthly stays always start cheapest
+  if (cheapest || rentals) params.set('sort_by', '3');
 
-  const res = await fetch(`https://serpapi.com/search.json?${params}`);
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`SerpAPI error (${res.status}): ${err}`);
-  }
-  const data = await res.json();
+  const cacheKey = [...params.entries()].filter(([k]) => k !== 'api_key').map(([k, v]) => `${k}=${v}`).join('&');
+  const data = await serpCached(`hotels:${cacheKey}`, 6, async () => {
+    const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(25_000) });
+    if (!res.ok) throw new Error(`SerpAPI error (${res.status}): ${await res.text()}`);
+    const d = await res.json();
+    return { properties: d.properties ?? [] };
+  });
 
   return (data.properties ?? []).map((p, i) => ({
+    lat:          p.gps_coordinates?.latitude ?? null,
+    lng:          p.gps_coordinates?.longitude ?? null,
+    images:       (p.images ?? []).slice(0, 5).map(im => im.thumbnail).filter(Boolean),
+    ...(monthly ? {
+      monthlyPrice: p.total_rate?.extracted_lowest ?? (p.rate_per_night?.extracted_lowest ? Math.round(p.rate_per_night.extracted_lowest * 30) : null),
+      checkinDate: checkin, checkoutDate: checkout,
+    } : {}),
     id:           p.property_token ?? String(i),
     propertyToken: p.property_token ?? null,
     name:         p.name ?? 'Hotel',
@@ -843,7 +883,7 @@ async function searchHotelsSerpApi({ destination, checkin, checkout, guests, sta
     pricePerNight: p.rate_per_night?.extracted_lowest,
     totalRate:    p.total_rate?.extracted_lowest ?? null, // whole stay incl. taxes & fees, what checkout charges against
     essentialInfo: p.essential_info ?? [],                 // rentals: "Entire apartment", "Sleeps 4", "2 bedrooms"
-    unit:         '/night',
+    unit:         monthly ? '/month' : '/night',
     currency:     'USD',
     imageUrl:     p.images?.[0]?.thumbnail,
     checkIn:      p.check_in_time,
@@ -2490,6 +2530,57 @@ function resolveIata(input) {
   return (CITY_TO_IATA[lower] ?? trimmed).toUpperCase();
 }
 
+// The cheapest fare for every day of a date range, like Trip.com's low-price calendar: one SerpAPI
+// Google Flights Calendar search covers up to two months and is cached for 6 hours per route.
+// Prices include Lyrtrip's flight margin so they match what checkout charges as closely as possible.
+async function flightCode(v) {
+  const s = String(v ?? '').trim();
+  const m = s.match(/\(([A-Z]{3})\)\s*$/);
+  if (m) return m[1];
+  const r = resolveIata(s);
+  if (/^[A-Z]{3}$/.test(r ?? '')) return r;
+  if (s.length < 2) return null;
+  return (await searchPlaces(s).catch(() => []))[0]?.code ?? null;
+}
+
+async function handleFlightCalendar(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  if (!process.env.SERPAPI_KEY) return json(503, { error: 'The fare calendar is not available right now' });
+  const [from, to] = await Promise.all([flightCode(body.from), flightCode(body.to)]);
+  if (!from || !to) return json(400, { error: 'Choose where you fly from and to first' });
+  if (from === to) return json(400, { error: 'Pick two different airports' });
+  const today = isoDay(new Date());
+  const day = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null);
+  const start = day(body.start) && day(body.start) >= today ? day(body.start) : today;
+  const maxEnd = addDays(start, 62);
+  const end = day(body.end) && day(body.end) > start ? (day(body.end) < maxEnd ? day(body.end) : maxEnd) : addDays(start, 45);
+  const round = body.tripType === 'round';
+  const tripDays = Math.min(30, Math.max(1, Math.round(Number(body.tripDays) || 7)));
+  const adults = Math.min(9, Math.max(1, Math.round(Number(body.adults) || 1)));
+  const params = new URLSearchParams({
+    engine: 'google_flights_calendar', departure_id: from, arrival_id: to, currency: 'USD', hl: 'en', gl: 'us',
+    type: round ? '1' : '2', date_range_start: start, date_range_end: end, adults: String(adults),
+    ...(round ? { round_trip_days: String(tripDays) } : {}), api_key: process.env.SERPAPI_KEY,
+  });
+  const cacheKey = [...params.entries()].filter(([k]) => k !== 'api_key').map(([k, v]) => `${k}=${v}`).join('&');
+  try {
+    const data = await serpCached(`flightcal:${cacheKey}`, 6, async () => {
+      const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(25_000) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || d.error) throw new Error(d.error || `SerpAPI ${res.status}`);
+      return { prices: d.prices ?? [] };
+    });
+    const prices = (data.prices ?? []).filter(p => p.outbound_date && p.price > 0).map(p => ({
+      date: p.outbound_date, returnDate: p.return_date ?? null, price: Math.ceil(p.price * FLIGHT_MARKUP), low: !!p.low_price,
+    })).sort((a, b) => a.date.localeCompare(b.date));
+    const cheapest = prices.reduce((m, p) => (m && m.price <= p.price ? m : p), null);
+    return json(200, { from, to, round, tripDays, adults, start, end, currency: 'USD', prices, cheapest });
+  } catch (err) {
+    console.error('Flight calendar failed:', err.message);
+    return json(502, { error: /run out|limit|exceeded/i.test(err.message) ? 'The fare calendar has reached its search limit for now. Please try again later.' : 'Could not load fares for these dates. Please try again.' });
+  }
+}
+
 // Airport/city lookup by name via Duffel Places, cached per warm Lambda
 const placeCache = new Map();
 
@@ -3064,10 +3155,10 @@ async function handleSearch(event) {
 
     // --- Hotel: try SerpAPI ---
     if (service === 'hotels' && process.env.SERPAPI_KEY) {
-      const { destination, checkin, checkout, guests, stayType } = body;
+      const { destination, checkin, checkout, guests, stayType, cheapest } = body;
       if (destination) {
         try {
-          const results = await searchHotelsSerpApi({ destination, checkin, checkout, guests, stayType });
+          const results = await searchHotelsSerpApi({ destination, checkin, checkout, guests, stayType, cheapest: !!cheapest });
           if (results.length > 0) {
             return json(200, { success: true, service, results, total: results.length, source: 'serpapi' });
           }
@@ -9894,6 +9985,7 @@ async function routeRequest(event) {
     if (path.includes('/api/auth/phone/')            && method === 'POST')         return handlePhoneAuth(event, path.split('/').pop());
     if (path.endsWith('/api/stripe-checkout')        && method === 'POST')         return handleStripeCheckout(event);
     if (path.endsWith('/api/flight/places')          && method === 'POST')         return handleFlightPlaces(event);
+    if (path.endsWith('/api/flight/calendar')        && method === 'POST')         return handleFlightCalendar(event);
     if (path.endsWith('/api/flight/checkout')        && method === 'POST')         return handleFlightCheckout(event);
     if (path.endsWith('/api/flight/confirm')         && method === 'POST')         return handleFlightConfirm(event);
     if (path.endsWith('/api/flight/webhook')         && method === 'POST')         return handleFlightWebhook(event);

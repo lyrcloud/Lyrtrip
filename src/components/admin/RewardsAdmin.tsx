@@ -54,7 +54,7 @@ const input = 'w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:
 const smallBtn = 'px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50';
 const dangerBtn = 'px-2.5 py-1 rounded-md text-xs font-medium border border-red-200 bg-white text-red-700 hover:bg-red-50 disabled:opacity-50';
 const primary = 'px-3 py-2 rounded-lg text-sm font-medium bg-btn text-white hover:bg-btn-hover disabled:opacity-50';
-const panel = 'bg-white rounded-xl border border-gray-200';
+const panel = 'admin-panel bg-white rounded-2xl border border-gray-200/80 shadow-sm';
 const usd = (n: number) => `$${Number(n).toFixed(2)}`;
 const superOnly = <p className="text-xs text-gray-500">Only the super admin can make changes here.</p>;
 
