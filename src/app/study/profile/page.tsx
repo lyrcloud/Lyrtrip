@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import PageLoader from '@/components/PageLoader';
 import AppConversation from '@/components/AppConversation';
+import DigestToggle from '@/components/DigestToggle';
 import { PLAN_STYLE } from '@/lib/jobs';
 import {
   studyCall, uploadStudyDoc, STUDY_STATUS_STYLE,
@@ -429,6 +430,10 @@ export default function StudyProfilePage() {
         </div>
 
         <MyApplications reloadKey={appsKey} />
+        {view.profile?.id && (
+          <DigestToggle kind="study" initiallyOn={!(view.profile as { digest?: { unsubscribed?: boolean } }).digest?.unsubscribed}
+            save={on => studyCall({ action: 'digest.set', on })} />
+        )}
 
         {view.profile && (
           <div className="text-center">

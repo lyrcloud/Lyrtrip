@@ -62,6 +62,12 @@ test('study replies use study-<code> addresses and keep the institution name but
   assert.equal(K.sentStatus, 'applied');
 });
 
+test('distinctive words of the company name are hidden too, ordinary words are not', () => {
+  const out = j.scrubForApplicant('At Canopius, our team at Canopius Group grows. Global solutions matter.', 'Canopius Group Ltd');
+  assert.ok(!/canopius/i.test(out), out);
+  assert.match(out, /Global solutions matter/);
+});
+
 test('admissions addresses rank first in study listings', () => {
   assert.deepEqual(j.employerEmailsIn('Contact info@uni.edu or Admissions@uni.edu', []), ['admissions@uni.edu', 'info@uni.edu']);
 });

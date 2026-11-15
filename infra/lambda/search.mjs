@@ -2656,6 +2656,14 @@ function scrubJobContacts(text, note = JOB_CONTACT_NOTE) {
     .trim();
 }
 const BOOK_NOTE = '[book via Lyrtrip]';
+// Words in company names that are ordinary English or legal forms, never hidden on their own
+const JOB_COMPANY_GENERIC = new Set(['group', 'limited', 'company', 'corporation', 'corp', 'incorporated', 'holdings', 'services', 'service', 'solutions',
+  'technologies', 'technology', 'systems', 'international', 'global', 'consulting', 'partners', 'associates', 'industries', 'management', 'health',
+  'healthcare', 'financial', 'bank', 'capital', 'insurance', 'university', 'college', 'school', 'hospital', 'care', 'staffing', 'recruitment',
+  'agency', 'labs', 'digital', 'software', 'data', 'energy', 'media', 'network', 'networks', 'trust', 'foundation', 'national', 'american',
+  'america', 'united', 'states', 'county', 'city', 'state', 'department', 'enterprises', 'ventures', 'works', 'world', 'resources', 'design',
+  'medical', 'center', 'centre', 'clinic', 'logistics', 'marketing', 'security', 'construction', 'engineering', 'retail', 'store', 'stores',
+  'food', 'foods', 'home', 'homes', 'office', 'public', 'general', 'first', 'best', 'team', 'people', 'talent', 'jobs', 'careers', 'with', 'from', 'that', 'this']);
 // Job results also never name the employer: their name in the text becomes "the employer"
 function scrubJob(text, company) {
   let out = scrubJobContacts(text);
@@ -2663,6 +2671,10 @@ function scrubJob(text, company) {
   if (name.length >= 2) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     out = out.replace(new RegExp(`(?<![\\w])${esc}(?![\\w])`, 'gi'), 'the employer');
+    // Listings often name the company differently ("Canopius" for "Canopius Group Ltd"): its distinctive words go too
+    for (const word of name.split(/[\s,.&()/-]+/).filter(w => w.length >= 4 && !JOB_COMPANY_GENERIC.has(w.toLowerCase()))) {
+      out = out.replace(new RegExp(`(?<![\\w])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:'s)?(?![\\w])`, 'gi'), 'the employer');
+    }
   }
   return out;
 }
@@ -3396,6 +3408,7 @@ export async function handler(event) {
       if (ridesEnabled()) await sweepRides(db);
       await sweepTracking(db).catch(err => console.error('Tracking sweep failed:', err.message));
       await sweepFlightReminders(db).catch(err => console.error('Flight reminder sweep failed:', err.message));
+      await sweepMatchDigests(db).catch(err => console.error('Match digest sweep failed:', err.message));
       return { ok: true };
     }
     return await routeRequest(event);
@@ -6230,6 +6243,168 @@ async function welcomeProfile(coll, p, kind, fallbackEmail) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Weekly matches: people with a job or student profile get an email of good-fit jobs, or admissions and
+// scholarships, found with the same searches as the site. Each item links to /jobs/match or /study/match,
+// where they apply through Lyrtrip. The 5-minute sweep handles a few profiles at a time (digest.nextAt),
+// so SerpAPI use stays small; every email has an unsubscribe link (one click, also as List-Unsubscribe).
+// ---------------------------------------------------------------------------
+const DIGEST = { everyDays: 7, nudgeDays: 30, perSweep: 3, maxItems: 6 };
+const digestUnsubLink = (kind, id) => `${PUBLIC_API_URL()}/api/digest/unsubscribe?t=${sealJob({ digestUnsub: true, kind, id: String(id) })}`;
+const inDays = d => new Date(Date.now() + d * 864e5).toISOString();
+
+function jobMatchQuery(p) {
+  const role = p.desiredRoles?.[0] || (p.headline ?? '').split(/[-–,|]/)[0].trim() || (p.skills ?? []).slice(0, 2).join(' ');
+  return { role: role.slice(0, 80), location: [p.city, p.country].filter(Boolean).join(', ') };
+}
+function studyMatchQuery(p) {
+  const subject = [p.studyLevel, p.fieldsOfStudy?.[0]].filter(Boolean).join(' ');
+  return { subject, location: p.preferredCountries?.[0] || p.countryOfResidence || '' };
+}
+
+// Google Jobs rejects some free-text locations: try it as a location first, then as part of the query
+async function findJobMatches(q) {
+  try {
+    return await searchJobsSerpApi({ title: q.role, location: q.location, datePosted: 'week' });
+  } catch (err) {
+    console.log('Job match search retry without location:', err.message.slice(0, 120));
+    return searchJobsSerpApi({ title: `${q.role}${q.location ? ` in ${q.location}` : ''}`, datePosted: 'week' });
+  }
+}
+
+const digestCard = (title, lines, url, button) => `<table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 12px;border:1px solid #e5e7eb;border-radius:10px"><tr><td style="padding:14px 16px">
+  <p style="margin:0 0 4px;font-size:15px;font-weight:bold;color:#111827">${esc(title)}</p>
+  ${lines.filter(Boolean).map(l => `<p style="margin:0 0 4px;font-size:13px;color:#4b5563">${esc(l)}</p>`).join('')}
+  <p style="margin:8px 0 0"><a href="${esc(url)}" style="color:#4f46e5;font-weight:bold;font-size:13px;text-decoration:none">${esc(button)} →</a></p>
+</td></tr></table>`;
+const digestFooter = unsub => `<p style="margin:20px 0 0;font-size:11px;color:#9ca3af">You get this weekly because you have a profile on Lyrtrip. <a href="${esc(unsub)}" style="color:#9ca3af">Unsubscribe from these emails</a>.</p>`;
+
+// Tests and local previews read the last email here; dryRun builds it without sending
+const digestPreview = { last: null, dryRun: false };
+async function sendDigestEmail(to, subject, title, intro, cards, cta, unsub) {
+  const from = process.env.SES_FROM_EMAIL || (digestPreview.dryRun ? 'preview@lyrtrip.com' : '');
+  if (!from || !to || isPhoneLoginEmail(to)) return false;
+  const html = emailFrame(title, `<p style="margin:0 0 16px;font-size:15px;line-height:1.5;color:#1f2937">${esc(intro)}</p>${cards.map(c => c.html).join('')}${digestFooter(unsub)}`, cta);
+  const text = `${intro}\n\n${cards.map(c => c.text).join('\n\n')}\n\n${cta.label}: ${cta.url}\n\nUnsubscribe: ${unsub}`;
+  digestPreview.last = { to, subject, html, text };
+  if (digestPreview.dryRun) return false;
+  return !!(await sendRawEmail({
+    from: mimeName('Lyrtrip', from), to, subject, html, text,
+    headers: { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },
+  }));
+}
+
+async function jobDigest(db, p) {
+  const unsub = digestUnsubLink('jobs', p._id);
+  const q = jobMatchQuery(p);
+  const name = p.firstName ? `${p.firstName}, ` : '';
+  if (!q.role) {
+    const sent = await sendDigestEmail(p.email, 'Get job matches from Lyrtrip', 'Tell us what job you want',
+      `${name}add the roles you want, your city and a headline to your Lyrtrip job profile, and every week we email you good-fit jobs you can apply for through Lyrtrip in one click.`,
+      [], { url: `${SITE_URL}/jobs/profile`, label: 'Complete my job profile' }, unsub);
+    return { nextAt: inDays(DIGEST.nudgeDays), sent, kind: 'nudge' };
+  }
+  const seen = new Set(p.digest?.sentIds ?? []);
+  const applied = new Set((await db.collection('job_applications').find({ sub: p._id }, { projection: { _id: 1 } }).toArray()).map(a => a._id));
+  const results = (await findJobMatches(q)).filter(r => {
+    if (seen.has(r.id)) return false;
+    const job = openJob(r.applyToken);
+    return job && !applied.has(jobAppId(p._id, job));
+  }).slice(0, DIGEST.maxItems);
+  if (!results.length) return { nextAt: inDays(DIGEST.everyDays), sent: false, kind: 'none' };
+  const cards = results.map(r => {
+    const url = `${SITE_URL}/jobs/match?t=${r.applyToken}`;
+    // Some listings carry escaped newlines and mis-encoded pound signs ("Â£")
+    const desc = (r.description ?? '').replace(/\\n/g, ' ').replace(/Â(?=[£€©®°±])/g, '')
+      .replace(/^\s*(job description|about the (job|role)|description|overview)\s*:?\s*/i, '').replace(/\s+/g, ' ').trim();
+    const lines = [[r.jobLocation, r.jobType, r.salary].filter(Boolean).join(' · '), r.postedAt ? `Posted ${r.postedAt}` : '', desc.slice(0, 180) + (desc.length > 180 ? '…' : '')];
+    return { id: r.id, html: digestCard(r.name, lines, url, 'View and apply'), text: `${r.name}\n${lines.filter(Boolean).join('\n')}\n${url}` };
+  });
+  const sent = await sendDigestEmail(p.email, `${results.length} new ${q.role} jobs for you`, `Jobs that fit you: ${q.role}`,
+    `${name}here are new jobs that match your profile${q.location ? ` near ${q.location}` : ''}. Apply through Lyrtrip and we send your profile and CV to the employer for you.`,
+    cards, { url: `${SITE_URL}/jobs/profile`, label: 'My job profile and applications' }, unsub);
+  return { nextAt: inDays(DIGEST.everyDays), sent, kind: 'matches', ids: cards.map(c => c.id) };
+}
+
+async function studyDigest(db, p) {
+  const unsub = digestUnsubLink('study', p._id);
+  const q = studyMatchQuery(p);
+  const name = p.firstName ? `${p.firstName}, ` : '';
+  if (!p.fieldsOfStudy?.length && !p.studyLevel) {
+    const sent = await sendDigestEmail(p.email, 'Get study matches from Lyrtrip', 'Tell us what you want to study',
+      `${name}add the level and subject you want to study and the countries you prefer to your Lyrtrip student profile, and every week we email you admissions and scholarships you can apply for through Lyrtrip.`,
+      [], { url: `${SITE_URL}/study/profile`, label: 'Complete my student profile' }, unsub);
+    return { nextAt: inDays(DIGEST.nudgeDays), sent, kind: 'nudge' };
+  }
+  const seen = new Set(p.digest?.sentIds ?? []);
+  // Admissions: real institutions from Google Maps at the student's level; scholarships: web pages
+  const level = /Bachelor|Master|MBA|PhD/.test(p.studyLevel ?? '') ? 'university' : /Diploma/.test(p.studyLevel ?? '') ? 'college'
+    : /Secondary/.test(p.studyLevel ?? '') ? 'school' : /Foundation|Language/.test(p.studyLevel ?? '') ? 'institute' : '';
+  const safe = pr => pr.catch(err => { console.error('Study match search failed:', err.message); return []; });
+  const [adm, sch] = await Promise.all([
+    safe(searchStudySerpApi({ category: 'academy', level, query: p.fieldsOfStudy?.[0] ?? '', location: q.location })),
+    safe(searchStudySerpApi({ category: 'scholarship', query: q.subject, location: q.location })),
+  ]);
+  // Web results carry their rank as id, so items are told apart by name; results whose title was only a
+  // website (scrubbed away) or that have no text are skipped
+  const useful = r => r.name && !r.name.includes('[apply via Lyrtrip]') && !/no information is available/i.test(r.description ?? '');
+  const pick = (list, type) => list.filter(r => useful(r) && !seen.has(`${type}:${r.name}`)).slice(0, DIGEST.maxItems / 2).map(r => ({ ...r, type }));
+  const items = [...pick(adm, 'admission'), ...pick(sch, 'scholarship')];
+  if (!items.length) return { nextAt: inDays(DIGEST.everyDays), sent: false, kind: 'none' };
+  const cards = items.map(r => {
+    const url = `${SITE_URL}/study/match?type=${r.type}&t=${r.applyToken}`;
+    const lines = r.type === 'scholarship' ? ['Scholarship', (r.description ?? '').slice(0, 180)]
+      : [['Admission', r.placeType, r.address].filter(Boolean).join(' · '), r.rating ? `Rated ${r.rating} on Google${r.reviewCount ? ` (${r.reviewCount} reviews)` : ''}` : ''];
+    return { id: `${r.type}:${r.name}`, html: digestCard(r.name, lines, url, r.type === 'scholarship' ? 'View and apply for the scholarship' : 'View and apply'), text: `${r.name}\n${lines.join('\n')}\n${url}` };
+  });
+  const sent = await sendDigestEmail(p.email, `New admissions and scholarships${q.subject ? ` for ${q.subject}` : ''}`, 'Study options that fit you',
+    `${name}here are admissions and scholarships that match your student profile${q.location ? ` in ${q.location}` : ''}. Apply through Lyrtrip: we prepare your application and send it for you.`,
+    cards, { url: `${SITE_URL}/study/profile`, label: 'My student profile and applications' }, unsub);
+  return { nextAt: inDays(DIGEST.everyDays), sent, kind: 'matches', ids: cards.map(c => c.id) };
+}
+
+// Called from the 5-minute sweep: a few due profiles each time, jobs first, then students
+async function sweepMatchDigests(db) {
+  const now = new Date().toISOString();
+  let budget = DIGEST.perSweep;
+  for (const [kind, collName, run] of [['jobs', 'job_profiles', jobDigest], ['study', 'student_profiles', studyDigest]]) {
+    const coll = db.collection(collName);
+    const filter = {
+      email: { $exists: true, $ne: '' }, 'digest.unsubscribed': { $ne: true },
+      ...(kind === 'jobs' ? { openToWork: { $ne: false } } : {}),
+      $or: [{ 'digest.nextAt': { $exists: false } }, { 'digest.nextAt': { $lte: now } }],
+    };
+    while (budget > 0) {
+      // Claim one profile, pushing it back an hour so a parallel sweep or a failure never double-sends
+      const p = await coll.findOneAndUpdate(filter, { $set: { 'digest.nextAt': inDays(1 / 24) } }, { returnDocument: 'before' });
+      const doc = p?.value !== undefined ? p.value : p;
+      if (!doc) break;
+      budget--;
+      if (isPhoneLoginEmail(doc.email)) { await coll.updateOne({ _id: doc._id }, { $set: { 'digest.nextAt': inDays(DIGEST.nudgeDays) } }); continue; }
+      try {
+        const r = await run(db, doc);
+        await coll.updateOne({ _id: doc._id }, { $set: {
+          'digest.nextAt': r.nextAt, 'digest.lastRunAt': now, 'digest.lastKind': r.kind,
+          ...(r.sent ? { 'digest.lastSentAt': now, 'digest.sentIds': [...(doc.digest?.sentIds ?? []), ...(r.ids ?? [])].slice(-150) } : {}),
+        }, ...(r.sent ? { $inc: { 'digest.count': 1 } } : {}) });
+      } catch (err) {
+        console.error(`${kind} digest failed:`, err.message);
+      }
+    }
+  }
+}
+
+// GET (link) or POST (one-click) /api/digest/unsubscribe?t=...
+async function handleDigestUnsubscribe(event) {
+  const t = openJob(event.queryStringParameters?.t);
+  const page = (code, title, msg) => ({ statusCode: code, headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    body: `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><body style="font-family:Arial,sans-serif;max-width:520px;margin:60px auto;padding:0 16px;color:#111"><h1 style="font-size:22px">${esc(title)}</h1><p>${esc(msg)}</p><p><a href="${SITE_URL}">Back to Lyrtrip</a></p></body>` });
+  if (!t?.digestUnsub || !['jobs', 'study'].includes(t.kind)) return page(400, 'Link not valid', 'This unsubscribe link is not valid.');
+  await (await getDb()).collection(t.kind === 'jobs' ? 'job_profiles' : 'student_profiles')
+    .updateOne({ _id: t.id }, { $set: { 'digest.unsubscribed': true, 'digest.unsubscribedAt': new Date().toISOString() } });
+  return page(200, 'You are unsubscribed', `You will not get weekly ${t.kind === 'jobs' ? 'job' : 'study'} matches from Lyrtrip any more. You can turn them back on from your profile.`);
+}
+
 // Who did what to an application, for every admin to see (admins and the super admin share the panels)
 async function logAppAction(apps, id, actor, action) {
   await apps.updateOne({ _id: id }, { $push: { history: { $each: [{ at: new Date().toISOString(), by: actor.email, role: actor.role, action: String(action).slice(0, 300) }], $slice: -200 } } })
@@ -6659,6 +6834,24 @@ async function handleJobs(event) {
           if (r.upsertedCount) await coll.updateOne({ _id: id }, { $inc: { companyViews: 1 } });
         }
         return json(200, { profile: await talentProfile(p, { contact: company || own }), viewerIsCompany: company, own });
+      }
+
+      // A job from a match email: its details without the employer's name or contacts
+      case 'job.view': {
+        const job = openJob(body.token);
+        if (!job || job.study || job.tourism || job.eventTicket) throw new JobError('This job link is not valid. Please search again.', 404);
+        return json(200, {
+          job: {
+            name: scrubJob(job.title, job.company), jobLocation: job.location ?? '', salary: job.salary ?? null, jobType: job.jobType ?? null,
+            description: scrubJob(job.description ?? '', job.company), expired: Date.now() - (job.at ?? 0) > 30 * 864e5,
+          },
+        });
+      }
+
+      // Weekly job-match emails on or off
+      case 'digest.set': {
+        await coll.updateOne({ _id: me().sub }, { $set: { 'digest.unsubscribed': !body.on, ...(body.on ? { 'digest.nextAt': new Date().toISOString() } : {}) } });
+        return json(200, { ok: true, on: !!body.on });
       }
 
       // Before applying: is the profile ready, and has this person applied to this job already?
@@ -7210,6 +7403,24 @@ async function handleStudy(event) {
         await coll.deleteOne({ _id: p._id });
         await apps.deleteMany({ sub: p._id });
         return json(200, { deleted: true });
+      }
+
+      // An admission or scholarship from a match email: its details without the institution's contacts
+      case 'item.view': {
+        const inst = openJob(body.token);
+        if (!inst?.study) throw new JobError('This link is not valid. Please search again.', 404);
+        return json(200, {
+          item: {
+            name: scrubJobContacts(inst.name), placeType: inst.placeType ?? null, address: inst.address ?? '', category: inst.category,
+            description: scrubJobContacts(inst.description ?? ''), expired: Date.now() - (inst.at ?? 0) > 30 * 864e5,
+          },
+        });
+      }
+
+      // Weekly study-match emails on or off
+      case 'digest.set': {
+        await coll.updateOne({ _id: me().sub }, { $set: { 'digest.unsubscribed': !body.on, ...(body.on ? { 'digest.nextAt': new Date().toISOString() } : {}) } });
+        return json(200, { ok: true, on: !!body.on });
       }
 
       // Before applying: what is missing, plan room left, and whether this was applied for already
@@ -9704,6 +9915,7 @@ async function routeRequest(event) {
     if (path.endsWith('/api/jobs')                   && method === 'POST')         return handleJobs(event);
     if (path.endsWith('/api/study')                  && method === 'POST')         return handleStudy(event);
     if (path.endsWith('/api/study/doc')              && method === 'GET')          return handleStudyDoc(event);
+    if (path.endsWith('/api/digest/unsubscribe')     && ['GET', 'POST'].includes(method)) return handleDigestUnsubscribe(event);
     if (path.endsWith('/api/events')                 && method === 'POST')         return handleEventTickets(event);
     if (path.endsWith('/api/packages')               && method === 'POST')         return handleTourRequests(event);
     if (path.endsWith('/api/legal')                  && method === 'POST')         return handleLegal(event);
@@ -9737,4 +9949,4 @@ async function routeRequest(event) {
 }
 
 // Pure helpers of the job-application mail relay, for jobmail.test.mjs
-export const jobMailInternals = { buildRawEmail, stripQuoted, employerEmailsIn, isAutoReply, scrubForApplicant, JOB_REPLY_RE, APP_REPLY_RE, MAIL_KINDS, partyThread };
+export const jobMailInternals = { buildRawEmail, stripQuoted, employerEmailsIn, isAutoReply, scrubForApplicant, JOB_REPLY_RE, APP_REPLY_RE, MAIL_KINDS, partyThread, jobDigest, studyDigest, digestPreview };

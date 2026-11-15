@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import PageLoader from '@/components/PageLoader';
 import AppConversation from '@/components/AppConversation';
+import DigestToggle from '@/components/DigestToggle';
 import { jobsCall, uploadJobFile, APP_STYLE, PLAN_STYLE, type Education, type JobApplication, type Experience, type JobPlans, type JobProfile, type OwnerView } from '@/lib/jobs';
 import { rememberReturnTo } from '@/lib/returnTo';
 
@@ -415,6 +416,10 @@ export default function JobProfilePage() {
         </div>
 
         <MyApplications />
+        {view.profile?.id && (
+          <DigestToggle kind="job" initiallyOn={!(view.profile as { digest?: { unsubscribed?: boolean } }).digest?.unsubscribed}
+            save={on => jobsCall({ action: 'digest.set', on })} />
+        )}
 
         {view.profile && (
           <div className="text-center">
