@@ -57,8 +57,9 @@ export default function JobApplyDialog({ job, onClose }: { job: ApplyJob; onClos
         <p className="text-sm">
           <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${APP_STYLE[applied.status] ?? ''}`}>{applied.statusLabel}</span>
         </p>
+        {done && <p className="text-base font-semibold text-emerald-700">Your application is submitted.</p>}
         <p className="text-sm text-gray-700">
-          {done ? (applied.sentBy === 'email' ? 'Lyrtrip has emailed your application and CV to the employer. ' : 'Lyrtrip has your application and submits it on the employer’s site for you. ') : 'You have already applied for this job. '}
+          {done ? `We have emailed you a confirmation. ${applied.sentBy === 'email' ? 'Lyrtrip has emailed your application and CV to the employer. ' : 'The Lyrtrip team submits it on the employer’s site for you. '}` : 'You have already applied for this job. '}
           {applied.sentBy ? 'We email you as soon as the employer replies.' : 'We email you when it is sent and when the employer replies.'} All contact about this job goes through Lyrtrip.
         </p>
         <Link href="/jobs/profile#applications" className="text-sm font-semibold text-brand-600">See my applications →</Link>

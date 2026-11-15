@@ -3859,7 +3859,7 @@ async function handleAdmin(event) {
   const db = await getDb();
 
   try {
-    if (String(body.action ?? '').startsWith('studyapps.')) return (await studyAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
+    if (String(body.action ?? '').startsWith('studyapps.')) return (await studyAdmin(db, body, actor)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('eventtix.')) return (await eventTicketsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('tourreqs.')) return (await tourRequestsAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
     if (String(body.action ?? '').startsWith('legal.')) return (await legalAdmin(db, body)) ?? json(400, { error: 'Unknown action' });
@@ -4022,9 +4022,17 @@ async function handleAdmin(event) {
             coverLetter: a.coverLetter ?? '', via: a.job.via ?? '', applyOptions: a.job.applyOptions ?? [], shareLink: a.job.shareLink ?? null,
             description: a.job.description ?? '', adminNote: a.adminNote ?? '',
             employerEmails: a.job.employerEmails ?? [], employer: a.employer ?? null, replyAddress: a.replyCode ? jobReplyAddress(a.replyCode) : null,
-            messages: (a.messages ?? []).map(({ rawKey, sesId, ...m }) => m),
+            messages: (a.messages ?? []).map(({ rawKey, sesId, ...m }) => m), history: a.history ?? [],
           }))),
         });
+      }
+
+      // Removes an application for good (spam, duplicates, test entries); the applicant's profile and CV stay
+      case 'jobapps.delete': {
+        const r = await db.collection('job_applications').deleteOne({ _id: String(body.id ?? '') });
+        if (!r.deletedCount) return json(404, { error: 'Application not found' });
+        console.log('Job application deleted by', actor.email, body.id);
+        return json(200, { ok: true });
       }
 
       // Emails the application (CV attached) to an employer address the admin found, e.g. on the company's careers page
@@ -4032,9 +4040,11 @@ async function handleAdmin(event) {
         const apps = db.collection('job_applications');
         const a = await apps.findOne({ _id: String(body.id ?? '') });
         if (!a) return json(404, { error: 'Application not found' });
-        if (a.status === 'withdrawn') return json(409, { error: 'The applicant withdrew this application' });
+        if (['withdrawn', 'cancelled'].includes(a.status)) return json(409, { error: 'This application is withdrawn or cancelled. Reopen it first.' });
         try {
-          return json(200, await submitJobAppToEmployer(db, a, String(body.email ?? ''), 'admin'));
+          const sent = await submitJobAppToEmployer(db, a, String(body.email ?? ''), actor.email);
+          await logAppAction(apps, a._id, actor, `Sent to ${sent.sentTo}`);
+          return json(200, sent);
         } catch (err) {
           return json(err.status ?? 500, { error: err.message });
         }
@@ -4048,6 +4058,7 @@ async function handleAdmin(event) {
         if (!text) return json(400, { error: 'Write a message first' });
         try {
           await relayToEmployer(db, a, text, 'lyrtrip');
+          await logAppAction(db.collection('job_applications'), a._id, actor, 'Wrote to the employer');
           return json(200, { ok: true });
         } catch (err) {
           return json(err.status ?? 500, { error: err.message });
@@ -4056,21 +4067,27 @@ async function handleAdmin(event) {
 
       // Moves an application along; the message (if any) is emailed to the applicant, without employer contact details
       case 'jobapps.update': {
-        const status = ['submitted', 'forwarded', 'replied', 'interview', 'rejected', 'hired'].includes(body.status) ? body.status : null;
+        // Any status, including cancelling ("withdrawn") and reopening a withdrawn application
+        const status = Object.keys(JOB_APP_STATUS).includes(body.status) ? body.status : null;
         if (!status) return json(400, { error: 'Unknown status' });
         const apps = db.collection('job_applications');
         const a = await apps.findOne({ _id: String(body.id ?? '') });
         if (!a) return json(404, { error: 'Application not found' });
-        if (a.status === 'withdrawn') return json(409, { error: 'The applicant withdrew this application' });
         const message = String(body.message ?? '').trim().slice(0, 2000);
+        const note = String(body.note ?? a.adminNote ?? '').slice(0, 1000);
         const now = new Date().toISOString();
         await apps.updateOne({ _id: a._id }, { $set: {
-          status, applicantMessage: message, adminNote: String(body.note ?? a.adminNote ?? '').slice(0, 1000), updatedAt: now,
+          status, applicantMessage: message, adminNote: note, updatedAt: now,
           [`statusAt.${status}`]: now,
           // Marked sent without Lyrtrip's email: the admin submitted it on the employer's own site
-          ...(status === 'forwarded' && a.employer?.method !== 'email' ? { employer: { method: 'site', sentAt: now, by: 'admin' } } : {}),
+          ...(status === 'forwarded' && a.employer?.method !== 'email' ? { employer: { method: 'site', sentAt: now, by: actor.email } } : {}),
         } });
-        if (status !== a.status || message) {
+        const notify = body.notify !== false;
+        await logAppAction(apps, a._id, actor, [
+          status !== a.status ? `Status: ${JOB_APP_STATUS[a.status] ?? a.status} → ${JOB_APP_STATUS[status]}` : '',
+          message ? `${notify ? 'Emailed' : 'Saved (not emailed)'} message to the applicant` : '', note !== (a.adminNote ?? '') ? 'Edited the internal note' : '',
+        ].filter(Boolean).join('; ') || 'Saved');
+        if (notify && (status !== a.status || message)) {
           await sendEmail({
             to: a.applicant.email, replyTo: a.replyCode ? jobReplyAddress(a.replyCode) : undefined, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/jobs/profile` }, subject: `${JOB_APP_STATUS[status]}: ${a.job.title}`,
             html: jobAppEmail(JOB_APP_STATUS[status], [['Job', a.job.title], ['Location', a.job.location], ...(message ? [['Message from Lyrtrip', message]] : [])],
@@ -6054,8 +6071,8 @@ const escapeRegex = v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Job applications go through Lyrtrip: we keep the applicant's details and forward them to the employer
 const JOB_APP_STATUS = {
-  submitted: 'Received by Lyrtrip', forwarded: 'Sent to the employer', replied: 'Employer replied', interview: 'Interview requested',
-  rejected: 'Not selected', hired: 'Offer made', withdrawn: 'Withdrawn',
+  submitted: 'Application submitted', forwarded: 'Sent to the employer', replied: 'Employer replied', interview: 'Interview requested',
+  rejected: 'Not selected', hired: 'Offer made', withdrawn: 'Withdrawn', cancelled: 'Cancelled by Lyrtrip',
 };
 function applyMissing(p) {
   const m = [];
@@ -6169,8 +6186,58 @@ function stripQuoted(text) {
 // A copy of the message for the admin, the applicant and the employer thread
 const jobMsg = (m) => ({ id: randomBytes(6).toString('hex'), at: new Date().toISOString(), ...m });
 
+// A welcome email the first time someone creates a job or student profile. Only profiles created after
+// this went live get one, so people who already had a profile are not surprised by it.
+const PROFILE_WELCOME_SINCE = '2026-11-15T23:00:00.000Z';
+const PROFILE_WELCOME = {
+  jobs: {
+    subject: 'Welcome to Lyrtrip Jobs', url: '/jobs/profile', cta: 'Open my job profile',
+    steps: [
+      'Your job profile is created. Here is how applying through Lyrtrip works:',
+      '1. Finish your profile. Your name, phone, a headline and your CV are needed to apply; a photo and your work history help you stand out.',
+      '2. Search jobs on the Job tab and press Apply. Your application is submitted straight away, and Lyrtrip sends your profile and CV to the employer for you.',
+      '3. When the employer replies, we email you at once. Reply to that email to answer them; all contact about a job goes through Lyrtrip.',
+      'Want employers to find you too? Choose a plan to list your profile in the Lyrtrip talent directory.',
+    ],
+  },
+  study: {
+    subject: 'Welcome to Lyrtrip Study', url: '/study/profile', cta: 'Open my student profile',
+    steps: [
+      'Your student profile is created. Here is how applying through Lyrtrip works:',
+      '1. Complete your profile and upload your documents: passport, transcripts and certificates, English test results and the rest the form asks for.',
+      '2. Choose a study plan, then apply for admissions and scholarships from the Study tab. Your application is submitted straight away.',
+      '3. Lyrtrip checks your documents and tells you the institution\'s application fee. Once it is paid, we send your application and email you as soon as the institution replies.',
+    ],
+  },
+};
+async function welcomeProfile(coll, p, kind, fallbackEmail) {
+  try {
+    if (!p?.createdAt || p.createdAt < PROFILE_WELCOME_SINCE || p.welcomedAt) return;
+    const to = p.email || fallbackEmail;
+    if (!to) return;
+    const r = await coll.updateOne({ _id: p._id, welcomedAt: { $exists: false } }, { $set: { welcomedAt: new Date().toISOString() } });
+    if (!r.modifiedCount) return;
+    p.welcomedAt = new Date().toISOString();
+    const w = PROFILE_WELCOME[kind];
+    const hello = p.firstName ? `Hi ${p.firstName},` : 'Hi,';
+    await sendEmail({
+      to, subject: w.subject,
+      html: messageEmailHtml(w.subject, [hello, ...w.steps], { url: `${SITE_URL}${w.url}`, label: w.cta }),
+      text: `${hello}\n\n${w.steps.join('\n\n')}\n\n${SITE_URL}${w.url}`,
+    });
+  } catch (err) {
+    console.error('Profile welcome failed:', err.message);
+  }
+}
+
+// Who did what to an application, for every admin to see (admins and the super admin share the panels)
+async function logAppAction(apps, id, actor, action) {
+  await apps.updateOne({ _id: id }, { $push: { history: { $each: [{ at: new Date().toISOString(), by: actor.email, role: actor.role, action: String(action).slice(0, 300) }], $slice: -200 } } })
+    .catch(err => console.error('History write failed:', err.message));
+}
+
 // Sends the application to the employer, marks it "Sent to the employer" and tells the applicant
-async function submitJobAppToEmployer(db, a, to, by = 'auto') {
+async function submitJobAppToEmployer(db, a, to, by = 'auto', { tellApplicant = true } = {}) {
   const apps = db.collection('job_applications');
   to = String(to).trim().toLowerCase();
   if (!isEmail(to)) throw new JobError('That employer email address is not valid');
@@ -6211,7 +6278,7 @@ async function submitJobAppToEmployer(db, a, to, by = 'auto') {
     },
     $push: { messages: jobMsg({ dir: 'out', who: 'lyrtrip', to, subject, text: `Application${attachments.length ? ' and CV' : ''} sent to the employer by email.`, sesId }) },
   });
-  await sendEmail({
+  if (tellApplicant) await sendEmail({
     to: ap.email, replyTo: relay, notify: { phone: ap.phone, sub: a.sub, url: `${SITE_URL}/jobs/profile` }, subject: `Sent to the employer: ${a.job.title}`,
     html: jobAppEmail('Your application was sent to the employer', [
       ['Job', a.job.title], ['Location', a.job.location], ['Sent', new Date(now).toUTCString()],
@@ -6441,6 +6508,7 @@ async function handleJobs(event) {
         const p = { ...(await mine()), ...cleanJobProfile(body.profile ?? {}), updatedAt: new Date().toISOString() };
         Object.assign(p, jobListingFields(p));
         await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        await welcomeProfile(coll, p, 'jobs', me().email);
         return json(200, await ownerJobView(p));
       }
 
@@ -6478,6 +6546,7 @@ async function handleJobs(event) {
         p.updatedAt = new Date().toISOString();
         Object.assign(p, jobListingFields(p));
         await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        await welcomeProfile(coll, p, 'jobs', me().email);
         // A replaced CV stays while an application still points at it
         const inUse = kind === 'cv' && old && await db.collection('job_applications').findOne({ 'applicant.cvKey': old }, { projection: { _id: 1 } });
         if (old && old !== key && !inUse) await deleteJobFile(old);
@@ -6524,6 +6593,7 @@ async function handleJobs(event) {
         p.subscriptionCheckedAt = p.promotedAt;
         Object.assign(p, jobListingFields(p));
         await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        await welcomeProfile(coll, p, 'jobs', me().email);
         return json(200, await ownerJobView(p));
       }
 
@@ -6628,15 +6698,20 @@ async function handleJobs(event) {
         let sent = null;
         let sendError = '';
         for (const to of (job.employerEmails ?? []).filter(isEmail).slice(0, 1)) {
-          try { sent = await submitJobAppToEmployer(db, a, to, 'auto'); } catch (err) { sendError = err.message; console.error('Auto-submit failed:', err.message); }
+          try { sent = await submitJobAppToEmployer(db, a, to, 'auto', { tellApplicant: false }); } catch (err) { sendError = err.message; console.error('Auto-submit failed:', err.message); }
         }
         const adminRows = [['Applicant', a.applicant.name], ['Job', job.title], ['Company', job.company], ['Location', job.location]];
+        const relay = sent ? jobReplyAddress((await apps.findOne({ _id }, { projection: { replyCode: 1 } }))?.replyCode) : undefined;
         await Promise.all([
-          sent ? null : sendEmail({
-            to: p.email, notify: { phone: p.phone, sub: me().sub, url: `${SITE_URL}/jobs/profile` }, subject: `Application received: ${job.title}`,
-            html: jobAppEmail('We have your application', [['Job', job.title], ['Location', job.location]],
-              `This employer takes applications on their own website, so the Lyrtrip team submits yours there for you and emails you as soon as it is sent. Employer replies come through Lyrtrip, and we email you every update. Follow it at ${SITE_URL}/jobs/profile.`),
-            text: `We received your application for ${job.title}. The Lyrtrip team submits it on the employer's site and emails you when it is sent.`,
+          // Every applicant hears straight away that the application is submitted, and what happens next
+          sendEmail({
+            to: p.email, replyTo: relay, notify: { phone: p.phone, sub: me().sub, url: `${SITE_URL}/jobs/profile` }, subject: `Application submitted: ${job.title}`,
+            html: jobAppEmail('Your application is submitted', [
+              ['Job', job.title], ['Location', job.location], ['Submitted', new Date(now).toUTCString()],
+              ['Included', `Your profile${a.coverLetter ? ', cover letter' : ''} and CV (${a.applicant.cvName})`],
+              ['Next step', sent ? 'Lyrtrip has already emailed your application to the employer.' : 'The Lyrtrip team submits it on the employer\'s website and emails you as soon as it is sent.'],
+            ], `Employer replies come to you through Lyrtrip, and we email you every update.${sent ? ' To write to the employer, reply to this email.' : ''} Follow it at ${SITE_URL}/jobs/profile.`),
+            text: `Your application for ${job.title} is submitted. ${sent ? 'Lyrtrip has emailed it to the employer.' : 'The Lyrtrip team submits it on the employer\'s site and emails you when it is sent.'} Follow it at ${SITE_URL}/jobs/profile.`,
           }),
           sendEmail({
             to: superAdminEmail(),
@@ -6674,7 +6749,7 @@ async function handleJobs(event) {
         const apps = db.collection('job_applications');
         const a = await apps.findOne({ _id: String(body.id ?? ''), sub: me().sub });
         if (!a) throw new JobError('Application not found', 404);
-        if (a.status === 'withdrawn') throw new JobError('You withdrew this application');
+        if (['withdrawn', 'cancelled'].includes(a.status)) throw new JobError('This application is withdrawn or cancelled');
         const text = String(body.message ?? '').trim().slice(0, 4000);
         if (text.length < 2) throw new JobError('Write a message first');
         const recent = (a.messages ?? []).filter(m => m.who === 'applicant' && Date.now() - Date.parse(m.at) < 86400_000).length;
@@ -6734,9 +6809,9 @@ const STUDY_DOCS = {
 };
 const STUDY_DOC_MAX = 10 * 1024 * 1024;
 const STUDY_APP_STATUS = {
-  submitted: 'Received by Lyrtrip', docs_needed: 'More documents needed', fee_due: 'Fee to pay', processing: 'Lyrtrip is applying',
+  submitted: 'Application submitted', docs_needed: 'More documents needed', fee_due: 'Fee to pay', processing: 'Lyrtrip is applying',
   applied: 'Submitted to the institution', replied: 'The institution replied', interview: 'Interview requested', offer: 'Offer / award received', rejected: 'Not successful',
-  withdrawn: 'Withdrawn',
+  withdrawn: 'Withdrawn', cancelled: 'Cancelled by Lyrtrip',
 };
 const STUDY_WITHDRAWABLE = ['submitted', 'docs_needed', 'fee_due'];
 
@@ -7024,6 +7099,7 @@ async function handleStudy(event) {
       case 'profile.save': {
         const p = { ...(await mine()), ...cleanStudyProfile(body.profile ?? {}), updatedAt: new Date().toISOString() };
         await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        await welcomeProfile(coll, p, 'study', me().email);
         return json(200, await ownerStudyView(db, p));
       }
 
@@ -7058,6 +7134,7 @@ async function handleStudy(event) {
         p.docs = { ...p.docs, [kind]: { key, name: String(body.fileName ?? STUDY_DOCS[kind].label).slice(0, 120), uploadedAt: new Date().toISOString() } };
         p.updatedAt = new Date().toISOString();
         await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        await welcomeProfile(coll, p, 'study', me().email);
         // A replaced file stays while an application still points at it
         if (old && old !== key && !(await docInUse(old))) await deleteJobFile(old);
         return json(200, await ownerStudyView(db, p));
@@ -7108,6 +7185,7 @@ async function handleStudy(event) {
         p.subscription = stripeSubFields(session.subscription, session.metadata.plan, session.metadata.period);
         p.subscriptionCheckedAt = new Date().toISOString();
         await coll.replaceOne({ _id: p._id }, p, { upsert: true });
+        await welcomeProfile(coll, p, 'study', me().email);
         return json(200, await ownerStudyView(db, p));
       }
 
@@ -7177,10 +7255,13 @@ async function handleStudy(event) {
         const what = type === 'scholarship' ? 'scholarship application' : 'admission application';
         await Promise.all([
           sendEmail({
-            to: p.email, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/study/profile#applications` }, subject: `We have your ${what}: ${inst.name}`,
-            html: jobAppEmail(`We have your ${what}`, [['Institution', inst.name], ['Program', program]],
-              `Lyrtrip checks your documents, finds the institution's ${type} fee and emails you the amount to pay (the fee plus Lyrtrip's ${STUDY_SERVICE_RATE * 100}% service charge). Then we apply for you. Follow it at ${SITE_URL}/study/profile.`),
-            text: `We received your ${what} for ${program} at ${inst.name}. We will email you the fee to pay, then apply for you.`,
+            to: p.email, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/study/profile#applications` }, subject: `Application submitted: ${program} at ${scrubJobContacts(inst.name)}`,
+            html: jobAppEmail(`Your ${what} is submitted`, [
+              ['Institution', scrubJobContacts(inst.name)], ['Program', program], ...(a.intake ? [['Intake', a.intake]] : []),
+              ['Submitted', new Date(now).toUTCString()], ['Documents', `${Object.keys(docs).length} from your student profile`],
+              ['Next step', `Lyrtrip checks your documents and emails you the institution's ${type} fee to pay (plus Lyrtrip's ${STUDY_SERVICE_RATE * 100}% service charge). Then we send your application to the institution.`],
+            ], `We email you when it is sent and as soon as the institution replies. Follow it at ${SITE_URL}/study/profile.`),
+            text: `Your ${what} for ${program} at ${scrubJobContacts(inst.name)} is submitted. We will email you the fee to pay, then send it to the institution.`,
           }),
           sendEmail({
             to: superAdminEmail(), subject: `New ${what}: ${a.applicant.name} for ${inst.name}`,
@@ -7255,7 +7336,7 @@ async function handleStudy(event) {
       case 'application.reply': {
         const a = await apps.findOne({ _id: String(body.id ?? ''), sub: me().sub });
         if (!a) throw new JobError('Application not found', 404);
-        if (a.status === 'withdrawn') throw new JobError('You withdrew this application');
+        if (['withdrawn', 'cancelled'].includes(a.status)) throw new JobError('This application is withdrawn or cancelled');
         const text = String(body.message ?? '').trim().slice(0, 4000);
         if (text.length < 2) throw new JobError('Write a message first');
         const recent = (a.messages ?? []).filter(m => m.who === 'applicant' && Date.now() - Date.parse(m.at) < 86400_000).length;
@@ -7285,7 +7366,7 @@ async function handleStudy(event) {
 }
 
 // Admin side (called from handleAdmin): every document, the institution's real details, fees and status
-async function studyAdmin(db, body) {
+async function studyAdmin(db, body, actor) {
   const apps = db.collection('study_applications');
   switch (body.action) {
     case 'studyapps.list': {
@@ -7300,7 +7381,7 @@ async function studyAdmin(db, body) {
           ...studentStudyApp(a), sub: a.sub, note: a.note ?? '', adminNote: a.adminNote ?? '',
           institution: a.institution, applicant: a.applicant,
           listingEmails: a.institution?.emails ?? [], contact: a.contact ?? null, replyAddress: a.replyCode ? replyAddress(MAIL_KINDS.study, a.replyCode) : null,
-          messages: (a.messages ?? []).map(({ rawKey, sesId, ...m }) => m),
+          messages: (a.messages ?? []).map(({ rawKey, sesId, ...m }) => m), history: a.history ?? [],
           docs: await Promise.all(Object.entries(a.docs ?? {}).map(async ([kind, d]) => ({ kind, label: STUDY_DOCS[kind]?.label ?? kind, name: d.name, url: await signedFileUrl(d.key, d.name) }))),
           feeCharged: a.fee?.charged ?? null,
         }))),
@@ -7311,13 +7392,26 @@ async function studyAdmin(db, body) {
     case 'studyapps.send': {
       const a = await apps.findOne({ _id: String(body.id ?? '') });
       if (!a) return json(404, { error: 'Application not found' });
-      if (a.status === 'withdrawn') return json(409, { error: 'The student withdrew this application' });
-      if (a.status === 'fee_due') return json(409, { error: 'The student has not paid the fee yet' });
+      if (['withdrawn', 'cancelled'].includes(a.status)) return json(409, { error: 'This application is withdrawn or cancelled. Reopen it first.' });
+      // Sending before the fee is paid is allowed, but only when the admin confirms it (force)
+      if (a.status === 'fee_due' && !body.force) return json(409, { error: 'The student has not paid the fee yet', needsForce: true });
       try {
-        return json(200, await submitStudyAppToInstitution(db, a, String(body.email ?? ''), 'admin'));
+        const sent = await submitStudyAppToInstitution(db, a, String(body.email ?? ''), actor.email);
+        await logAppAction(apps, a._id, actor, `Sent to ${sent.sentTo}${a.status === 'fee_due' ? ' (before the fee was paid)' : ''}`);
+        return json(200, sent);
       } catch (err) {
         return json(err.status ?? 500, { error: err.message });
       }
+    }
+
+    // Removes an application for good (spam, duplicates, test entries); the student's profile and documents stay
+    case 'studyapps.delete': {
+      const a = await apps.findOne({ _id: String(body.id ?? '') }, { projection: { fee: 1 } });
+      if (!a) return json(404, { error: 'Application not found' });
+      if (a.fee?.paidAt && !body.force) return json(409, { error: 'The student paid a fee on this application. Refund it in Stripe first, or confirm to delete anyway.', needsForce: true });
+      await apps.deleteOne({ _id: a._id });
+      console.log('Study application deleted by', actor.email, a._id);
+      return json(200, { ok: true });
     }
 
     // Lyrtrip's team writes to the institution from the application's address
@@ -7328,6 +7422,7 @@ async function studyAdmin(db, body) {
       if (!text) return json(400, { error: 'Write a message first' });
       try {
         await relayToParty(MAIL_KINDS.study, db, a, text, 'lyrtrip');
+        await logAppAction(apps, a._id, actor, 'Wrote to the institution');
         return json(200, { ok: true });
       } catch (err) {
         return json(err.status ?? 500, { error: err.message });
@@ -7336,13 +7431,14 @@ async function studyAdmin(db, body) {
 
     // Moves an application along; a fee puts it at "Fee to pay"; the message is emailed without the institution's contacts
     case 'studyapps.update': {
-      let status = Object.keys(STUDY_APP_STATUS).includes(body.status) && body.status !== 'withdrawn' ? body.status : null;
+      // Any status, including cancelling and reopening a withdrawn or cancelled application
+      let status = Object.keys(STUDY_APP_STATUS).includes(body.status) ? body.status : null;
       if (!status) return json(400, { error: 'Unknown status' });
       const a = await apps.findOne({ _id: String(body.id ?? '') });
       if (!a) return json(404, { error: 'Application not found' });
-      if (a.status === 'withdrawn') return json(409, { error: 'The student withdrew this application' });
       const now = new Date().toISOString();
-      const set = { adminNote: String(body.note ?? a.adminNote ?? '').slice(0, 1000), updatedAt: now };
+      const note = String(body.note ?? a.adminNote ?? '').slice(0, 1000);
+      const set = { adminNote: note, updatedAt: now };
       if (status === 'fee_due') {
         if (a.fee?.paidAt) return json(409, { error: 'The fee has already been paid' });
         const amount = Math.round(Number(body.fee) * 100) / 100;
@@ -7354,10 +7450,16 @@ async function studyAdmin(db, body) {
       const message = String(body.message ?? '').trim().slice(0, 2000);
       Object.assign(set, { status, studentMessage: message, [`statusAt.${status}`]: now });
       // Marked submitted without Lyrtrip's email: the admin applied on the institution's own site
-      if (status === 'applied' && a.contact?.method !== 'email') set.contact = { method: 'site', sentAt: now, by: 'admin' };
+      if (status === 'applied' && a.contact?.method !== 'email') set.contact = { method: 'site', sentAt: now, by: actor.email };
       await apps.updateOne({ _id: a._id }, { $set: set });
+      const notify = body.notify !== false || status === 'fee_due';   // the student must hear about a fee to pay
+      await logAppAction(apps, a._id, actor, [
+        status !== a.status ? `Status: ${STUDY_APP_STATUS[a.status] ?? a.status} → ${STUDY_APP_STATUS[status]}` : '',
+        set.fee ? `Quoted fee USD ${set.fee.amount.toFixed(2)}` : '',
+        message ? `${notify ? 'Emailed' : 'Saved (not emailed)'} message to the student` : '', note !== (a.adminNote ?? '') ? 'Edited the internal note' : '',
+      ].filter(Boolean).join('; ') || 'Saved');
       if (status === 'processing' && a.status !== 'processing') await autoSubmitStudy(db, a._id);
-      if (status !== a.status || message) {
+      if (notify && (status !== a.status || message)) {
         const rows = [['Institution', scrubJobContacts(a.institution.name)], ['Program', a.program]];
         if (status === 'fee_due') {
           const t = feeTotals(set.fee.amount);

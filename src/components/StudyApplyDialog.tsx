@@ -60,8 +60,9 @@ export default function StudyApplyDialog({ item, onClose }: { item: ApplyStudy; 
     body = (
       <div className="space-y-3">
         <p><span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${STUDY_STATUS_STYLE[done.status] ?? ''}`}>{done.statusLabel}</span></p>
+        <p className="text-base font-semibold text-emerald-700">Your application is submitted.</p>
         <p className="text-sm text-gray-700">
-          Lyrtrip checks your documents and finds the institution&apos;s {type} fee. We email you the amount to pay (the fee plus our {pct}% service charge), then apply for you.
+          We have emailed you a confirmation. Lyrtrip checks your documents and finds the institution&apos;s {type} fee. We email you the amount to pay (the fee plus our {pct}% service charge), then apply for you.
         </p>
         <Link href="/study/profile#applications" className="text-sm font-semibold text-brand-600">See my applications →</Link>
       </div>

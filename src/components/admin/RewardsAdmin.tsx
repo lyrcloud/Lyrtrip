@@ -758,30 +758,112 @@ interface AdminJobApplication {
   employerEmails: string[]; replyAddress: string | null;
   employer: { email?: string; method: 'email' | 'site'; sentAt: string; by: string; bounced?: boolean; lastFrom?: string; repliedAt?: string; cvAttached?: boolean } | null;
   messages: { id: string; at: string; dir: 'in' | 'out'; who: string; from?: string; fromName?: string; to?: string; subject?: string; text: string; auto?: boolean; attachments?: { name: string; size: number }[] }[];
+  history: AppHistoryEntry[];
 }
 
 const JOB_APP_STEPS: [string, string][] = [
-  ['submitted', 'Received (not sent yet)'], ['forwarded', 'Sent to employer'], ['replied', 'Employer replied'], ['interview', 'Interview'], ['rejected', 'Not selected'], ['hired', 'Offer made'],
+  ['submitted', 'Submitted (not sent yet)'], ['forwarded', 'Sent to employer'], ['replied', 'Employer replied'], ['interview', 'Interview'], ['rejected', 'Not selected'], ['hired', 'Offer made'],
+  ['withdrawn', 'Withdrawn by applicant'], ['cancelled', 'Cancelled by Lyrtrip'],
 ];
 
-// Applications made through Lyrtrip: admins forward the CV to the employer and relay replies to the applicant
+type AppHistoryEntry = { at: string; by: string; role?: string; action: string };
+
+// Search and status filter shared by the job and study application panels
+function AppFilterBar({ q, setQ, status, setStatus, steps, shown, total }: {
+  q: string; setQ: (v: string) => void; status: string; setStatus: (v: string) => void; steps: [string, string][]; shown: number; total: number;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2 items-center">
+      <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, email, job, school…" className="flex-1 min-w-[12rem] border border-gray-300 rounded-lg px-3 py-1.5 text-sm" />
+      <select value={status} onChange={e => setStatus(e.target.value)} className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm">
+        <option value="">All statuses</option>
+        {steps.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+      <span className="text-xs text-gray-500">{shown} of {total}</span>
+    </div>
+  );
+}
+
+// Who did what, so every admin and the super admin can see each other's work
+function AppHistory({ history }: { history: AppHistoryEntry[] }) {
+  if (!history.length) return null;
+  return (
+    <details className="text-xs">
+      <summary className="cursor-pointer text-gray-500">Admin history ({history.length})</summary>
+      <ul className="mt-1 space-y-0.5">
+        {[...history].reverse().map((h, i) => (
+          <li key={i} className="text-gray-600">{new Date(h.at).toLocaleString()} · <b>{h.by}</b>{h.role === 'superadmin' ? ' (super admin)' : ''}: {h.action}</li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+// Deletes an application after a confirmation; asks again when the server wants it forced (e.g. a paid fee)
+async function deleteApplication(call: Call, kind: 'jobapps' | 'studyapps', id: string, label: string) {
+  if (!confirm(`Delete the application ${label} for good? This cannot be undone. (To keep a record, set it to "Cancelled by Lyrtrip" instead.)`)) return false;
+  try {
+    await call({ action: `${kind}.delete`, id });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Could not delete';
+    if (!/confirm/i.test(msg) || !confirm(`${msg}\n\nDelete anyway?`)) { alert(msg); return false; }
+    await call({ action: `${kind}.delete`, id, force: true });
+  }
+  return true;
+}
+
+type AppDraft = { status: string; message: string; note: string; notify: boolean };
+
+// Status, message to the applicant (emailed or kept quiet), internal note, save and delete
+function AppStatusForm<D extends AppDraft>({ steps, draft, setDraft, busy, onSave, onDelete, person, party, children }: {
+  steps: [string, string][]; draft: D; setDraft: (d: D) => void; busy: boolean; onSave: () => void; onDelete: () => void;
+  person: 'applicant' | 'student'; party: 'employer' | 'institution'; children?: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2 border-t border-gray-100 pt-2">
+      <label className="block text-xs font-semibold text-gray-600">Status</label>
+      <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
+        {steps.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+      </select>
+      {children}
+      <label className="block text-xs font-semibold text-gray-600">Message to the {person} (no {party} contact details)</label>
+      <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={3} maxLength={2000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+      <label className="flex items-center gap-2 text-xs text-gray-700">
+        <input type="checkbox" checked={draft.notify} onChange={e => setDraft({ ...draft, notify: e.target.checked })} />
+        Email the {person} about this change
+      </label>
+      <label className="block text-xs font-semibold text-gray-600">Internal note (admins only)</label>
+      <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
+      <div className="flex flex-wrap gap-2 justify-between">
+        <button onClick={onSave} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : draft.notify ? 'Save and notify' : 'Save'}</button>
+        <button onClick={onDelete} disabled={busy} className="px-3 py-2 text-red-700 border border-red-200 rounded-lg text-xs font-semibold hover:bg-red-50">Delete application</button>
+      </div>
+    </div>
+  );
+}
+
+const matches = (q: string, ...fields: (string | null | undefined)[]) => !q || fields.some(f => (f ?? '').toLowerCase().includes(q.toLowerCase()));
+
+// Applications made through Lyrtrip: every admin and the super admin can send, message, change, cancel, reopen or delete them
 export function JobApplicationsPanel({ call }: { call: Call }) {
   const [rows, setRows] = useState<AdminJobApplication[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const [draft, setDraft] = useState<{ status: string; message: string; note: string }>({ status: '', message: '', note: '' });
+  const [draft, setDraft] = useState<{ status: string; message: string; note: string; notify: boolean }>({ status: '', message: '', note: '', notify: true });
   const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const load = useCallback(() => {
     call({ action: 'jobapps.list' }).then(d => setRows(d.applications as AdminJobApplication[])).catch(() => setRows([]));
   }, [call]);
   useEffect(() => { load(); }, [load]);
   const expand = (a: AdminJobApplication) => {
     setOpen(open === a.id ? null : a.id);
-    setDraft({ status: a.status === 'withdrawn' ? 'submitted' : a.status, message: '', note: a.adminNote });
+    setDraft({ status: a.status, message: '', note: a.adminNote, notify: true });
   };
   const save = async (a: AdminJobApplication) => {
     setBusy(true);
     try {
-      await call({ action: 'jobapps.update', id: a.id, status: draft.status, message: draft.message, note: draft.note });
+      await call({ action: 'jobapps.update', id: a.id, status: draft.status, message: draft.message, note: draft.note, notify: draft.notify });
       setOpen(null);
       load();
     } catch (err) {
@@ -789,17 +871,24 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
     }
     setBusy(false);
   };
+  const remove = async (a: AdminJobApplication) => {
+    if (await deleteApplication(call, 'jobapps', a.id, `from ${a.applicant.name} for ${a.title}`)) { setOpen(null); load(); }
+  };
   const count = (s: string) => (rows ?? []).filter(r => r.status === s).length;
+  const shown = (rows ?? []).filter(a => (!statusFilter || a.status === statusFilter)
+    && matches(q, a.applicant.name, a.applicant.email, a.applicant.phone, a.title, a.company, a.location, a.employer?.email));
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[['Applications', String(rows?.length ?? 0)], ['To submit', String(count('submitted'))], ['Sent, awaiting reply', String(count('forwarded'))], ['Employer replied', String(count('replied'))]]
           .map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
       </div>
+      <AppFilterBar q={q} setQ={setQ} status={statusFilter} setStatus={setStatusFilter} steps={JOB_APP_STEPS} shown={shown.length} total={rows?.length ?? 0} />
       <div className={`${panel} divide-y divide-gray-100`}>
         {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
         {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No job applications yet.</p>}
-        {rows?.map(a => (
+        {rows && rows.length > 0 && shown.length === 0 && <p className="p-4 text-sm text-gray-500">No applications match.</p>}
+        {shown.map(a => (
           <div key={a.id} className="p-4 text-sm">
             <button onClick={() => expand(a)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
               <div className="min-w-0">
@@ -830,21 +919,15 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
                   {a.description && <details><summary className="cursor-pointer text-gray-500">Job description</summary><p className="whitespace-pre-line text-gray-700 mt-1">{a.description}</p></details>}
                 </div>
                 <div className="space-y-2">
-                  {a.status !== 'withdrawn' && (
-                    <MailRelayBox call={call} id={a.id} kind="jobapps" party="employer" contact={a.employer} listingEmails={a.employerEmails}
-                      messages={a.messages} replyAddress={a.replyAddress} canSend onDone={load} />
+                  {['withdrawn', 'cancelled'].includes(a.status) && (
+                    <p className="rounded-lg bg-gray-100 p-2 text-gray-600">{a.status === 'withdrawn' ? 'The applicant withdrew this application.' : 'Lyrtrip cancelled this application.'} Change the status to reopen it.</p>
                   )}
-                  {a.status === 'withdrawn' ? <p className="text-gray-500">The applicant withdrew this application.</p> : (<>
-                    <label className="block text-xs font-semibold text-gray-600">Status</label>
-                    <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
-                      {JOB_APP_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                    </select>
-                    <label className="block text-xs font-semibold text-gray-600">Message to the applicant (emailed; no employer contact details)</label>
-                    <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
-                    <label className="block text-xs font-semibold text-gray-600">Internal note</label>
-                    <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
-                    <button onClick={() => save(a)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>
-                  </>)}
+                  <MailRelayBox call={call} id={a.id} kind="jobapps" party="employer" contact={a.employer} listingEmails={a.employerEmails}
+                    messages={a.messages} replyAddress={a.replyAddress} canSend={!['withdrawn', 'cancelled'].includes(a.status)}
+                    notReadyNote="Reopen the application to send it." onDone={load} />
+                  <AppStatusForm steps={JOB_APP_STEPS} draft={draft} setDraft={setDraft} busy={busy} onSave={() => save(a)} onDelete={() => remove(a)}
+                    person="applicant" party="employer" />
+                  <AppHistory history={a.history} />
                 </div>
               </div>
             )}
@@ -873,7 +956,16 @@ function MailRelayBox({ call, id, kind, party, contact, listingEmails, messages,
   };
   const send = () => {
     if (!confirm(`Email this application with its documents to ${sendTo}?`)) return;
-    run(() => call({ action: `${kind}.send`, id, email: sendTo }));
+    run(async () => {
+      try {
+        await call({ action: `${kind}.send`, id, email: sendTo });
+      } catch (err) {
+        // The student has not paid the fee yet: the admin may still send it on purpose
+        const msg = err instanceof Error ? err.message : '';
+        if (!/not paid/i.test(msg) || !confirm(`${msg}. Send it anyway?`)) throw err;
+        await call({ action: `${kind}.send`, id, email: sendTo, force: true });
+      }
+    });
   };
   const who: Record<string, string> = { employer: 'Employer', institution: 'Institution', applicant: kind === 'jobapps' ? 'Applicant' : 'Student', lyrtrip: 'Lyrtrip', bounce: 'Bounce' };
   return (
@@ -929,12 +1021,13 @@ interface AdminStudyApplication {
     tests: { test: string; score: string; date: string }[];
   };
   docs: { kind: string; label: string; name: string; url: string | null }[];
-  listingEmails: string[]; contact: RelayContact; replyAddress: string | null; messages: RelayMessage[];
+  listingEmails: string[]; contact: RelayContact; replyAddress: string | null; messages: RelayMessage[]; history: AppHistoryEntry[];
 }
 
 const STUDY_STEPS: [string, string][] = [
-  ['submitted', 'Received'], ['docs_needed', 'More documents needed'], ['fee_due', 'Quote fee (fee to pay)'], ['processing', 'Lyrtrip is applying'],
+  ['submitted', 'Submitted (to review)'], ['docs_needed', 'More documents needed'], ['fee_due', 'Quote fee (fee to pay)'], ['processing', 'Lyrtrip is applying'],
   ['applied', 'Submitted to institution'], ['replied', 'Institution replied'], ['interview', 'Interview requested'], ['offer', 'Offer / award received'], ['rejected', 'Not successful'],
+  ['withdrawn', 'Withdrawn by student'], ['cancelled', 'Cancelled by Lyrtrip'],
 ];
 const APPLICANT_FIELDS: [string, string][] = [
   ['dateOfBirth', 'Date of birth'], ['gender', 'Gender'], ['nationality', 'Nationality'], ['countryOfResidence', 'Residence'], ['city', 'City'], ['address', 'Address'],
@@ -947,21 +1040,28 @@ const APPLICANT_FIELDS: [string, string][] = [
 export function StudyApplicationsPanel({ call }: { call: Call }) {
   const [data, setData] = useState<{ applications: AdminStudyApplication[]; payingStudents: number; studentProfiles: number; serviceRate: number } | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ status: '', message: '', note: '', fee: '' });
+  const [draft, setDraft] = useState({ status: '', message: '', note: '', fee: '', notify: true });
   const [busy, setBusy] = useState(false);
+  const [q, setQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const load = useCallback(() => {
     call({ action: 'studyapps.list' }).then(d => setData(d as unknown as NonNullable<typeof data>)).catch(() => setData({ applications: [], payingStudents: 0, studentProfiles: 0, serviceRate: 0.1 }));
   }, [call]);
   useEffect(() => { load(); }, [load]);
   const rows = data?.applications ?? null;
+  const shown = (rows ?? []).filter(a => (!statusFilter || a.status === statusFilter)
+    && matches(q, a.applicant.name, a.applicant.email, a.applicant.phone, a.program, a.institution.name, a.contact?.email));
   const expand = (a: AdminStudyApplication) => {
     setOpen(open === a.id ? null : a.id);
-    setDraft({ status: a.status === 'withdrawn' ? 'submitted' : a.status, message: '', note: a.adminNote, fee: a.fee ? String(a.fee.fee) : '' });
+    setDraft({ status: a.status, message: '', note: a.adminNote, fee: a.fee ? String(a.fee.fee) : '', notify: true });
+  };
+  const remove = async (a: AdminStudyApplication) => {
+    if (await deleteApplication(call, 'studyapps', a.id, `from ${a.applicant.name} for ${a.program} at ${a.institution.name}`)) { setOpen(null); load(); }
   };
   const save = async (a: AdminStudyApplication) => {
     setBusy(true);
     try {
-      await call({ action: 'studyapps.update', id: a.id, status: draft.status, message: draft.message, note: draft.note, fee: draft.fee === '' ? undefined : Number(draft.fee) });
+      await call({ action: 'studyapps.update', id: a.id, status: draft.status, message: draft.message, note: draft.note, notify: draft.notify, fee: draft.fee === '' ? undefined : Number(draft.fee) });
       setOpen(null);
       load();
     } catch (err) {
@@ -982,10 +1082,12 @@ export function StudyApplicationsPanel({ call }: { call: Call }) {
           ['To review', String(count('submitted'))], ['Fee paid, to apply', String(count('processing'))], ['Service earned', usd(earned)],
         ].map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
       </div>
+      <AppFilterBar q={q} setQ={setQ} status={statusFilter} setStatus={setStatusFilter} steps={STUDY_STEPS} shown={shown.length} total={rows?.length ?? 0} />
       <div className={`${panel} divide-y divide-gray-100`}>
         {rows === null && <p className="p-4 text-sm text-gray-500">Loading…</p>}
         {rows?.length === 0 && <p className="p-4 text-sm text-gray-500">No study applications yet.</p>}
-        {rows?.map(a => (
+        {rows && rows.length > 0 && shown.length === 0 && <p className="p-4 text-sm text-gray-500">No applications match.</p>}
+        {shown.map(a => (
           <div key={a.id} className="p-4 text-sm">
             <button onClick={() => expand(a)} className="w-full flex flex-wrap items-start justify-between gap-2 text-left">
               <div className="min-w-0">
@@ -1021,28 +1123,22 @@ export function StudyApplicationsPanel({ call }: { call: Call }) {
                   {a.docs.map(d => <a key={d.kind} href={d.url ?? '#'} className="block text-brand-600 truncate">{d.label}: {d.name}</a>)}
                 </div>
                 <div className="space-y-2">
-                  {a.status !== 'withdrawn' && (
-                    <MailRelayBox call={call} id={a.id} kind="studyapps" party="institution" contact={a.contact} listingEmails={a.listingEmails}
-                      messages={a.messages} replyAddress={a.replyAddress} canSend={!['fee_due'].includes(a.status)}
-                      notReadyNote="Waiting for the student to pay the fee. Once paid, Lyrtrip emails it automatically if the listing had an address." onDone={load} />
+                  {['withdrawn', 'cancelled'].includes(a.status) && (
+                    <p className="rounded-lg bg-gray-100 p-2 text-gray-600">{a.status === 'withdrawn' ? 'The student withdrew this application.' : 'Lyrtrip cancelled this application.'} Change the status to reopen it.</p>
                   )}
-                  {a.status === 'withdrawn' ? <p className="text-gray-500">The student withdrew this application.</p> : (<>
-                    <label className="block text-xs font-semibold text-gray-600">Status</label>
-                    <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">
-                      {STUDY_STEPS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                    </select>
+                  <MailRelayBox call={call} id={a.id} kind="studyapps" party="institution" contact={a.contact} listingEmails={a.listingEmails}
+                    messages={a.messages} replyAddress={a.replyAddress} canSend={!['withdrawn', 'cancelled'].includes(a.status)}
+                    notReadyNote="Reopen the application to send it." onDone={load} />
+                  <AppStatusForm steps={STUDY_STEPS} draft={draft} setDraft={setDraft} busy={busy} onSave={() => save(a)} onDelete={() => remove(a)}
+                    person="student" party="institution">
                     {draft.status === 'fee_due' && !a.fee?.paidAt && (<>
                       <label className="block text-xs font-semibold text-gray-600">Institution {a.type} fee (USD; 0 if none)</label>
                       <input type="number" min={0} step="0.01" value={draft.fee} onChange={e => setDraft({ ...draft, fee: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
-                      <p className="text-xs text-gray-600">Student pays {usd(feeNum)} + {Math.round(rate * 100)}% service {usd(Math.round(feeNum * rate * 100) / 100)} = <b>{usd(Math.round(feeNum * (1 + rate) * 100) / 100)}</b>. 0 skips payment and moves to &quot;Lyrtrip is applying&quot;.</p>
+                      <p className="text-xs text-gray-600">Student pays {usd(feeNum)} + {Math.round(rate * 100)}% service {usd(Math.round(feeNum * rate * 100) / 100)} = <b>{usd(Math.round(feeNum * (1 + rate) * 100) / 100)}</b>. 0 skips payment and moves to &quot;Lyrtrip is applying&quot;. The student is always emailed about a fee.</p>
                     </>)}
                     {a.fee?.paidAt && <p className="text-emerald-700">Paid {usd(a.feeCharged ?? a.fee.total)} on {new Date(a.fee.paidAt).toLocaleDateString()}</p>}
-                    <label className="block text-xs font-semibold text-gray-600">Message to the student (emailed; no institution contact details)</label>
-                    <textarea value={draft.message} onChange={e => setDraft({ ...draft, message: e.target.value })} rows={4} maxLength={2000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
-                    <label className="block text-xs font-semibold text-gray-600">Internal note</label>
-                    <textarea value={draft.note} onChange={e => setDraft({ ...draft, note: e.target.value })} rows={2} maxLength={1000} className="w-full border border-gray-300 rounded-lg px-2 py-1.5" />
-                    <button onClick={() => save(a)} disabled={busy} className="px-4 py-2 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">{busy ? 'Saving…' : 'Save and notify'}</button>
-                  </>)}
+                  </AppStatusForm>
+                  <AppHistory history={a.history} />
                 </div>
               </div>
             )}
