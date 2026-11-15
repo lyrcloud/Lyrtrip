@@ -35,9 +35,50 @@ function ListInput({ value, onChange, placeholder }: { value: string[]; onChange
   );
 }
 
+const WHO: Record<string, string> = { employer: 'Employer', applicant: 'You', lyrtrip: 'Lyrtrip' };
+
+// The messages between the applicant and the employer, and a box to write to the employer
+function Conversation({ a, onSent }: { a: JobApplication; onSent: (a: JobApplication) => void }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    setBusy(true);
+    try {
+      const d = await jobsCall<{ application: JobApplication }>({ action: 'application.reply', id: a.id, message: text });
+      setText('');
+      onSent(d.application);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not send the message');
+    }
+    setBusy(false);
+  };
+  const thread = a.thread ?? [];
+  return (
+    <div className="mt-2 space-y-2">
+      {thread.map(m => (
+        <div key={m.id} className={`rounded-lg p-2 ${m.who === 'applicant' ? 'bg-brand-50 ml-6' : m.who === 'employer' ? 'bg-teal-50 mr-6' : 'bg-gray-50'}`}>
+          <p className="text-xs text-gray-500">{WHO[m.who]} · {new Date(m.at).toLocaleString()}</p>
+          <p className="text-gray-800 whitespace-pre-line">{m.text}</p>
+          {m.attachments > 0 && <p className="text-xs text-gray-500">{m.attachments} attachment(s) held by Lyrtrip</p>}
+        </div>
+      ))}
+      {a.canMessage && a.status !== 'withdrawn' && (
+        <div className="flex gap-2">
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={2} maxLength={4000} placeholder="Write to the employer…"
+            className="flex-1 px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-brand-500" />
+          <button onClick={send} disabled={busy || text.trim().length < 2} className="self-end px-3 py-2 bg-btn text-white rounded-xl text-sm font-semibold disabled:bg-gray-300">
+            {busy ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Jobs applied for through Lyrtrip, with where each one stands
 function MyApplications() {
   const [apps, setApps] = useState<JobApplication[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const load = () => jobsCall<{ applications: JobApplication[] }>({ action: 'applications.mine' }).then(d => setApps(d.applications)).catch(() => setApps([]));
   useEffect(() => { load(); }, []);
   const withdraw = async (a: JobApplication) => {
@@ -48,7 +89,7 @@ function MyApplications() {
   return (
     <div id="applications" className={card}>
       <h2 className="font-bold text-gray-900">My applications</h2>
-      <p className="text-sm text-gray-600 mb-3">Apply from the Job tab and Lyrtrip sends your profile and CV to the employer. Replies come to you through Lyrtrip.</p>
+      <p className="text-sm text-gray-600 mb-3">Apply from the Job tab and Lyrtrip sends your profile and CV to the employer. We email you when it is sent and as soon as the employer replies.</p>
       {apps === null && <p className="text-sm text-gray-500">Loading…</p>}
       {apps?.length === 0 && <p className="text-sm text-gray-500">No applications yet. <Link href="/" className="text-brand-600 font-semibold">Search jobs</Link></p>}
       <div className="divide-y divide-gray-100">
@@ -57,12 +98,21 @@ function MyApplications() {
             <div className="min-w-0">
               <p className="font-semibold text-gray-900">{a.title}</p>
               <p className="text-gray-600">{a.location}</p>
-              <p className="text-xs text-gray-400">Applied {new Date(a.createdAt).toLocaleDateString()}</p>
+              <p className="text-xs text-gray-400">
+                Applied {new Date(a.createdAt).toLocaleDateString()}
+                {a.sentAt ? ` · Sent to the employer ${new Date(a.sentAt).toLocaleDateString()}${a.sentBy === 'email' ? ' by email' : ' on their site'}` : ' · Waiting to be sent'}
+              </p>
               {a.message && <p className="mt-1 text-gray-700 whitespace-pre-line bg-gray-50 rounded-lg p-2">{a.message}</p>}
+              {((a.thread?.length ?? 0) > 0 || a.canMessage) && (
+                <button onClick={() => setOpen(open === a.id ? null : a.id)} className="mt-1 text-xs text-brand-600 font-semibold">
+                  {open === a.id ? 'Hide messages' : `Messages (${a.thread?.filter(m => m.who !== 'lyrtrip').length ?? 0})`}
+                </button>
+              )}
+              {open === a.id && <Conversation a={a} onSent={u => setApps(list => (list ?? []).map(x => (x.id === u.id ? u : x)))} />}
             </div>
             <div className="text-right space-y-1">
               <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${APP_STYLE[a.status] ?? ''}`}>{a.statusLabel}</span>
-              {['submitted', 'forwarded', 'interview'].includes(a.status) && (
+              {['submitted', 'forwarded', 'replied', 'interview'].includes(a.status) && (
                 <button onClick={() => withdraw(a)} className="block ml-auto text-xs text-gray-500 underline">Withdraw</button>
               )}
             </div>

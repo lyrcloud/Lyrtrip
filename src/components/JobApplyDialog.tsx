@@ -58,8 +58,8 @@ export default function JobApplyDialog({ job, onClose }: { job: ApplyJob; onClos
           <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${APP_STYLE[applied.status] ?? ''}`}>{applied.statusLabel}</span>
         </p>
         <p className="text-sm text-gray-700">
-          {done ? 'Your application has been sent to Lyrtrip. ' : 'You have already applied for this job. '}
-          We send it to the employer and email you when they reply. All contact about this job goes through Lyrtrip.
+          {done ? (applied.sentBy === 'email' ? 'Lyrtrip has emailed your application and CV to the employer. ' : 'Lyrtrip has your application and submits it on the employer’s site for you. ') : 'You have already applied for this job. '}
+          {applied.sentBy ? 'We email you as soon as the employer replies.' : 'We email you when it is sent and when the employer replies.'} All contact about this job goes through Lyrtrip.
         </p>
         <Link href="/jobs/profile#applications" className="text-sm font-semibold text-brand-600">See my applications →</Link>
       </div>
@@ -89,7 +89,7 @@ export default function JobApplyDialog({ job, onClose }: { job: ApplyJob; onClos
             placeholder="Why you are a good fit for this role"
             className="w-full px-3 py-2.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-100" />
         </div>
-        <p className="text-xs text-gray-500">Lyrtrip reviews your application and sends your profile and CV to the employer. Their replies come to you through Lyrtrip.</p>
+        <p className="text-xs text-gray-500">Lyrtrip sends your profile, cover letter and CV to the employer and emails you a confirmation. Their replies come to you through Lyrtrip.</p>
         <button onClick={submit} disabled={busy} className={`${primary} w-full`}>{busy ? 'Sending…' : 'Send application'}</button>
       </div>
     );

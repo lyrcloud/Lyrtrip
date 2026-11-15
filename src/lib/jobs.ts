@@ -42,8 +42,11 @@ export interface TalentProfile extends TalentCard {
 // An application made through Lyrtrip; the employer's contact details stay with Lyrtrip
 export interface JobApplication {
   id: string; title: string; location: string; salary: string | null; jobType: string | null;
-  status: 'submitted' | 'forwarded' | 'interview' | 'rejected' | 'hired' | 'withdrawn'; statusLabel: string; message: string;
+  status: 'submitted' | 'forwarded' | 'replied' | 'interview' | 'rejected' | 'hired' | 'withdrawn'; statusLabel: string; message: string;
   createdAt: string; updatedAt: string;
+  // When Lyrtrip sent it to the employer, and how (by email from Lyrtrip, or on the employer's own site)
+  sentAt?: string | null; sentBy?: 'email' | 'site' | null; canMessage?: boolean;
+  thread?: { id: string; at: string; who: 'employer' | 'applicant' | 'lyrtrip'; text: string; attachments: number }[];
 }
 
 export interface ApplyCheck {
@@ -51,7 +54,7 @@ export interface ApplyCheck {
 }
 
 export const APP_STYLE: Record<string, string> = {
-  submitted: 'bg-sky-100 text-sky-800', forwarded: 'bg-indigo-100 text-indigo-800', interview: 'bg-amber-100 text-amber-900',
+  submitted: 'bg-sky-100 text-sky-800', forwarded: 'bg-indigo-100 text-indigo-800', replied: 'bg-teal-100 text-teal-800', interview: 'bg-amber-100 text-amber-900',
   hired: 'bg-emerald-100 text-emerald-800', rejected: 'bg-gray-200 text-gray-700', withdrawn: 'bg-gray-100 text-gray-500',
 };
 

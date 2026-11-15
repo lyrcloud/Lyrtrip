@@ -755,11 +755,15 @@ interface AdminJobApplication {
   status: string; statusLabel: string; message: string; createdAt: string; updatedAt: string;
   applicant: { name: string; email: string; phone: string; headline: string; city: string; country: string; yearsExperience: number | null; skills: string[]; cvName: string; cvUrl: string | null };
   coverLetter: string; via: string; applyOptions: { title: string; link: string }[]; shareLink: string | null; description: string; adminNote: string;
+  employerEmails: string[]; replyAddress: string | null;
+  employer: { email?: string; method: 'email' | 'site'; sentAt: string; by: string; bounced?: boolean; lastFrom?: string; repliedAt?: string; cvAttached?: boolean } | null;
+  messages: { id: string; at: string; dir: 'in' | 'out'; who: string; from?: string; fromName?: string; to?: string; subject?: string; text: string; auto?: boolean; attachments?: { name: string; size: number }[] }[];
 }
 
 const JOB_APP_STEPS: [string, string][] = [
-  ['submitted', 'Received'], ['forwarded', 'Sent to employer'], ['interview', 'Interview'], ['rejected', 'Not selected'], ['hired', 'Offer made'],
+  ['submitted', 'Received (not sent yet)'], ['forwarded', 'Sent to employer'], ['replied', 'Employer replied'], ['interview', 'Interview'], ['rejected', 'Not selected'], ['hired', 'Offer made'],
 ];
+const MSG_WHO: Record<string, string> = { employer: 'Employer', applicant: 'Applicant', lyrtrip: 'Lyrtrip', bounce: 'Bounce' };
 
 // Applications made through Lyrtrip: admins forward the CV to the employer and relay replies to the applicant
 export function JobApplicationsPanel({ call }: { call: Call }) {
@@ -767,6 +771,8 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
   const [open, setOpen] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ status: string; message: string; note: string }>({ status: '', message: '', note: '' });
   const [busy, setBusy] = useState(false);
+  const [sendTo, setSendTo] = useState('');
+  const [toEmployer, setToEmployer] = useState('');
   const load = useCallback(() => {
     call({ action: 'jobapps.list' }).then(d => setRows(d.applications as AdminJobApplication[])).catch(() => setRows([]));
   }, [call]);
@@ -774,6 +780,31 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
   const expand = (a: AdminJobApplication) => {
     setOpen(open === a.id ? null : a.id);
     setDraft({ status: a.status === 'withdrawn' ? 'submitted' : a.status, message: '', note: a.adminNote });
+    setSendTo(a.employer?.bounced ? '' : a.employer?.email ?? a.employerEmails[0] ?? '');
+    setToEmployer('');
+  };
+  // Emails the application with the CV to the employer; their reply comes back to Lyrtrip and to the applicant
+  const sendToEmployer = async (a: AdminJobApplication) => {
+    if (!confirm(`Email ${a.applicant.name}'s application and CV to ${sendTo}?`)) return;
+    setBusy(true);
+    try {
+      await call({ action: 'jobapps.send', id: a.id, email: sendTo });
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not send the application');
+    }
+    setBusy(false);
+  };
+  const messageEmployer = async (a: AdminJobApplication) => {
+    setBusy(true);
+    try {
+      await call({ action: 'jobapps.message', id: a.id, message: toEmployer });
+      setToEmployer('');
+      load();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not send the message');
+    }
+    setBusy(false);
   };
   const save = async (a: AdminJobApplication) => {
     setBusy(true);
@@ -790,7 +821,7 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[['Applications', String(rows?.length ?? 0)], ['To forward', String(count('submitted'))], ['Sent to employer', String(count('forwarded'))], ['Interviews', String(count('interview'))]]
+        {[['Applications', String(rows?.length ?? 0)], ['To submit', String(count('submitted'))], ['Sent, awaiting reply', String(count('forwarded'))], ['Employer replied', String(count('replied'))]]
           .map(([l, v]) => <div key={l} className={`${panel} p-3`}><p className="text-xs text-gray-500">{l}</p><p className="text-lg font-bold text-gray-900">{v}</p></div>)}
       </div>
       <div className={`${panel} divide-y divide-gray-100`}>
@@ -802,7 +833,11 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
               <div className="min-w-0">
                 <p className="font-semibold text-gray-900">{a.applicant.name} <span className="font-normal text-gray-500">for</span> {a.title}</p>
                 <p className="text-gray-600">{[a.company, a.location, a.via && `via ${a.via}`].filter(Boolean).join(' · ')}</p>
-                <p className="text-xs text-gray-400">Applied {new Date(a.createdAt).toLocaleString()}</p>
+                <p className="text-xs text-gray-400">
+                  Applied {new Date(a.createdAt).toLocaleString()}
+                  {a.employer && ` · sent ${new Date(a.employer.sentAt).toLocaleString()} ${a.employer.method === 'email' ? `to ${a.employer.email}${a.employer.by === 'auto' ? ' (automatic)' : ''}` : 'on the employer site'}`}
+                  {a.employer?.bounced && <span className="text-red-600 font-semibold"> · bounced</span>}
+                </p>
               </div>
               <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{a.statusLabel}</span>
             </button>
@@ -823,6 +858,39 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
                   {a.description && <details><summary className="cursor-pointer text-gray-500">Job description</summary><p className="whitespace-pre-line text-gray-700 mt-1">{a.description}</p></details>}
                 </div>
                 <div className="space-y-2">
+                  {a.status !== 'withdrawn' && (!a.employer || a.employer.bounced) && (
+                    <div className="rounded-lg bg-amber-50 p-3 space-y-2">
+                      <p className="text-xs font-semibold text-amber-900">
+                        {a.employer?.bounced ? `The email to ${a.employer.email} bounced. Send it to another address:` : 'Not sent yet. Email it to the employer (CV attached), or submit it on their site and set the status to "Sent to employer".'}
+                      </p>
+                      {a.employerEmails.length > 0 && <p className="text-xs text-amber-900">From the listing: {a.employerEmails.join(', ')}</p>}
+                      <div className="flex gap-2">
+                        <input type="email" value={sendTo} onChange={e => setSendTo(e.target.value)} placeholder="hr@company.com" className="flex-1 border border-gray-300 rounded-lg px-2 py-1.5" />
+                        <button onClick={() => sendToEmployer(a)} disabled={busy || !sendTo.includes('@')} className="px-3 py-1.5 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">Send</button>
+                      </div>
+                    </div>
+                  )}
+                  {a.messages.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-semibold uppercase text-gray-500">Conversation{a.replyAddress ? ` (${a.replyAddress})` : ''}</p>
+                      {a.messages.map(m => (
+                        <div key={m.id} className={`rounded-lg p-2 ${m.who === 'employer' ? 'bg-teal-50' : m.who === 'bounce' ? 'bg-red-50' : 'bg-gray-50'}`}>
+                          <p className="text-xs text-gray-500">
+                            {MSG_WHO[m.who] ?? m.who}{m.dir === 'in' && m.from ? ` <${m.from}>` : m.to ? ` → ${m.to}` : ''} · {new Date(m.at).toLocaleString()}{m.auto ? ' · automatic reply' : ''}
+                          </p>
+                          {m.subject && m.dir === 'in' && <p className="text-xs font-semibold text-gray-700">{m.subject}</p>}
+                          <p className="whitespace-pre-line text-gray-800">{m.text}</p>
+                          {(m.attachments?.length ?? 0) > 0 && <p className="text-xs text-gray-500">Attachments (see the Lyrsoft mailbox): {m.attachments!.map(x => x.name).join(', ')}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {a.status !== 'withdrawn' && a.employer?.method === 'email' && !a.employer.bounced && (
+                    <div className="flex gap-2">
+                      <textarea value={toEmployer} onChange={e => setToEmployer(e.target.value)} rows={2} maxLength={4000} placeholder="Write to the employer as Lyrtrip…" className="flex-1 border border-gray-300 rounded-lg px-2 py-1.5" />
+                      <button onClick={() => messageEmployer(a)} disabled={busy || !toEmployer.trim()} className="self-end px-3 py-1.5 bg-gray-800 text-white rounded-lg font-semibold disabled:bg-gray-300">Send</button>
+                    </div>
+                  )}
                   {a.status === 'withdrawn' ? <p className="text-gray-500">The applicant withdrew this application.</p> : (<>
                     <label className="block text-xs font-semibold text-gray-600">Status</label>
                     <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">

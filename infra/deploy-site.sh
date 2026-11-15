@@ -122,6 +122,22 @@ FUNCTION_ARN=$(aws lambda get-function-configuration --function-name $FUNCTION $
 aws lambda add-permission --function-name $FUNCTION $R --statement-id $RULE --action lambda:InvokeFunction \
   --principal events.amazonaws.com --source-arn "$RULE_ARN" >/dev/null 2>&1 || echo "schedule permission exists"
 aws events put-targets --rule $RULE $R --targets "Id=$FUNCTION,Arn=$FUNCTION_ARN" --query FailedEntryCount --output text
+# Employer replies to job applications: lyrtrip.com's MX is SES inbound (rule set lyrsoft-inbound). Its
+# lyrsoft-mailboxes rule stores every message in S3; lyrtrip-job-replies, right after it, invokes this
+# Lambda, which acts only on jobs-<code>@lyrtrip.com and reads the stored copy (AmazonS3ReadOnlyAccess).
+MAIL_RULE_SET=lyrsoft-inbound
+MAIL_RULE=lyrtrip-job-replies
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+aws lambda add-permission --function-name $FUNCTION $R --statement-id ses-$MAIL_RULE --action lambda:InvokeFunction \
+  --principal ses.amazonaws.com --source-account "$ACCOUNT" \
+  --source-arn "arn:aws:ses:us-east-1:$ACCOUNT:receipt-rule-set/$MAIL_RULE_SET:receipt-rule/$MAIL_RULE" >/dev/null 2>&1 || echo "inbound mail permission exists"
+MAIL_RULE_JSON="{\"Name\":\"$MAIL_RULE\",\"Enabled\":true,\"TlsPolicy\":\"Optional\",\"ScanEnabled\":true,\"Recipients\":[\"lyrtrip.com\"],
+  \"Actions\":[{\"LambdaAction\":{\"FunctionArn\":\"$FUNCTION_ARN\",\"InvocationType\":\"Event\"}}]}"
+if aws ses describe-receipt-rule --rule-set-name $MAIL_RULE_SET --rule-name $MAIL_RULE $R >/dev/null 2>&1; then
+  aws ses update-receipt-rule --rule-set-name $MAIL_RULE_SET $R --rule "$MAIL_RULE_JSON" && echo "updated mail rule $MAIL_RULE"
+else
+  aws ses create-receipt-rule --rule-set-name $MAIL_RULE_SET --after lyrsoft-mailboxes $R --rule "$MAIL_RULE_JSON" && echo "created mail rule $MAIL_RULE"
+fi
 INTEGRATION=$(aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='POST /api/search'].Target" --output text)
 for ROUTE in "POST /api/flight/{proxy+}" "POST /api/hotel/{proxy+}" "GET /api/tours" "POST /api/tours" "GET /api/tours/{id}" "POST /api/admin" "POST /api/rewards" "POST /api/ship/{proxy+}" "POST /api/delivery/{proxy+}" "POST /api/ride/{proxy+}" "POST /api/jobs" "POST /api/study" "POST /api/events" "POST /api/packages" "POST /api/helicopter" "POST /api/freight" "POST /api/legal" "POST /api/donations" "POST /api/client-error" "POST /api/assistant/chat" "GET /api/rates" "POST /api/i18n" "POST /api/auth/phone/{proxy+}" "POST /api/auth/lyrshop" "POST /api/auth/handoff" "POST /api/partner/{proxy+}" "POST /api/notify/{proxy+}" "POST /api/lyrpay/callback"; do
   if aws apigatewayv2 get-routes --api-id $API_ID $R --query "Items[?RouteKey=='$ROUTE'].RouteId" --output text | grep -q .; then

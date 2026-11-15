@@ -1882,7 +1882,7 @@ async function requireAdmin(idToken) {
 
 // A customer email can carry `notify: { phone, sub, url }`: the subject then also goes out as a
 // text to that phone and a push to the account's devices (see notify.mjs)
-async function sendEmail({ to, subject, html, text, notify }) {
+async function sendEmail({ to, subject, html, text, notify, replyTo }) {
   if (notify) await notifyBooking(notify, to, subject);
   const from = process.env.SES_FROM_EMAIL;
   if (!from || !to || isPhoneLoginEmail(to)) return false;
@@ -1890,6 +1890,7 @@ async function sendEmail({ to, subject, html, text, notify }) {
     await new SESClient({}).send(new SendEmailCommand({
       Source: `Lyrtrip <${from}>`,
       Destination: { ToAddresses: [to] },
+      ...(replyTo ? { ReplyToAddresses: [replyTo] } : {}),
       Message: { Subject: { Data: subject }, Body: { Html: { Data: html }, Text: { Data: text } } },
     }));
     return true;
@@ -2666,7 +2667,19 @@ function scrubJob(text, company) {
   return out;
 }
 
-const jobTokenKey = () => createHash('sha256').update(process.env.JOB_APPLY_SECRET || `${process.env.STRIPE_SECRET_KEY}:job-apply`).digest();
+// Addresses a listing asks applicants to write to ("send your CV to hr@..."), best first. Lyrtrip submits
+// applications there by itself; addresses for privacy, disability accommodation or no-reply are skipped.
+const EMAIL_RE = /[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/gi;
+function employerEmailsIn(description, highlights) {
+  const text = [description, ...(highlights ?? []).flatMap(h => h.items ?? [])].join('\n');
+  const found = [...new Set((String(text).match(EMAIL_RE) ?? []).map(e => e.toLowerCase().replace(/\.+$/, '')))]
+    .filter(e => !/^(no-?reply|do-?not-?reply|donotreply|privacy|dpo|gdpr|accommodat|accessibility|ada|abuse|unsubscribe|support|info@example)|@(example|email|domain)\./.test(e))
+    .filter(e => !/\.(png|jpe?g|gif|svg|webp)$/.test(e));
+  const score = e => (/^(careers?|jobs?|hr|recruit|talent|hiring|cv|resumes?|apply|applications?|people|staffing)/.test(e) ? 0 : 1);
+  return found.sort((a, b) => score(a) - score(b)).slice(0, 3);
+}
+
+const jobTokenKey = () =>createHash('sha256').update(process.env.JOB_APPLY_SECRET || `${process.env.STRIPE_SECRET_KEY}:job-apply`).digest();
 function sealJob(data) {
   const iv = randomBytes(12);
   const c = createCipheriv('aes-256-gcm', jobTokenKey(), iv);
@@ -2729,6 +2742,7 @@ async function searchJobsSerpApi({ title, location, jobType, datePosted }) {
       salary: j.detected_extensions?.salary ?? null, jobType: j.detected_extensions?.schedule_type ?? null,
       applyOptions: (j.apply_options ?? []).slice(0, 5).map(o => ({ title: o.title, link: o.link })),
       shareLink: j.share_link ?? null, description: (j.description ?? '').slice(0, 1500), at: Date.now(),
+      employerEmails: employerEmailsIn(j.description, j.job_highlights),
     }),
     highlights:  (j.job_highlights ?? []).map(h => ({ title: scrubJob(h.title, j.company_name), items: (h.items ?? []).slice(0, 20).map(t => scrubJob(t, j.company_name)) })),
     rating:      null,
@@ -3374,6 +3388,8 @@ export async function handler(event) {
   // instead of an unhandled Lambda error (the routes return un-awaited promises).
   try {
     // An EventBridge schedule (every few minutes) settles rides nobody is watching
+    // Mail to lyrtrip.com (SES inbound): employer replies to job applications
+    if (event?.Records?.[0]?.eventSource === 'aws:ses') return await handleInboundMail(event);
     if (event?.source === 'aws.events') {
       const db = await getDb();
       if (ridesEnabled()) await sweepRides(db);
@@ -4004,13 +4020,42 @@ async function handleAdmin(event) {
             ...applicantJobApp(a), sub: a.sub, applicant: { ...a.applicant, cvKey: undefined, cvUrl: await signedFileUrl(a.applicant?.cvKey, a.applicant?.cvName) },
             coverLetter: a.coverLetter ?? '', via: a.job.via ?? '', applyOptions: a.job.applyOptions ?? [], shareLink: a.job.shareLink ?? null,
             description: a.job.description ?? '', adminNote: a.adminNote ?? '',
+            employerEmails: a.job.employerEmails ?? [], employer: a.employer ?? null, replyAddress: a.replyCode ? jobReplyAddress(a.replyCode) : null,
+            messages: (a.messages ?? []).map(({ rawKey, sesId, ...m }) => m),
           }))),
         });
       }
 
+      // Emails the application (CV attached) to an employer address the admin found, e.g. on the company's careers page
+      case 'jobapps.send': {
+        const apps = db.collection('job_applications');
+        const a = await apps.findOne({ _id: String(body.id ?? '') });
+        if (!a) return json(404, { error: 'Application not found' });
+        if (a.status === 'withdrawn') return json(409, { error: 'The applicant withdrew this application' });
+        try {
+          return json(200, await submitJobAppToEmployer(db, a, String(body.email ?? ''), 'admin'));
+        } catch (err) {
+          return json(err.status ?? 500, { error: err.message });
+        }
+      }
+
+      // Lyrtrip's team writes to the employer from the application's address
+      case 'jobapps.message': {
+        const a = await db.collection('job_applications').findOne({ _id: String(body.id ?? '') });
+        if (!a) return json(404, { error: 'Application not found' });
+        const text = String(body.message ?? '').trim().slice(0, 4000);
+        if (!text) return json(400, { error: 'Write a message first' });
+        try {
+          await relayToEmployer(db, a, text, 'lyrtrip');
+          return json(200, { ok: true });
+        } catch (err) {
+          return json(err.status ?? 500, { error: err.message });
+        }
+      }
+
       // Moves an application along; the message (if any) is emailed to the applicant, without employer contact details
       case 'jobapps.update': {
-        const status = ['submitted', 'forwarded', 'interview', 'rejected', 'hired'].includes(body.status) ? body.status : null;
+        const status = ['submitted', 'forwarded', 'replied', 'interview', 'rejected', 'hired'].includes(body.status) ? body.status : null;
         if (!status) return json(400, { error: 'Unknown status' });
         const apps = db.collection('job_applications');
         const a = await apps.findOne({ _id: String(body.id ?? '') });
@@ -4021,10 +4066,12 @@ async function handleAdmin(event) {
         await apps.updateOne({ _id: a._id }, { $set: {
           status, applicantMessage: message, adminNote: String(body.note ?? a.adminNote ?? '').slice(0, 1000), updatedAt: now,
           [`statusAt.${status}`]: now,
+          // Marked sent without Lyrtrip's email: the admin submitted it on the employer's own site
+          ...(status === 'forwarded' && a.employer?.method !== 'email' ? { employer: { method: 'site', sentAt: now, by: 'admin' } } : {}),
         } });
         if (status !== a.status || message) {
           await sendEmail({
-            to: a.applicant.email, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/jobs/profile` }, subject: `${JOB_APP_STATUS[status]}: ${a.job.title}`,
+            to: a.applicant.email, replyTo: a.replyCode ? jobReplyAddress(a.replyCode) : undefined, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/jobs/profile` }, subject: `${JOB_APP_STATUS[status]}: ${a.job.title}`,
             html: jobAppEmail(JOB_APP_STATUS[status], [['Job', a.job.title], ['Location', a.job.location], ...(message ? [['Message from Lyrtrip', message]] : [])],
               `Reply to this email or see ${SITE_URL}/jobs/profile. Please keep all contact about this job through Lyrtrip.`),
             text: `${JOB_APP_STATUS[status]}: ${a.job.title}.${message ? `\n\n${message}` : ''}`,
@@ -6006,7 +6053,7 @@ const escapeRegex = v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Job applications go through Lyrtrip: we keep the applicant's details and forward them to the employer
 const JOB_APP_STATUS = {
-  submitted: 'Received by Lyrtrip', forwarded: 'Sent to the employer', interview: 'Interview requested',
+  submitted: 'Received by Lyrtrip', forwarded: 'Sent to the employer', replied: 'Employer replied', interview: 'Interview requested',
   rejected: 'Not selected', hired: 'Offer made', withdrawn: 'Withdrawn',
 };
 function applyMissing(p) {
@@ -6023,11 +6070,304 @@ const jobAppId = (sub, job) => `${sub}:${createHash('sha256').update(job.jobId |
 const applicantJobApp = a => ({
   id: a._id, title: a.job.title, location: a.job.location, salary: a.job.salary ?? null, jobType: a.job.jobType ?? null,
   status: a.status, statusLabel: JOB_APP_STATUS[a.status] ?? a.status, message: a.applicantMessage ?? '', createdAt: a.createdAt, updatedAt: a.updatedAt,
+  sentAt: a.employer?.sentAt ?? null, sentBy: a.employer ? (a.employer.method === 'email' ? 'email' : 'site') : null,
+  canMessage: a.employer?.method === 'email' && !a.employer?.bounced, thread: applicantThread(a),
 });
 const jobAppEmail = (heading, rows, foot) => `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#111">
   <h2 style="color:#0f766e">${heading}</h2>
   <table style="border-collapse:collapse;width:100%">${rows.map(([k, v]) => `<tr><td style="padding:6px 8px;color:#555;vertical-align:top">${k}</td><td style="padding:6px 8px">${String(v ?? '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\n/g, '<br>')}</td></tr>`).join('')}</table>
   <p style="color:#555;font-size:13px">${foot}</p></div>`;
+
+// ---------------------------------------------------------------------------
+// Job applications by email. Each application gets its own address, jobs-<code>@lyrtrip.com. Lyrtrip
+// sends the application (with the CV attached) to the employer from that address, so the employer's
+// reply comes back to it. lyrtrip.com's MX is SES inbound (rule set lyrsoft-inbound): the
+// lyrsoft-mailboxes rule stores each message in S3, and the lyrtrip-job-replies rule invokes this
+// Lambda, which matches the application, keeps the message and emails the applicant at once.
+// The applicant can answer by replying to that email or from /jobs/profile; Lyrtrip passes it to the employer.
+// ---------------------------------------------------------------------------
+const JOB_MAIL_DOMAIN = 'lyrtrip.com';
+const JOB_REPLY_RE = /^jobs-([a-f0-9]{12})@lyrtrip\.com$/i;
+const jobReplyAddress = code => `jobs-${code}@${JOB_MAIL_DOMAIN}`;
+const JOB_MAIL_BUCKET = () => process.env.JOB_MAIL_BUCKET || 'lyrsoft-mail-479664683751';
+const JOB_MAIL_PREFIX = () => process.env.JOB_MAIL_PREFIX ?? 'inbound/';
+const JOB_ATTACH_MAX = 7 * 1024 * 1024;   // SES raw messages top out at 10 MB after base64
+const isEmail = v => /^[^\s@<>()",;]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}$/i.test(String(v ?? ''));
+
+let jobReplyIndexReady = false;
+async function ensureReplyCode(apps, a) {
+  if (a.replyCode) return a.replyCode;
+  if (!jobReplyIndexReady) {
+    await apps.createIndex({ replyCode: 1 }, { unique: true, sparse: true }).catch(err => console.error('replyCode index:', err.message));
+    jobReplyIndexReady = true;
+  }
+  const code = randomBytes(6).toString('hex');
+  await apps.updateOne({ _id: a._id, replyCode: { $exists: false } }, { $set: { replyCode: code } });
+  const fresh = await apps.findOne({ _id: a._id }, { projection: { replyCode: 1 } });
+  a.replyCode = fresh?.replyCode ?? code;
+  return a.replyCode;
+}
+
+const mimeWord = s => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s).toString('base64')}?=`);
+const mimeName = (name, addr) => `${mimeWord(String(name).replace(/["\r\n<>]/g, ''))} <${addr}>`;
+const b64lines = buf => buf.toString('base64').replace(/.{1,76}/g, '$&\r\n');
+const safeFileName = n => String(n || 'CV').replace(/[^\w.\- ]/g, '_').slice(0, 120) || 'CV';
+
+function buildRawEmail({ from, to, replyTo, subject, html, text, attachments = [], headers = {} }) {
+  const mix = `mix_${randomBytes(12).toString('hex')}`;
+  const alt = `alt_${randomBytes(12).toString('hex')}`;
+  const out = [
+    `From: ${from}`, `To: ${to}`, ...(replyTo ? [`Reply-To: ${replyTo}`] : []), `Subject: ${mimeWord(subject.replace(/[\r\n]+/g, ' '))}`,
+    `Date: ${new Date().toUTCString()}`, 'MIME-Version: 1.0', ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`),
+    `Content-Type: multipart/mixed; boundary="${mix}"`, '',
+    `--${mix}`, `Content-Type: multipart/alternative; boundary="${alt}"`, '',
+    `--${alt}`, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64lines(Buffer.from(text, 'utf8')),
+    `--${alt}`, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64lines(Buffer.from(html, 'utf8')),
+    `--${alt}--`,
+  ];
+  for (const a of attachments) {
+    const name = safeFileName(a.filename);
+    out.push(`--${mix}`, `Content-Type: ${a.contentType}; name="${name}"`, `Content-Disposition: attachment; filename="${name}"`,
+      'Content-Transfer-Encoding: base64', '', b64lines(a.content));
+  }
+  out.push(`--${mix}--`, '');
+  return out.join('\r\n');
+}
+
+// Returns the SES message id, or null when SES refused it
+async function sendRawEmail(opts) {
+  try {
+    const { SendRawEmailCommand } = await import('@aws-sdk/client-ses');
+    const r = await new SESClient({}).send(new SendRawEmailCommand({ RawMessage: { Data: Buffer.from(buildRawEmail(opts)) } }));
+    return r.MessageId ?? null;
+  } catch (err) {
+    console.error('SES raw email failed:', opts.to, err.message);
+    return null;
+  }
+}
+
+async function jobFileBuffer(key) {
+  const { s3, mod } = await jobS3();
+  const r = await s3.send(new mod.GetObjectCommand({ Bucket: jobBucket(), Key: key }));
+  return { content: Buffer.from(await r.Body.transformToByteArray()), contentType: r.ContentType || 'application/octet-stream' };
+}
+
+// The applicant never sees the employer's name or contact details, so employer messages are scrubbed for them
+const scrubForApplicant = (text, company) => scrubJob(scrubJobContacts(text, '[contact via Lyrtrip]'), company);
+
+// Only the new part of a reply: quoted history and signatures below "On ... wrote:" are cut
+function stripQuoted(text) {
+  const lines = String(text ?? '').replace(/\r/g, '').split('\n');
+  const cut = lines.findIndex((l, i) =>
+    /^On .{4,200}wrote:\s*$/.test(l) || (/^On .{4,200}$/.test(l) && /wrote:\s*$/.test(lines[i + 1] ?? '')) ||
+    /^-{2,}\s*(Original Message|Forwarded message)/i.test(l) || /^_{5,}\s*$/.test(l) ||
+    (/^From:\s/.test(l) && /^(Sent|Date|To):\s/.test(lines[i + 1] ?? '')) || /^>/.test(l));
+  return (cut > 0 ? lines.slice(0, cut) : lines).join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 8000);
+}
+
+// A copy of the message for the admin, the applicant and the employer thread
+const jobMsg = (m) => ({ id: randomBytes(6).toString('hex'), at: new Date().toISOString(), ...m });
+
+// Sends the application to the employer, marks it "Sent to the employer" and tells the applicant
+async function submitJobAppToEmployer(db, a, to, by = 'auto') {
+  const apps = db.collection('job_applications');
+  to = String(to).trim().toLowerCase();
+  if (!isEmail(to)) throw new JobError('That employer email address is not valid');
+  const relay = jobReplyAddress(await ensureReplyCode(apps, a));
+  const ap = a.applicant;
+  let attachments = [];
+  let cvNote = '';
+  try {
+    const f = await jobFileBuffer(ap.cvKey);
+    if (f.content.length <= JOB_ATTACH_MAX) attachments = [{ filename: ap.cvName, contentType: f.contentType, content: f.content }];
+    else cvNote = 'The CV is too large to attach; reply to this email and Lyrtrip will send it.';
+  } catch (err) {
+    console.error('CV load failed for job application:', err.message);
+    throw new JobError('The applicant\'s CV could not be loaded', 500);
+  }
+  const rows = [
+    ['Position', a.job.title], ['Location', a.job.location], ['Candidate', ap.name], ['Headline', ap.headline],
+    ['Based in', [ap.city, ap.country].filter(Boolean).join(', ')],
+    ...(ap.yearsExperience != null ? [['Experience', `${ap.yearsExperience} years`]] : []),
+    ...(ap.skills?.length ? [['Skills', ap.skills.join(', ')]] : []),
+    ...(a.coverLetter ? [['Cover letter', a.coverLetter]] : []),
+    ...(cvNote ? [['CV', cvNote]] : []),
+  ];
+  const foot = `${esc(ap.name)} applied for this position through Lyrtrip (lyrtrip.com).${attachments.length ? ' Their CV is attached.' : ''} `
+    + 'To contact the candidate, simply reply to this email: your reply reaches them through Lyrtrip.';
+  const subject = `Application for ${a.job.title}: ${ap.name}`;
+  const text = `${rows.map(([k, v]) => `${k}: ${v}`).join('\n')}\n\n${ap.name} applied through Lyrtrip.${attachments.length ? ' Their CV is attached.' : ''} Reply to this email to contact the candidate.`;
+  const sesId = await sendRawEmail({
+    from: mimeName('Lyrtrip Careers', relay), to, replyTo: relay, subject, attachments,
+    html: jobAppEmail(`Job application: ${esc(a.job.title)}`, rows, foot), text,
+  });
+  if (!sesId) throw new JobError('The email to the employer could not be sent. Please try again.', 502);
+  const now = new Date().toISOString();
+  await apps.updateOne({ _id: a._id }, {
+    $set: {
+      status: 'forwarded', 'statusAt.forwarded': now, updatedAt: now,
+      employer: { email: to, method: 'email', sentAt: now, by, sesMessageId: sesId, bounced: false, cvAttached: attachments.length > 0 },
+    },
+    $push: { messages: jobMsg({ dir: 'out', who: 'lyrtrip', to, subject, text: `Application${attachments.length ? ' and CV' : ''} sent to the employer by email.`, sesId }) },
+  });
+  await sendEmail({
+    to: ap.email, replyTo: relay, notify: { phone: ap.phone, sub: a.sub, url: `${SITE_URL}/jobs/profile` }, subject: `Sent to the employer: ${a.job.title}`,
+    html: jobAppEmail('Your application was sent to the employer', [
+      ['Job', a.job.title], ['Location', a.job.location], ['Sent', new Date(now).toUTCString()],
+      ['Included', attachments.length ? `Your profile, cover letter and CV (${ap.cvName})` : 'Your profile and cover letter'],
+    ], `Lyrtrip emailed your application to the employer. As soon as they reply, we email you their message. To write to the employer, reply to this email or use ${SITE_URL}/jobs/profile.`),
+    text: `Lyrtrip sent your application for ${a.job.title} to the employer on ${new Date(now).toUTCString()}. We email you as soon as they reply.`,
+  });
+  return { sentTo: to, at: now };
+}
+
+// Passes a message from the applicant (or Lyrtrip's team) to the employer from the application's address
+async function relayToEmployer(db, a, text, who) {
+  const target = a.employer?.lastFrom || a.employer?.email;
+  if (!target || a.employer?.method !== 'email') throw new JobError('This application has not been emailed to the employer yet, so there is no one to write to.', 409);
+  const relay = jobReplyAddress(await ensureReplyCode(db.collection('job_applications'), a));
+  const from = who === 'applicant' ? `${a.applicant.name} via Lyrtrip` : 'Lyrtrip Careers';
+  const subject = `Re: Application for ${a.job.title}: ${a.applicant.name}`;
+  const sesId = await sendRawEmail({
+    from: mimeName(from, relay), to: target, replyTo: relay, subject,
+    headers: a.employer.lastMessageId ? { 'In-Reply-To': a.employer.lastMessageId, References: a.employer.lastMessageId } : {},
+    html: jobAppEmail(`Message from ${esc(who === 'applicant' ? a.applicant.name : 'Lyrtrip')}`, [['Position', a.job.title], ['Message', text]],
+      'Reply to this email to answer; it reaches the candidate through Lyrtrip.'),
+    text: `${text}\n\n(About the application for ${a.job.title}. Reply to this email to answer.)`,
+  });
+  if (!sesId) throw new JobError('The message could not be sent. Please try again.', 502);
+  await db.collection('job_applications').updateOne({ _id: a._id }, {
+    $set: { updatedAt: new Date().toISOString() },
+    $push: { messages: jobMsg({ dir: 'out', who, to: target, subject, text, sesId }) },
+  });
+}
+
+// Reads the stored copy of an inbound message; the S3 rule runs just before this one, so allow a short wait
+async function readInboundMail(messageId) {
+  const { s3, mod } = await (async () => { const m = await import('@aws-sdk/client-s3'); s3Client ??= new m.S3Client({}); return { s3: s3Client, mod: m }; })();
+  const Key = `${JOB_MAIL_PREFIX()}${messageId}`;
+  for (let i = 0; ; i++) {
+    try {
+      const r = await s3.send(new mod.GetObjectCommand({ Bucket: JOB_MAIL_BUCKET(), Key }));
+      return { raw: Buffer.from(await r.Body.transformToByteArray()), key: Key };
+    } catch (err) {
+      if (i >= 6 || err.name !== 'NoSuchKey') throw err;
+      await new Promise(res => setTimeout(res, 1500));
+    }
+  }
+}
+
+function isAutoReply(p) {
+  const h = k => String(p.headers.get(k)?.value ?? p.headers.get(k) ?? '').toLowerCase();
+  return (h('auto-submitted') && h('auto-submitted') !== 'no') || /bulk|junk|list|auto_reply/.test(h('precedence'))
+    || p.headers.has('x-autoreply') || p.headers.has('x-autorespond') || /auto-?reply|all/.test(h('x-auto-response-suppress'))
+    || /^(auto(matic)? ?reply|out of (the )?office|away from|automatische antwort|réponse automatique|abwesenheit)/i.test(p.subject ?? '');
+}
+
+// SES invokes the Lambda with { Records: [{ eventSource: 'aws:ses', ses: { mail, receipt } }] } for every lyrtrip.com message
+async function handleInboundMail(event) {
+  const db = await getDb();
+  for (const rec of event.Records ?? []) {
+    const { mail, receipt } = rec.ses ?? {};
+    if (!mail) continue;
+    const codes = [...new Set((receipt?.recipients ?? mail.destination ?? []).map(r => String(r).trim().toLowerCase().match(JOB_REPLY_RE)?.[1]).filter(Boolean))];
+    if (!codes.length) continue;   // other lyrtrip.com mail belongs to the Lyrsoft mailbox
+    if ([receipt?.spamVerdict, receipt?.virusVerdict].some(v => v?.status === 'FAIL')) {
+      console.log('Job reply dropped as spam/virus:', mail.messageId);
+      continue;
+    }
+    try {
+      const { raw, key } = await readInboundMail(mail.messageId);
+      const { simpleParser } = await import('mailparser');
+      const parsed = await simpleParser(raw);
+      for (const code of codes) await relayInboundJobMail(db, code, parsed, mail, key);
+    } catch (err) {
+      console.error('Job reply handling failed:', mail.messageId, err.message);
+    }
+  }
+  return { ok: true };
+}
+
+async function relayInboundJobMail(db, code, p, mail, rawKey) {
+  const apps = db.collection('job_applications');
+  const a = await apps.findOne({ replyCode: code });
+  if (!a) { console.log('Job reply for an unknown application code'); return; }
+  const fromAddr = String(p.from?.value?.[0]?.address ?? mail.source ?? '').toLowerCase();
+  const fromName = p.from?.value?.[0]?.name ?? '';
+  const contentType = String(p.headers.get('content-type')?.value ?? '');
+  const bounce = /^(mailer-daemon|postmaster)@/i.test(fromAddr) || contentType === 'multipart/report';
+  const fromApplicant = !bounce && fromAddr === String(a.applicant.email ?? '').toLowerCase();
+  const auto = !bounce && isAutoReply(p);
+  const body = stripQuoted(p.text || (p.html ? String(p.html).replace(/<(br|\/p|\/div)[^>]*>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ') : ''));
+  const attachments = (p.attachments ?? []).filter(x => x.contentDisposition !== 'inline').map(x => ({ name: x.filename ?? 'attachment', size: x.size ?? 0 }));
+  const who = bounce ? 'bounce' : fromApplicant ? 'applicant' : 'employer';
+  const msg = jobMsg({ dir: 'in', who, from: fromAddr, fromName, subject: (p.subject ?? '').slice(0, 300), text: body, auto, attachments, mailId: mail.messageId, rawKey });
+  // Claim the message once: SES retries a failed invocation, and nobody should get the same email twice
+  const set = { updatedAt: msg.at };
+  if (who === 'employer' && !auto) {
+    set['employer.lastFrom'] = fromAddr;
+    set['employer.lastMessageId'] = p.messageId ?? null;
+    set['employer.repliedAt'] = msg.at;
+    if (['submitted', 'forwarded'].includes(a.status)) { set.status = 'replied'; set['statusAt.replied'] = msg.at; }
+  }
+  if (bounce && a.employer?.method === 'email') {
+    set['employer.bounced'] = true;
+    if (a.status === 'forwarded') set.status = 'submitted';
+  }
+  const r = await apps.updateOne({ _id: a._id, 'messages.mailId': { $ne: mail.messageId } }, { $set: set, $push: { messages: msg } });
+  if (!r.modifiedCount) return;
+  const adminRows = [['Applicant', a.applicant.name], ['Job', a.job.title], ['Company', a.job.company], ['From', `${fromName} <${fromAddr}>`], ['Subject', p.subject ?? ''], ['Message', body || '(no text)'],
+    ...(attachments.length ? [['Attachments', attachments.map(x => x.name).join(', ')]] : [])];
+
+  if (bounce) {
+    await sendEmail({
+      to: superAdminEmail(), subject: `Employer email bounced: ${a.applicant.name} for ${a.job.title}`,
+      html: jobAppEmail('The employer\'s address bounced', adminRows, `The application is back to "To submit". Open ${SITE_URL}/admin, Job applications, and send it to another address or on the employer's site.`),
+      text: `The application email for ${a.job.title} (${a.job.company}) to ${a.employer?.email} bounced. Resubmit it from ${SITE_URL}/admin.`,
+    });
+    return;
+  }
+  if (auto) return;   // out-of-office and similar: kept in the thread, nobody is emailed
+
+  if (fromApplicant) {
+    try {
+      await relayToEmployer(db, a, body || '(no text)', 'applicant');
+    } catch (err) {
+      await sendEmail({
+        to: superAdminEmail(), subject: `Applicant message to pass on: ${a.applicant.name} for ${a.job.title}`,
+        html: jobAppEmail('An applicant wrote about their application', adminRows, `It could not be sent to the employer automatically (${esc(err.message)}). See ${SITE_URL}/admin.`),
+        text: `${a.applicant.name} wrote about ${a.job.title}: ${body}`,
+      });
+    }
+    return;
+  }
+
+  // The employer (or someone writing for them) replied: email the applicant now, and copy the admin
+  const relay = jobReplyAddress(code);
+  const shown = scrubForApplicant(body, a.job.company) || '(The employer sent a message without text.)';
+  await Promise.all([
+    sendEmail({
+      to: a.applicant.email, replyTo: relay, notify: { phone: a.applicant.phone, sub: a.sub, url: `${SITE_URL}/jobs/profile` },
+      subject: `The employer replied: ${a.job.title}`,
+      html: jobAppEmail('The employer replied to your application', [
+        ['Job', a.job.title], ['Location', a.job.location], ['Their message', shown],
+        ...(attachments.length ? [['Attachments', `${attachments.length} file(s); Lyrtrip passes on what you need`]] : []),
+      ], `Reply to this email to answer the employer, or use ${SITE_URL}/jobs/profile. Please keep all contact about this job through Lyrtrip.`),
+      text: `The employer replied about ${a.job.title}:\n\n${shown}\n\nReply to this email to answer.`,
+    }),
+    sendEmail({
+      to: superAdminEmail(), subject: `Employer replied: ${a.applicant.name} for ${a.job.title} (${a.job.company})`,
+      html: jobAppEmail('An employer replied (the applicant was emailed)', adminRows, `The applicant got the message without the employer's contact details. See ${SITE_URL}/admin, Job applications.`),
+      text: `${a.job.company} replied about ${a.applicant.name}'s application for ${a.job.title}:\n\n${body}`,
+    }),
+  ]);
+}
+
+// What the applicant sees of the conversation: employer messages without the employer's name or contacts
+const applicantThread = a => (a.messages ?? []).filter(m => !m.auto && m.who !== 'bounce').map(m => ({
+  id: m.id, at: m.at, who: m.who, text: m.who === 'employer' ? scrubForApplicant(m.text, a.job.company) : m.text,
+  attachments: m.who === 'employer' ? (m.attachments ?? []).length : 0,
+}));
 
 async function handleJobs(event) {
   const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
@@ -6241,21 +6581,31 @@ async function handleJobs(event) {
           },
         };
         await apps.replaceOne({ _id }, a, { upsert: true });
+        // The listing names an address to apply to: Lyrtrip emails the application there right away
+        let sent = null;
+        let sendError = '';
+        for (const to of (job.employerEmails ?? []).filter(isEmail).slice(0, 1)) {
+          try { sent = await submitJobAppToEmployer(db, a, to, 'auto'); } catch (err) { sendError = err.message; console.error('Auto-submit failed:', err.message); }
+        }
+        const adminRows = [['Applicant', a.applicant.name], ['Job', job.title], ['Company', job.company], ['Location', job.location]];
         await Promise.all([
-          sendEmail({
+          sent ? null : sendEmail({
             to: p.email, notify: { phone: p.phone, sub: me().sub, url: `${SITE_URL}/jobs/profile` }, subject: `Application received: ${job.title}`,
             html: jobAppEmail('We have your application', [['Job', job.title], ['Location', job.location]],
-              `Lyrtrip reviews your application and sends it to the employer for you. Employers reply through Lyrtrip, and we email you any update. You can follow it at ${SITE_URL}/jobs/profile.`),
-            text: `We received your application for ${job.title}. Lyrtrip sends it to the employer and emails you any update.`,
+              `This employer takes applications on their own website, so the Lyrtrip team submits yours there for you and emails you as soon as it is sent. Employer replies come through Lyrtrip, and we email you every update. Follow it at ${SITE_URL}/jobs/profile.`),
+            text: `We received your application for ${job.title}. The Lyrtrip team submits it on the employer's site and emails you when it is sent.`,
           }),
           sendEmail({
-            to: superAdminEmail(), subject: `New job application: ${a.applicant.name} for ${job.title} (${job.company})`,
-            html: jobAppEmail('New job application to forward', [['Applicant', a.applicant.name], ['Job', job.title], ['Company', job.company], ['Location', job.location]],
-              `Open ${SITE_URL}/admin, Job applications, to see the CV and the employer's apply links.`),
-            text: `New job application from ${a.applicant.name} for ${job.title} at ${job.company}. See ${SITE_URL}/admin.`,
+            to: superAdminEmail(),
+            subject: sent ? `Job application sent: ${a.applicant.name} for ${job.title} (${job.company})` : `Job application to submit: ${a.applicant.name} for ${job.title} (${job.company})`,
+            html: sent
+              ? jobAppEmail('Job application emailed to the employer', [...adminRows, ['Sent to', sent.sentTo]], `Nothing to do: replies come back to Lyrtrip and the applicant is emailed automatically. See ${SITE_URL}/admin.`)
+              : jobAppEmail('New job application to submit', [...adminRows, ...(sendError ? [['Automatic send failed', sendError]] : [])],
+                `The listing has no email address. Open ${SITE_URL}/admin, Job applications: submit it on the employer's site and mark it sent, or enter the employer's email and Lyrtrip sends it.`),
+            text: sent ? `Application from ${a.applicant.name} for ${job.title} was emailed to ${sent.sentTo}.` : `New job application from ${a.applicant.name} for ${job.title} at ${job.company} needs submitting. See ${SITE_URL}/admin.`,
           }),
         ]);
-        return json(200, { application: applicantJobApp(a) });
+        return json(200, { application: applicantJobApp(await apps.findOne({ _id }) ?? a) });
       }
 
       case 'applications.mine': {
@@ -6264,12 +6614,30 @@ async function handleJobs(event) {
       }
 
       case 'application.withdraw': {
-        const r = await db.collection('job_applications').updateOne(
-          { _id: String(body.id ?? ''), sub: me().sub, status: { $in: ['submitted', 'forwarded', 'interview'] } },
-          { $set: { status: 'withdrawn', updatedAt: new Date().toISOString() } },
-        );
-        if (!r.matchedCount) throw new JobError('This application can no longer be withdrawn');
+        const apps = db.collection('job_applications');
+        const a = await apps.findOne({ _id: String(body.id ?? ''), sub: me().sub, status: { $in: ['submitted', 'forwarded', 'replied', 'interview'] } });
+        if (!a) throw new JobError('This application can no longer be withdrawn');
+        await apps.updateOne({ _id: a._id }, { $set: { status: 'withdrawn', updatedAt: new Date().toISOString() } });
+        // The employer already has it: let them know, so nobody waits on a candidate who has left
+        if (a.employer?.method === 'email' && !a.employer?.bounced) {
+          await relayToEmployer(db, a, `${a.applicant.name} has withdrawn their application for ${a.job.title}. Thank you for your time.`, 'lyrtrip')
+            .catch(err => console.error('Withdrawal note failed:', err.message));
+        }
         return json(200, { ok: true });
+      }
+
+      // The applicant writes to the employer; Lyrtrip sends it from the application's address
+      case 'application.reply': {
+        const apps = db.collection('job_applications');
+        const a = await apps.findOne({ _id: String(body.id ?? ''), sub: me().sub });
+        if (!a) throw new JobError('Application not found', 404);
+        if (a.status === 'withdrawn') throw new JobError('You withdrew this application');
+        const text = String(body.message ?? '').trim().slice(0, 4000);
+        if (text.length < 2) throw new JobError('Write a message first');
+        const recent = (a.messages ?? []).filter(m => m.who === 'applicant' && Date.now() - Date.parse(m.at) < 86400_000).length;
+        if (recent >= 10) throw new JobError('You have sent 10 messages today about this job. Please wait for the employer to reply.', 429);
+        await relayToEmployer(db, a, text, 'applicant');
+        return json(200, { application: applicantJobApp(await apps.findOne({ _id: a._id })) });
       }
 
       default:
@@ -9068,3 +9436,6 @@ async function routeRequest(event) {
     return json(500, { error: 'Failed to process API request' });
   }
 }
+
+// Pure helpers of the job-application mail relay, for jobmail.test.mjs
+export const jobMailInternals = { buildRawEmail, stripQuoted, employerEmailsIn, isAutoReply, scrubForApplicant, JOB_REPLY_RE };
