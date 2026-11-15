@@ -111,7 +111,8 @@ aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admi
   }, {
     \"Effect\": \"Allow\",
     \"Action\": [\"ses:SendEmail\", \"ses:SendRawEmail\"],
-    \"Resource\": \"arn:aws:ses:us-east-1:$(aws sts get-caller-identity --query Account --output text):identity/lyrtrip.com\"
+    \"Resource\": [\"arn:aws:ses:us-east-1:$(aws sts get-caller-identity --query Account --output text):identity/lyrtrip.com\",
+                 \"arn:aws:ses:us-east-1:$(aws sts get-caller-identity --query Account --output text):configuration-set/*\"]
   }]
 }"
 echo "admin policy on ${ROLE_ARN##*/}"
