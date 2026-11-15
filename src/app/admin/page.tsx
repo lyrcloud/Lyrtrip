@@ -403,7 +403,7 @@ export default function AdminPage() {
 
                 {userTab === 'accounts' && (
                   <div className="space-y-4">
-                    <div className="grid gap-3 sm:grid-cols-4">
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                       {([['Total', stats.users, 'all'], ['Admins', stats.admins, 'admins'], ['Disabled', (users ?? []).filter(u => !u.enabled).length, 'disabled'], ['Not verified', (users ?? []).filter(u => u.status === 'UNCONFIRMED').length, 'unverified']] as const).map(([l, v, f]) => (
                         <button key={l} onClick={() => setUserFilter(f)} className={`${card} p-3 text-left ${userFilter === f ? 'ring-2 ring-indigo-500' : ''}`}>
                           <p className="text-xs text-gray-500">{l}</p><p className="text-xl font-bold text-gray-900">{v}</p>
@@ -415,7 +415,7 @@ export default function AdminPage() {
                         <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
                         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by email, name or sign-in method" className={`${input} pl-9`} />
                       </div>
-                      <select value={userFilter} onChange={e => setUserFilter(e.target.value as typeof userFilter)} className={`${input} w-auto`}>
+                      <select value={userFilter} onChange={e => setUserFilter(e.target.value as typeof userFilter)} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
                         <option value="all">Everyone</option><option value="admins">Admins</option><option value="business">Business accounts</option>
                         <option value="disabled">Disabled</option><option value="unverified">Email not verified</option>
                       </select>
