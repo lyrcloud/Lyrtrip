@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import PageLoader from '@/components/PageLoader';
+import AppConversation from '@/components/AppConversation';
 import { PLAN_STYLE } from '@/lib/jobs';
 import {
   studyCall, uploadStudyDoc, STUDY_STATUS_STYLE,
@@ -44,6 +45,7 @@ function ListInput({ value, onChange, placeholder }: { value: string[]; onChange
 function MyApplications({ reloadKey }: { reloadKey: number }) {
   const [apps, setApps] = useState<StudyApplication[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const load = () => studyCall<{ applications: StudyApplication[] }>({ action: 'applications.mine' }).then(d => setApps(d.applications)).catch(() => setApps([]));
   useEffect(() => { load(); }, [reloadKey]);
   const act = async (id: string, fn: () => Promise<void>) => {
@@ -66,7 +68,7 @@ function MyApplications({ reloadKey }: { reloadKey: number }) {
   return (
     <div id="applications" className={card}>
       <h2 className="font-bold text-gray-900">My applications</h2>
-      <p className="text-sm text-gray-600 mb-3">Apply from the Study tab. Lyrtrip prepares your application, tells you the institution&apos;s fee, and applies for you once it is paid.</p>
+      <p className="text-sm text-gray-600 mb-3">Apply from the Study tab. Lyrtrip prepares your application, tells you the institution&apos;s fee, and applies for you once it is paid. We email you when it is sent and as soon as the institution replies.</p>
       {apps === null && <p className="text-sm text-gray-500">Loading…</p>}
       {apps?.length === 0 && <p className="text-sm text-gray-500">No applications yet. <Link href="/" className="text-brand-600 font-semibold">Search schools and scholarships</Link></p>}
       <div className="divide-y divide-gray-100">
@@ -82,7 +84,20 @@ function MyApplications({ reloadKey }: { reloadKey: number }) {
                   {a.fee.paidAt && <span className="text-emerald-700"> · paid {new Date(a.fee.paidAt).toLocaleDateString()}</span>}
                 </p>
               )}
+              {a.sentAt && <p className="text-xs text-gray-500">Sent to the institution {new Date(a.sentAt).toLocaleDateString()}{a.sentBy === 'email' ? ' by email' : ' on their site'}</p>}
               {a.message && <p className="mt-1 text-gray-700 whitespace-pre-line bg-gray-50 rounded-lg p-2">{a.message}</p>}
+              {((a.thread?.length ?? 0) > 0 || a.canMessage) && (
+                <button onClick={() => setOpen(open === a.id ? null : a.id)} className="mt-1 text-xs text-brand-600 font-semibold">
+                  {open === a.id ? 'Hide messages' : `Messages (${a.thread?.filter(m => m.who !== 'lyrtrip').length ?? 0})`}
+                </button>
+              )}
+              {open === a.id && (
+                <AppConversation thread={a.thread ?? []} canMessage={!!a.canMessage && a.status !== 'withdrawn'} party="institution"
+                  onSend={async text => {
+                    const d = await studyCall<{ application: StudyApplication }>({ action: 'application.reply', id: a.id, message: text });
+                    setApps(list => (list ?? []).map(x => (x.id === d.application.id ? d.application : x)));
+                  }} />
+              )}
             </div>
             <div className="text-right space-y-1">
               <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${STUDY_STATUS_STYLE[a.status] ?? ''}`}>{a.statusLabel}</span>

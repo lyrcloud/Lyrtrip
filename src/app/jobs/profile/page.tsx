@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import PageLoader from '@/components/PageLoader';
+import AppConversation from '@/components/AppConversation';
 import { jobsCall, uploadJobFile, APP_STYLE, PLAN_STYLE, type Education, type JobApplication, type Experience, type JobPlans, type JobProfile, type OwnerView } from '@/lib/jobs';
 import { rememberReturnTo } from '@/lib/returnTo';
 
@@ -32,46 +33,6 @@ function ListInput({ value, onChange, placeholder }: { value: string[]; onChange
     <input className={input} value={text} placeholder={placeholder}
       onChange={e => setText(e.target.value)}
       onBlur={() => onChange(text.split(',').map(s => s.trim()).filter(Boolean))} />
-  );
-}
-
-const WHO: Record<string, string> = { employer: 'Employer', applicant: 'You', lyrtrip: 'Lyrtrip' };
-
-// The messages between the applicant and the employer, and a box to write to the employer
-function Conversation({ a, onSent }: { a: JobApplication; onSent: (a: JobApplication) => void }) {
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const send = async () => {
-    setBusy(true);
-    try {
-      const d = await jobsCall<{ application: JobApplication }>({ action: 'application.reply', id: a.id, message: text });
-      setText('');
-      onSent(d.application);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Could not send the message');
-    }
-    setBusy(false);
-  };
-  const thread = a.thread ?? [];
-  return (
-    <div className="mt-2 space-y-2">
-      {thread.map(m => (
-        <div key={m.id} className={`rounded-lg p-2 ${m.who === 'applicant' ? 'bg-brand-50 ml-6' : m.who === 'employer' ? 'bg-teal-50 mr-6' : 'bg-gray-50'}`}>
-          <p className="text-xs text-gray-500">{WHO[m.who]} · {new Date(m.at).toLocaleString()}</p>
-          <p className="text-gray-800 whitespace-pre-line">{m.text}</p>
-          {m.attachments > 0 && <p className="text-xs text-gray-500">{m.attachments} attachment(s) held by Lyrtrip</p>}
-        </div>
-      ))}
-      {a.canMessage && a.status !== 'withdrawn' && (
-        <div className="flex gap-2">
-          <textarea value={text} onChange={e => setText(e.target.value)} rows={2} maxLength={4000} placeholder="Write to the employer…"
-            className="flex-1 px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:bg-white focus:border-brand-500" />
-          <button onClick={send} disabled={busy || text.trim().length < 2} className="self-end px-3 py-2 bg-btn text-white rounded-xl text-sm font-semibold disabled:bg-gray-300">
-            {busy ? 'Sending…' : 'Send'}
-          </button>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -108,7 +69,13 @@ function MyApplications() {
                   {open === a.id ? 'Hide messages' : `Messages (${a.thread?.filter(m => m.who !== 'lyrtrip').length ?? 0})`}
                 </button>
               )}
-              {open === a.id && <Conversation a={a} onSent={u => setApps(list => (list ?? []).map(x => (x.id === u.id ? u : x)))} />}
+              {open === a.id && (
+                <AppConversation thread={a.thread ?? []} canMessage={!!a.canMessage && a.status !== 'withdrawn'} party="employer"
+                  onSend={async text => {
+                    const d = await jobsCall<{ application: JobApplication }>({ action: 'application.reply', id: a.id, message: text });
+                    setApps(list => (list ?? []).map(x => (x.id === d.application.id ? d.application : x)));
+                  }} />
+              )}
             </div>
             <div className="text-right space-y-1">
               <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${APP_STYLE[a.status] ?? ''}`}>{a.statusLabel}</span>

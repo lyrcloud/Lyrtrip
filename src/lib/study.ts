@@ -31,7 +31,7 @@ export interface StudyOwnerView {
   subscription: JobSubscription | null; live: boolean; appsUsed: number; appsLimit: number;
 }
 
-export type StudyAppStatus = 'submitted' | 'docs_needed' | 'fee_due' | 'processing' | 'applied' | 'interview' | 'offer' | 'rejected' | 'withdrawn';
+export type StudyAppStatus = 'submitted' | 'docs_needed' | 'fee_due' | 'processing' | 'applied' | 'replied' | 'interview' | 'offer' | 'rejected' | 'withdrawn';
 
 // An application made through Lyrtrip; the institution's website and contacts stay with Lyrtrip
 export interface StudyApplication {
@@ -39,6 +39,9 @@ export interface StudyApplication {
   status: StudyAppStatus; statusLabel: string; message: string;
   fee: { fee: number; service: number; total: number; label: string; paidAt: string | null } | null;
   createdAt: string; updatedAt: string;
+  // When Lyrtrip sent it to the institution, and how (by email from Lyrtrip, or on the institution's own site)
+  sentAt?: string | null; sentBy?: 'email' | 'site' | null; canMessage?: boolean;
+  thread?: { id: string; at: string; who: string; text: string; attachments: number }[];
 }
 
 export interface StudyApplyCheck {
@@ -48,7 +51,7 @@ export interface StudyApplyCheck {
 
 export const STUDY_STATUS_STYLE: Record<string, string> = {
   submitted: 'bg-sky-100 text-sky-800', docs_needed: 'bg-orange-100 text-orange-800', fee_due: 'bg-amber-100 text-amber-900',
-  processing: 'bg-indigo-100 text-indigo-800', applied: 'bg-indigo-100 text-indigo-800', interview: 'bg-amber-100 text-amber-900',
+  processing: 'bg-indigo-100 text-indigo-800', applied: 'bg-indigo-100 text-indigo-800', replied: 'bg-teal-100 text-teal-800', interview: 'bg-amber-100 text-amber-900',
   offer: 'bg-emerald-100 text-emerald-800', rejected: 'bg-gray-200 text-gray-700', withdrawn: 'bg-gray-100 text-gray-500',
 };
 

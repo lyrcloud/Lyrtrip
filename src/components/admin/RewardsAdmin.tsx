@@ -763,7 +763,6 @@ interface AdminJobApplication {
 const JOB_APP_STEPS: [string, string][] = [
   ['submitted', 'Received (not sent yet)'], ['forwarded', 'Sent to employer'], ['replied', 'Employer replied'], ['interview', 'Interview'], ['rejected', 'Not selected'], ['hired', 'Offer made'],
 ];
-const MSG_WHO: Record<string, string> = { employer: 'Employer', applicant: 'Applicant', lyrtrip: 'Lyrtrip', bounce: 'Bounce' };
 
 // Applications made through Lyrtrip: admins forward the CV to the employer and relay replies to the applicant
 export function JobApplicationsPanel({ call }: { call: Call }) {
@@ -771,8 +770,6 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
   const [open, setOpen] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ status: string; message: string; note: string }>({ status: '', message: '', note: '' });
   const [busy, setBusy] = useState(false);
-  const [sendTo, setSendTo] = useState('');
-  const [toEmployer, setToEmployer] = useState('');
   const load = useCallback(() => {
     call({ action: 'jobapps.list' }).then(d => setRows(d.applications as AdminJobApplication[])).catch(() => setRows([]));
   }, [call]);
@@ -780,31 +777,6 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
   const expand = (a: AdminJobApplication) => {
     setOpen(open === a.id ? null : a.id);
     setDraft({ status: a.status === 'withdrawn' ? 'submitted' : a.status, message: '', note: a.adminNote });
-    setSendTo(a.employer?.bounced ? '' : a.employer?.email ?? a.employerEmails[0] ?? '');
-    setToEmployer('');
-  };
-  // Emails the application with the CV to the employer; their reply comes back to Lyrtrip and to the applicant
-  const sendToEmployer = async (a: AdminJobApplication) => {
-    if (!confirm(`Email ${a.applicant.name}'s application and CV to ${sendTo}?`)) return;
-    setBusy(true);
-    try {
-      await call({ action: 'jobapps.send', id: a.id, email: sendTo });
-      load();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Could not send the application');
-    }
-    setBusy(false);
-  };
-  const messageEmployer = async (a: AdminJobApplication) => {
-    setBusy(true);
-    try {
-      await call({ action: 'jobapps.message', id: a.id, message: toEmployer });
-      setToEmployer('');
-      load();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Could not send the message');
-    }
-    setBusy(false);
   };
   const save = async (a: AdminJobApplication) => {
     setBusy(true);
@@ -858,38 +830,9 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
                   {a.description && <details><summary className="cursor-pointer text-gray-500">Job description</summary><p className="whitespace-pre-line text-gray-700 mt-1">{a.description}</p></details>}
                 </div>
                 <div className="space-y-2">
-                  {a.status !== 'withdrawn' && (!a.employer || a.employer.bounced) && (
-                    <div className="rounded-lg bg-amber-50 p-3 space-y-2">
-                      <p className="text-xs font-semibold text-amber-900">
-                        {a.employer?.bounced ? `The email to ${a.employer.email} bounced. Send it to another address:` : 'Not sent yet. Email it to the employer (CV attached), or submit it on their site and set the status to "Sent to employer".'}
-                      </p>
-                      {a.employerEmails.length > 0 && <p className="text-xs text-amber-900">From the listing: {a.employerEmails.join(', ')}</p>}
-                      <div className="flex gap-2">
-                        <input type="email" value={sendTo} onChange={e => setSendTo(e.target.value)} placeholder="hr@company.com" className="flex-1 border border-gray-300 rounded-lg px-2 py-1.5" />
-                        <button onClick={() => sendToEmployer(a)} disabled={busy || !sendTo.includes('@')} className="px-3 py-1.5 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">Send</button>
-                      </div>
-                    </div>
-                  )}
-                  {a.messages.length > 0 && (
-                    <div className="space-y-1.5">
-                      <p className="text-xs font-semibold uppercase text-gray-500">Conversation{a.replyAddress ? ` (${a.replyAddress})` : ''}</p>
-                      {a.messages.map(m => (
-                        <div key={m.id} className={`rounded-lg p-2 ${m.who === 'employer' ? 'bg-teal-50' : m.who === 'bounce' ? 'bg-red-50' : 'bg-gray-50'}`}>
-                          <p className="text-xs text-gray-500">
-                            {MSG_WHO[m.who] ?? m.who}{m.dir === 'in' && m.from ? ` <${m.from}>` : m.to ? ` → ${m.to}` : ''} · {new Date(m.at).toLocaleString()}{m.auto ? ' · automatic reply' : ''}
-                          </p>
-                          {m.subject && m.dir === 'in' && <p className="text-xs font-semibold text-gray-700">{m.subject}</p>}
-                          <p className="whitespace-pre-line text-gray-800">{m.text}</p>
-                          {(m.attachments?.length ?? 0) > 0 && <p className="text-xs text-gray-500">Attachments (see the Lyrsoft mailbox): {m.attachments!.map(x => x.name).join(', ')}</p>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {a.status !== 'withdrawn' && a.employer?.method === 'email' && !a.employer.bounced && (
-                    <div className="flex gap-2">
-                      <textarea value={toEmployer} onChange={e => setToEmployer(e.target.value)} rows={2} maxLength={4000} placeholder="Write to the employer as Lyrtrip…" className="flex-1 border border-gray-300 rounded-lg px-2 py-1.5" />
-                      <button onClick={() => messageEmployer(a)} disabled={busy || !toEmployer.trim()} className="self-end px-3 py-1.5 bg-gray-800 text-white rounded-lg font-semibold disabled:bg-gray-300">Send</button>
-                    </div>
+                  {a.status !== 'withdrawn' && (
+                    <MailRelayBox call={call} id={a.id} kind="jobapps" party="employer" contact={a.employer} listingEmails={a.employerEmails}
+                      messages={a.messages} replyAddress={a.replyAddress} canSend onDone={load} />
                   )}
                   {a.status === 'withdrawn' ? <p className="text-gray-500">The applicant withdrew this application.</p> : (<>
                     <label className="block text-xs font-semibold text-gray-600">Status</label>
@@ -912,6 +855,70 @@ export function JobApplicationsPanel({ call }: { call: Call }) {
   );
 }
 
+type RelayMessage = { id: string; at: string; dir: 'in' | 'out'; who: string; from?: string; to?: string; subject?: string; text: string; auto?: boolean; attachments?: { name: string; size: number }[] };
+type RelayContact = { email?: string; method: 'email' | 'site'; sentAt: string; by: string; bounced?: boolean } | null;
+
+// Emailing an application to the employer or institution, the conversation that follows, and writing to them as Lyrtrip
+function MailRelayBox({ call, id, kind, party, contact, listingEmails, messages, replyAddress, canSend, notReadyNote, onDone }: {
+  call: Call; id: string; kind: 'jobapps' | 'studyapps'; party: 'employer' | 'institution'; contact: RelayContact; listingEmails: string[];
+  messages: RelayMessage[]; replyAddress: string | null; canSend: boolean; notReadyNote?: string; onDone: () => void;
+}) {
+  const [sendTo, setSendTo] = useState(contact?.bounced ? '' : contact?.email ?? listingEmails[0] ?? '');
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try { await fn(); onDone(); } catch (err) { alert(err instanceof Error ? err.message : 'Could not send'); }
+    setBusy(false);
+  };
+  const send = () => {
+    if (!confirm(`Email this application with its documents to ${sendTo}?`)) return;
+    run(() => call({ action: `${kind}.send`, id, email: sendTo }));
+  };
+  const who: Record<string, string> = { employer: 'Employer', institution: 'Institution', applicant: kind === 'jobapps' ? 'Applicant' : 'Student', lyrtrip: 'Lyrtrip', bounce: 'Bounce' };
+  return (
+    <div className="space-y-2">
+      {(!contact || contact.bounced) && (
+        <div className="rounded-lg bg-amber-50 p-3 space-y-2">
+          <p className="text-xs font-semibold text-amber-900">
+            {contact?.bounced ? `The email to ${contact.email} bounced. Send it to another address:`
+              : canSend ? `Not sent yet. Email it to the ${party} (documents attached), or submit it on their site and set the status to sent.`
+                : notReadyNote ?? 'Not ready to send yet.'}
+          </p>
+          {listingEmails.length > 0 && <p className="text-xs text-amber-900">From the listing: {listingEmails.join(', ')}</p>}
+          {canSend && (
+            <div className="flex gap-2">
+              <input type="email" value={sendTo} onChange={e => setSendTo(e.target.value)} placeholder={party === 'employer' ? 'hr@company.com' : 'admissions@university.edu'} className="flex-1 border border-gray-300 rounded-lg px-2 py-1.5" />
+              <button onClick={send} disabled={busy || !sendTo.includes('@')} className="px-3 py-1.5 bg-btn text-white rounded-lg font-semibold disabled:bg-gray-300">Send</button>
+            </div>
+          )}
+        </div>
+      )}
+      {messages.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold uppercase text-gray-500">Conversation{replyAddress ? ` (${replyAddress})` : ''}</p>
+          {messages.map(m => (
+            <div key={m.id} className={`rounded-lg p-2 ${m.who === party ? 'bg-teal-50' : m.who === 'bounce' ? 'bg-red-50' : 'bg-gray-50'}`}>
+              <p className="text-xs text-gray-500">
+                {who[m.who] ?? m.who}{m.dir === 'in' && m.from ? ` <${m.from}>` : m.to ? ` → ${m.to}` : ''} · {new Date(m.at).toLocaleString()}{m.auto ? ' · automatic reply' : ''}
+              </p>
+              {m.subject && m.dir === 'in' && <p className="text-xs font-semibold text-gray-700">{m.subject}</p>}
+              <p className="whitespace-pre-line text-gray-800">{m.text}</p>
+              {(m.attachments?.length ?? 0) > 0 && <p className="text-xs text-gray-500">Attachments (see the Lyrsoft mailbox): {m.attachments!.map(x => x.name).join(', ')}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+      {contact?.method === 'email' && !contact.bounced && (
+        <div className="flex gap-2">
+          <textarea value={text} onChange={e => setText(e.target.value)} rows={2} maxLength={4000} placeholder={`Write to the ${party} as Lyrtrip…`} className="flex-1 border border-gray-300 rounded-lg px-2 py-1.5" />
+          <button onClick={() => run(async () => { await call({ action: `${kind}.message`, id, message: text }); setText(''); })} disabled={busy || !text.trim()} className="self-end px-3 py-1.5 bg-gray-800 text-white rounded-lg font-semibold disabled:bg-gray-300">Send</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface AdminStudyApplication {
   id: string; sub: string; type: 'admission' | 'scholarship'; program: string; intake: string; status: string; statusLabel: string; message: string;
   fee: { fee: number; service: number; total: number; label: string; paidAt: string | null } | null; feeCharged: number | null;
@@ -922,11 +929,12 @@ interface AdminStudyApplication {
     tests: { test: string; score: string; date: string }[];
   };
   docs: { kind: string; label: string; name: string; url: string | null }[];
+  listingEmails: string[]; contact: RelayContact; replyAddress: string | null; messages: RelayMessage[];
 }
 
 const STUDY_STEPS: [string, string][] = [
   ['submitted', 'Received'], ['docs_needed', 'More documents needed'], ['fee_due', 'Quote fee (fee to pay)'], ['processing', 'Lyrtrip is applying'],
-  ['applied', 'Submitted to institution'], ['interview', 'Interview requested'], ['offer', 'Offer / award received'], ['rejected', 'Not successful'],
+  ['applied', 'Submitted to institution'], ['replied', 'Institution replied'], ['interview', 'Interview requested'], ['offer', 'Offer / award received'], ['rejected', 'Not successful'],
 ];
 const APPLICANT_FIELDS: [string, string][] = [
   ['dateOfBirth', 'Date of birth'], ['gender', 'Gender'], ['nationality', 'Nationality'], ['countryOfResidence', 'Residence'], ['city', 'City'], ['address', 'Address'],
@@ -983,7 +991,11 @@ export function StudyApplicationsPanel({ call }: { call: Call }) {
               <div className="min-w-0">
                 <p className="font-semibold text-gray-900">{a.applicant.name} <span className="font-normal text-gray-500">· {a.type}</span> · {a.program}</p>
                 <p className="text-gray-600">{[a.institution.name, a.institution.address].filter(Boolean).join(' · ')}</p>
-                <p className="text-xs text-gray-400">Applied {new Date(a.createdAt).toLocaleString()}{a.intake ? ` · intake ${a.intake}` : ''}{a.fee ? ` · ${usd(a.fee.total)}${a.fee.paidAt ? ' paid' : ' due'}` : ''}</p>
+                <p className="text-xs text-gray-400">
+                  Applied {new Date(a.createdAt).toLocaleString()}{a.intake ? ` · intake ${a.intake}` : ''}{a.fee ? ` · ${usd(a.fee.total)}${a.fee.paidAt ? ' paid' : ' due'}` : ''}
+                  {a.contact && ` · sent ${new Date(a.contact.sentAt).toLocaleString()} ${a.contact.method === 'email' ? `to ${a.contact.email}${a.contact.by === 'auto' ? ' (automatic)' : ''}` : 'on the institution site'}`}
+                  {a.contact?.bounced && <span className="text-red-600 font-semibold"> · bounced</span>}
+                </p>
               </div>
               <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">{a.statusLabel}</span>
             </button>
@@ -1009,6 +1021,11 @@ export function StudyApplicationsPanel({ call }: { call: Call }) {
                   {a.docs.map(d => <a key={d.kind} href={d.url ?? '#'} className="block text-brand-600 truncate">{d.label}: {d.name}</a>)}
                 </div>
                 <div className="space-y-2">
+                  {a.status !== 'withdrawn' && (
+                    <MailRelayBox call={call} id={a.id} kind="studyapps" party="institution" contact={a.contact} listingEmails={a.listingEmails}
+                      messages={a.messages} replyAddress={a.replyAddress} canSend={!['fee_due'].includes(a.status)}
+                      notReadyNote="Waiting for the student to pay the fee. Once paid, Lyrtrip emails it automatically if the listing had an address." onDone={load} />
+                  )}
                   {a.status === 'withdrawn' ? <p className="text-gray-500">The student withdrew this application.</p> : (<>
                     <label className="block text-xs font-semibold text-gray-600">Status</label>
                     <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} className="w-full border border-gray-300 rounded-lg px-2 py-1.5">

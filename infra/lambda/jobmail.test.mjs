@@ -46,3 +46,22 @@ test('recognises out-of-office replies', async () => {
   assert.ok(j.isAutoReply(await simpleParser('Subject: Out of office\r\nAuto-Submitted: auto-replied\r\n\r\nAway')));
   assert.ok(!j.isAutoReply(await simpleParser('Subject: Re: Application for Chef\r\n\r\nWhen can you start?')));
 });
+
+test('study replies use study-<code> addresses and keep the institution name but not its contacts', () => {
+  assert.deepEqual('study-0123456789ab@lyrtrip.com'.match(j.APP_REPLY_RE)?.slice(1), ['study', '0123456789ab']);
+  assert.deepEqual('jobs-0123456789ab@lyrtrip.com'.match(j.APP_REPLY_RE)?.slice(1), ['jobs', '0123456789ab']);
+  const K = j.MAIL_KINDS.study;
+  const a = { program: 'MSc Data Science', institution: { name: 'Oxford University' }, messages: [
+    { id: '1', at: 'x', who: 'institution', text: 'Oxford University needs your transcript. Email admissions@ox.ac.uk', attachments: [] },
+    { id: '2', at: 'y', who: 'institution', text: 'Out of office', auto: true },
+  ] };
+  const thread = j.partyThread(K, a);
+  assert.equal(thread.length, 1);
+  assert.match(thread[0].text, /^Oxford University needs your transcript/);
+  assert.ok(!/admissions@/.test(thread[0].text));
+  assert.equal(K.sentStatus, 'applied');
+});
+
+test('admissions addresses rank first in study listings', () => {
+  assert.deepEqual(j.employerEmailsIn('Contact info@uni.edu or Admissions@uni.edu', []), ['admissions@uni.edu', 'info@uni.edu']);
+});
