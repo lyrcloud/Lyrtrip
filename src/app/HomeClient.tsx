@@ -564,7 +564,7 @@ export default function Home() {
   }, [sortedStays, stayPrice]);
   const stayPins = useMemo<StayPin[]>(() => sortedStays
     .filter(r => r.lat != null && r.lng != null && stayPrice(r))
-    .map(r => ({ id: r.id, lat: r.lat!, lng: r.lng!, price: money(stayPrice(r)!), name: r.name, imageUrl: r.imageUrl })),
+    .map(r => ({ id: r.id, lat: r.lat!, lng: r.lng!, price: money(stayPrice(r)!).replace(/[.,]00(?!\d)/, ''), name: r.name, imageUrl: r.imageUrl })),
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [sortedStays, stayPrice]);
   const [applyJob, setApplyJob] = useState<ApplyJob | null>(null);
@@ -1523,11 +1523,14 @@ export default function Home() {
             {cheapestStayId === result.id && (
               <span className="absolute left-2 top-2 z-10 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white shadow">{t('Cheapest')}</span>
             )}
-            {result.imageUrl ? (
-              <img src={result.imageUrl} alt={result.name} loading="lazy" className="w-36 sm:w-44 h-36 object-cover shrink-0" />
-            ) : (
-              <div className="w-36 sm:w-44 h-36 bg-gray-100 flex items-center justify-center shrink-0 text-4xl">🏨</div>
-            )}
+            {/* Placeholder under the photo, so a broken or slow image still shows something */}
+            <div className="relative w-36 sm:w-44 h-36 bg-gray-100 flex items-center justify-center shrink-0 text-4xl" aria-hidden={!result.imageUrl}>
+              🏨
+              {result.imageUrl && (
+                <img src={result.imageUrl} alt={result.name} loading="lazy" className="absolute inset-0 h-full w-full object-cover"
+                  onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              )}
+            </div>
             <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
               <div>
                 <div className="flex items-start justify-between gap-2">
