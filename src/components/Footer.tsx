@@ -17,6 +17,7 @@ export default function Footer() {
       links: [
         { label: t('Help Center'), href: 'https://wa.me/16615809465' },
         { label: t('Contact Us'), href: 'mailto:support@lyrtrip.com' },
+        { label: t('Get the app'), href: '/app', internal: true },
         { label: t('FAQ'), href: '#' },
       ],
     },

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import HotelSearch from "@/components/HotelSearch";
 import Footer from "@/components/Footer";
+import AppBanner from "@/components/AppBanner";
 import Lyrbot from "@/components/Lyrbot";
 import Navigation from "@/components/Navigation";
 import { BottomNav, SideNav } from "@/components/AppNav";
@@ -59,6 +60,7 @@ export default function RootLayout({
       <body className="min-h-screen flex flex-col">
         <LocaleProvider>
           <AuthProvider>
+            <AppBanner />
             <Navigation />
             <SideNav />
             <div className="flex-1 flex flex-col ps-[var(--rail-w)] pb-[var(--bottom-bar-h)] transition-[padding] duration-200 print:p-0">

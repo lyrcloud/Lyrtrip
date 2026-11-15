@@ -12,7 +12,10 @@ Needs JDK 21 and the Android SDK (API 36):
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ANDROID_HOME=~/Android/Sdk
 npm install
 npm run android:debug     # android/app/build/outputs/apk/debug/app-debug.apk
+./publish-apk.sh          # signed APK -> www.lyrtrip.com/app download; then publish the frontend
 ```
+
+Bump `versionCode` (YYYYMMDD) and `versionName` in `android/app/build.gradle` for every new build.
 
 Install on a phone or emulator with `adb install -r android/app/build/outputs/apk/debug/app-debug.apk`.
 
