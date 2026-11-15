@@ -2530,6 +2530,37 @@ function resolveIata(input) {
   return (CITY_TO_IATA[lower] ?? trimmed).toUpperCase();
 }
 
+// Cheapest night for each check-in date at one stay (SerpAPI Google Hotels Price Calendar), cached 12 h
+async function handleHotelCalendar(event) {
+  const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
+  const token = String(body.propertyToken ?? '').trim();
+  if (!token || token.length > 400) return json(400, { error: 'Choose a stay first' });
+  if (!process.env.SERPAPI_KEY) return json(503, { error: 'The price calendar is not available right now' });
+  const start = isoDay(new Date());
+  const end = addDays(start, 60);
+  const params = new URLSearchParams({
+    engine: 'google_hotels_price_calendar', property_token: token, start_date: start, end_date: end,
+    adults: String(Math.min(6, Math.max(1, Number(body.adults) || 2))), currency: 'USD', gl: 'us', hl: 'en', api_key: process.env.SERPAPI_KEY,
+  });
+  try {
+    const data = await serpCached(`hotelcal:${token}:${start}:${params.get('adults')}`, 12, async () => {
+      const res = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(25_000) });
+      const d = await res.json().catch(() => ({}));
+      // Many vacation rentals have no price calendar on Google: remember that, so it costs no more searches
+      if (/hasn't returned any results/i.test(d.error ?? '')) return { prices: [] };
+      if (!res.ok || d.error) throw new Error(d.error || `SerpAPI ${res.status}`);
+      return { prices: d.prices ?? [] };
+    });
+    const prices = (data.prices ?? []).map(p => ({ date: p.date, price: p.extracted_display_price ?? p.extracted_after_taxes_fees ?? null }))
+      .filter(p => p.date && p.price > 0).sort((a, b) => a.date.localeCompare(b.date));
+    const cheapest = prices.reduce((m, p) => (m && m.price <= p.price ? m : p), null);
+    return json(200, { start, end, currency: 'USD', prices, cheapest });
+  } catch (err) {
+    console.error('Hotel calendar failed:', err.message);
+    return json(502, { error: /run out|limit|exceeded/i.test(err.message) ? 'The price calendar has reached its search limit for now. Please try again later.' : 'Could not load prices for this stay. Please try again.' });
+  }
+}
+
 // The cheapest fare for every day of a date range, like Trip.com's low-price calendar: one SerpAPI
 // Google Flights Calendar search covers up to two months and is cached for 6 hours per route.
 // Prices include Lyrtrip's flight margin so they match what checkout charges as closely as possible.
@@ -9992,6 +10023,7 @@ async function routeRequest(event) {
     const notifyMatch = path.match(/\/api\/notify\/(config|subscribe|unsubscribe|prefs)$/);
     if (notifyMatch && method === 'POST') return handleNotify(event, notifyMatch[1]);
     if (path.endsWith('/api/hotel/quote')            && method === 'POST')         return handleHotelQuote(event);
+    if (path.endsWith('/api/hotel/calendar')         && method === 'POST')         return handleHotelCalendar(event);
     if (path.endsWith('/api/lyrpay/callback')        && method === 'POST')         return handleLyrpayCallback(event);
     if (path.endsWith('/api/hotel/checkout')         && method === 'POST')         return handleHotelCheckout(event);
     if (path.endsWith('/api/hotel/confirm')          && method === 'POST')         return handleHotelConfirm(event);

@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import StayMap, { type StayPin } from '@/components/StayMap';
 import FareCalendar from '@/components/FareCalendar';
+import MonthGrid, { dayKey } from '@/components/MonthGrid';
+import StayPriceCalendar from '@/components/StayPriceCalendar';
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -539,6 +541,9 @@ export default function Home() {
   const [staySort, setStaySort] = useState<'price' | 'rating' | 'reviews'>('price');
   const [selectedStay, setSelectedStay] = useState<string | null>(null);
   const [hoverStay, setHoverStay] = useState<string | null>(null);
+  const [eventView, setEventView] = useState<'grid' | 'calendar'>('grid');
+  // Cheapest night for each date at one stay (Google Hotels price calendar), opened from a stay card
+  const [stayCalendar, setStayCalendar] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<SearchResult[]>([]);
   // Stay results in the chosen order, and their map pins (memoised so the map is not rebuilt on hover)
@@ -1187,11 +1192,12 @@ export default function Home() {
     }
   };
 
-  const openHotelRequest = (hotel: SearchResult) => {
-    // Monthly rooms are priced for the 30 nights the search used, so the request keeps those dates
-    const checkin = hotel.checkinDate ?? formData.checkin;
-    const checkout = hotel.checkoutDate ?? formData.checkout;
-    setHotelDraft({ hotel, checkin, checkout, searched: `${checkin}|${checkout}` });
+  const openHotelRequest = (hotel: SearchResult, dates?: { checkin: string; checkout: string }) => {
+    // Monthly rooms are priced for the 30 nights the search used, so the request keeps those dates;
+    // a date picked on the price calendar opens a one-night request that the server re-prices
+    const checkin = dates?.checkin ?? hotel.checkinDate ?? formData.checkin;
+    const checkout = dates?.checkout ?? hotel.checkoutDate ?? formData.checkout;
+    setHotelDraft({ hotel, checkin, checkout, searched: dates ? '' : `${checkin}|${checkout}` });
     setHotelServerQuote(null);
     setHotelError(null);
     setHotelNotice(null);
@@ -1563,12 +1569,20 @@ export default function Home() {
                 {result.demo ? (
                   <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Sample · not bookable</span>
                 ) : result.propertyToken && result.pricePerNight ? (
+                <>
+                {!monthly && (
+                  <button onClick={e => { e.stopPropagation(); setStayCalendar(result); }}
+                    className="ml-auto mr-2 px-3 py-1.5 text-sm font-semibold text-brand-700 rounded-lg ring-1 ring-brand-200 hover:bg-brand-50 transition">
+                    📅 {t('Cheapest nights')}
+                  </button>
+                )}
                 <button
                   onClick={e => { e.stopPropagation(); openHotelRequest(result); }}
-                  className="ml-auto px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition"
+                  className={`${monthly ? 'ml-auto ' : ''}px-4 py-1.5 bg-btn text-white text-sm font-semibold rounded-lg hover:bg-btn-hover transition`}
                 >
                   {t('Book')}
                 </button>
+                </>
                 ) : (
                 // No price to book against; hotel websites are only shown to admins
                 <span className="ml-auto px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">Not bookable online</span>
@@ -1585,6 +1599,17 @@ export default function Home() {
           </div>
         )}
         </div>
+        {stayCalendar?.propertyToken && (
+          <StayPriceCalendar name={stayCalendar.name} propertyToken={stayCalendar.propertyToken} onClose={() => setStayCalendar(null)}
+            onPick={checkin => {
+              const d = new Date(`${checkin}T00:00:00`); d.setDate(d.getDate() + 1);
+              const checkout = dayKey(d);
+              setFormData(prev => ({ ...prev, checkin, checkout }));
+              const hotel = stayCalendar;
+              setStayCalendar(null);
+              openHotelRequest(hotel, { checkin, checkout });
+            }} />
+        )}
       </div>
     );
   };
@@ -1723,12 +1748,53 @@ export default function Home() {
         hint="Try a bigger city nearby, a wider date range, or a different event type."
       />
     );
+    // Google gives event dates like "Dec 12" without a year: the next such date from today
+    const eventDay = (s?: string | null) => {
+      if (!s) return null;
+      const now = new Date();
+      for (const y of [now.getFullYear(), now.getFullYear() + 1]) {
+        const d = new Date(`${s} ${y}`);
+        if (!isNaN(d.getTime()) && d.getTime() >= now.getTime() - 864e5) return dayKey(d);
+      }
+      return null;
+    };
+    const byDay = new Map<string, SearchResult[]>();
+    for (const r of results) { const k = eventDay(r.startDate); if (k) byDay.set(k, [...(byDay.get(k) ?? []), r]); }
+    const days = [...byDay.keys()].sort();
     return (
       <>
       {eventNotice && (
         <p role="status" className="mt-6 rounded-xl bg-amber-50 px-4 py-2.5 text-sm text-amber-800 ring-1 ring-amber-200">{eventNotice}</p>
       )}
-      <div className={`${eventNotice ? 'mt-4' : 'mt-6'} grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4`}>
+      {days.length > 0 && (
+        <div className="mt-6 flex justify-end">
+          <div className="inline-flex rounded-full bg-gray-100 p-1 text-sm font-semibold">
+            {([['grid', t('List')], ['calendar', t('Calendar')]] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setEventView(k)} className={`px-3 py-1 rounded-full transition ${eventView === k ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-800'}`}>{l}</button>
+            ))}
+          </div>
+        </div>
+      )}
+      {eventView === 'calendar' && days.length > 0 ? (
+        <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+          <MonthGrid start={days[0]} end={days[days.length - 1]} cellClass="min-h-20" renderDay={(key, day) => {
+            const list = byDay.get(key) ?? [];
+            return (
+              <div className={`h-full rounded-lg p-1 text-left ring-1 ${list.length ? 'bg-brand-50 ring-brand-200' : 'bg-gray-50 ring-gray-100'}`}>
+                <p className={`text-xs font-semibold ${list.length ? 'text-brand-700' : 'text-gray-300'}`}>{day}</p>
+                {list.slice(0, 2).map(r => (
+                  <button key={r.id} title={`${r.name}${r.when ? ` · ${r.when}` : ''}`} disabled={!r.applyToken}
+                    onClick={() => r.applyToken && setApplyEvent({ name: r.name, when: r.when, venue: r.venue, address: r.address, applyToken: r.applyToken })}
+                    className="mt-0.5 block w-full truncate rounded bg-white px-1 text-left text-[10px] font-medium text-gray-800 shadow-sm hover:bg-brand-100">{r.name}</button>
+                ))}
+                {list.length > 2 && <p className="text-[10px] text-brand-700">+{list.length - 2} {t('more')}</p>}
+              </div>
+            );
+          }} />
+          <p className="mt-2 text-xs text-gray-500">{t('Tap an event to request tickets through Lyrtrip.')}</p>
+        </div>
+      ) : (
+      <div className={`${eventNotice || days.length ? 'mt-4' : 'mt-6'} grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4`}>
         {results.map(r => (
           <div key={r.id} className="flex flex-col bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg hover:-translate-y-0.5 transition-all animate-[panelIn_250ms_ease-out]">
             {/* Placeholder sits under the photo, so a missing, slow or broken image still shows something */}
@@ -1764,6 +1830,7 @@ export default function Home() {
           </div>
         ))}
       </div>
+      )}
       </>
     );
   };
@@ -2944,7 +3011,7 @@ export default function Home() {
                   ))}
                 </div>
                 <p className="mb-2 text-sm text-gray-600">Book tickets through Lyrtrip: we find them and send them to you. <Link href="/events/tickets" className="font-semibold text-brand-600">My tickets →</Link></p>
-                <EventList />
+                {EventList()}
                 {applyEvent && <EventTicketDialog item={applyEvent} onClose={() => setApplyEvent(null)} />}
               </div>
             )}

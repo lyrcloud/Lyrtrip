@@ -404,7 +404,7 @@ export default function AdminPage() {
                 {userTab === 'accounts' && (
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                      {([['Total', stats.users, 'all'], ['Admins', stats.admins, 'admins'], ['Disabled', (users ?? []).filter(u => !u.enabled).length, 'disabled'], ['Not verified', (users ?? []).filter(u => u.status === 'UNCONFIRMED').length, 'unverified']] as const).map(([l, v, f]) => (
+                      {([['Total', stats.users, 'all'], ['Admins (incl. super admin)', stats.admins, 'admins'], ['Disabled', (users ?? []).filter(u => !u.enabled).length, 'disabled'], ['Not verified', (users ?? []).filter(u => u.status === 'UNCONFIRMED').length, 'unverified']] as const).map(([l, v, f]) => (
                         <button key={l} onClick={() => setUserFilter(f)} className={`${card} p-3 text-left ${userFilter === f ? 'ring-2 ring-indigo-500' : ''}`}>
                           <p className="text-xs text-gray-500">{l}</p><p className="text-xl font-bold text-gray-900">{v}</p>
                         </button>
