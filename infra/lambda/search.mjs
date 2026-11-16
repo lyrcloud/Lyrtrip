@@ -1081,7 +1081,7 @@ function generateTicketEmail({ pnr, airlineLocator = null, tickets = [], passeng
       <table width="100%" cellpadding="0" cellspacing="0">
         <tr>
           <td style="vertical-align:middle;">
-            <img src="https://www.lyrtrip.com/logo.png" alt="Lyrtrip" height="40"
+            <img src="https://www.lyrtrip.com/email-logo.png" alt="Lyrtrip" height="40"
                  style="height:40px;width:auto;display:block;"
                  onerror="this.style.display='none'" />
           </td>
@@ -1179,7 +1179,7 @@ function generateTicketEmail({ pnr, airlineLocator = null, tickets = [], passeng
       <table width="100%" cellpadding="0" cellspacing="0">
         <tr>
           <td style="text-align:center;padding-bottom:12px;">
-            <img src="https://www.lyrtrip.com/logo.png" alt="Lyrtrip" height="28"
+            <img src="https://www.lyrtrip.com/email-logo.png" alt="Lyrtrip" height="28"
                  style="height:28px;width:auto;opacity:0.6;"
                  onerror="this.style.display='none'" />
           </td>
@@ -1962,11 +1962,15 @@ function messageEmailHtml(title, paragraphs, cta, footer = '') {
   return emailFrame(title, body, cta, footer);
 }
 
+// The header logo on every email: a small PNG (mail apps don't show SVG; the site's logo.png is 3500px/435 KB),
+// 320x132 shown at 160x66 (sharp on retina screens), with the alt text styled as the brand in case images are blocked
+const EMAIL_LOGO_HTML = `<img src="https://www.lyrtrip.com/email-logo.png" width="160" height="66" alt="Lyrtrip" style="display:block;border:0;width:160px;height:66px;margin:-12px 0 -12px -14px;font:bold 22px Arial,sans-serif;color:#ff4500">`;
+
 function emailFrame(title, inner, cta, footer = '') {
   return `<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,sans-serif">
   <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
   <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;border-radius:12px;overflow:hidden">
-    <tr><td style="padding:20px 28px;border-bottom:4px solid #4f46e5"><img src="${SITE_URL}/logo.png" alt="Lyrtrip" height="36"></td></tr>
+    <tr><td style="padding:20px 28px;border-bottom:4px solid #4f46e5">${EMAIL_LOGO_HTML}</td></tr>
     <tr><td style="padding:24px 28px"><h1 style="margin:0 0 16px;font-size:20px;color:#111827">${esc(title)}</h1>
       ${inner}
       ${cta ? `<p style="margin:24px 0 0"><a href="${esc(cta.url)}" style="background:#4f46e5;color:#fff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:bold;display:inline-block">${esc(cta.label)}</a></p>` : ''}
@@ -6226,10 +6230,19 @@ const applicantJobApp = a => ({
   sentAt: a.employer?.sentAt ?? null, sentBy: a.employer ? (a.employer.method === 'email' ? 'email' : 'site') : null,
   canMessage: a.employer?.method === 'email' && !a.employer?.bounced, thread: applicantThread(a),
 });
-const jobAppEmail = (heading, rows, foot) => `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#111">
-  <h2 style="color:#0f766e">${heading}</h2>
-  <table style="border-collapse:collapse;width:100%">${rows.map(([k, v]) => `<tr><td style="padding:6px 8px;color:#555;vertical-align:top">${k}</td><td style="padding:6px 8px">${String(v ?? '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\n/g, '<br>')}</td></tr>`).join('')}</table>
-  <p style="color:#555;font-size:13px">${foot}</p></div>`;
+// Job, study and application emails, in the same branded frame (logo header) as every other Lyrtrip email.
+// heading and foot are HTML from the callers (already escaped); row values are escaped here.
+const jobAppEmail = (heading, rows, foot) => `<!doctype html><html><body style="margin:0;background:#f3f4f6;font-family:Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
+  <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;border-radius:12px;overflow:hidden">
+    <tr><td style="padding:20px 28px;border-bottom:4px solid #4f46e5">${EMAIL_LOGO_HTML}</td></tr>
+    <tr><td style="padding:24px 28px;color:#111">
+      <h2 style="margin:0 0 14px;font-size:20px;color:#111827">${heading}</h2>
+      <table style="border-collapse:collapse;width:100%">${rows.map(([k, v]) => `<tr><td style="padding:6px 8px 6px 0;color:#6b7280;font-size:13px;vertical-align:top;width:32%">${k}</td><td style="padding:6px 0;font-size:14px;color:#111827">${String(v ?? '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]).replace(/\n/g, '<br>')}</td></tr>`).join('')}</table>
+      <p style="margin:18px 0 0;color:#4b5563;font-size:13px;line-height:1.5">${foot}</p>
+    </td></tr>
+    <tr><td style="padding:16px 28px;background:#f9fafb;color:#9ca3af;font-size:11px">Lyrtrip · www.lyrtrip.com</td></tr>
+  </table></td></tr></table></body></html>`;
 
 // ---------------------------------------------------------------------------
 // Job applications by email. Each application gets its own address, jobs-<code>@lyrtrip.com. Lyrtrip
@@ -10073,4 +10086,4 @@ async function routeRequest(event) {
 }
 
 // Pure helpers of the job-application mail relay, for jobmail.test.mjs
-export const jobMailInternals = { buildRawEmail, stripQuoted, employerEmailsIn, isAutoReply, scrubForApplicant, JOB_REPLY_RE, APP_REPLY_RE, MAIL_KINDS, partyThread, jobDigest, studyDigest, digestPreview };
+export const jobMailInternals = { buildRawEmail, stripQuoted, employerEmailsIn, isAutoReply, scrubForApplicant, JOB_REPLY_RE, APP_REPLY_RE, MAIL_KINDS, partyThread, jobDigest, studyDigest, digestPreview, jobAppEmail, emailFrame };

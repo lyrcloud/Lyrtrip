@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg version="1.2" baseProfile="tiny-ps" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Lyrtrip</title>
+  <rect width="512" height="512" fill="#ffffff"/>
+  <g fill="#ff4500">
+    <path d="M270 40c-42 0-76 33-76 75 0 44 38 86 76 150 38-64 76-106 76-150 0-42-34-75-76-75zm0 36c21 0 38 17 38 38s-17 38-38 38-38-17-38-38 17-38 38-38z"/>
+    <path d="M112 132h50l74 146-82 194h-42c-17 0-30-13-30-30V162c0-17 13-30 30-30z"/>
+    <path d="M384 132h16c17 0 30 13 30 30v198H258z"/>
+    <path d="M232 412h198v30c0 17-13 30-30 30H206z"/>
+  </g>
+</svg>
