@@ -53,7 +53,8 @@ aws lambda get-function-configuration --function-name $FUNCTION $R --query 'Envi
       for (const k of dropped) delete cur[k];
       cur.DUFFEL_API_KEY = process.env.DUFFEL_API_KEY;
       // Hotel requests: emails from the verified lyrtrip.com domain, admin sign-in via Cognito ID tokens
-      cur.SES_FROM_EMAIL = cur.SES_FROM_EMAIL || "bookings@lyrtrip.com";
+      // Sender of every Lyrtrip email: support@ has a Google account whose photo Gmail shows beside the sender
+      cur.SES_FROM_EMAIL = process.env.SES_FROM_EMAIL || "support@lyrtrip.com";
       for (const k of ["COGNITO_USER_POOL_ID", "COGNITO_USER_POOL_CLIENT_ID"]) if (process.env[k]) cur[k] = process.env[k];
       // Lyrbot (the help assistant) answers with Claude; without a key it offers WhatsApp and email instead
       if (process.env.ANTHROPIC_API_KEY) cur.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
