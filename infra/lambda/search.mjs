@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import { MongoClient, ObjectId } from 'mongodb';
 import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import * as rw from './rewards.mjs';
 import * as lyrpay from './lyrpay.mjs';
@@ -3692,13 +3693,22 @@ async function handleHotelCompare(event) {
 }
 
 // ---------------------------------------------------------------------------
-// Lyrbot: the site's help assistant, as on Lyrshop. Claude answers travel and
+// Lyrbot: the site's help assistant, as on Lyrshop. It answers travel and
 // booking questions from the Lyrtrip facts below and points to WhatsApp or
-// email for anything that needs a person. Open to every visitor, so use is
-// capped per visitor per hour and for the whole site per day.
+// email for anything that needs a person. Google Gemini answers first (free
+// tier, key in the secret GEMINI_SECRET, default lyrsoft/gemini, shared by the
+// Lyr sites); when Gemini is busy or fails, Claude answers. Open to every
+// visitor, so use is capped per visitor per hour and for the whole site per day.
 // ---------------------------------------------------------------------------
 
 const LYRBOT_MODEL = 'claude-opus-5-5';
+// Free-tier Gemini models, tried in order ("-latest" follows Google's newest Flash models); each has its own free quota.
+const LYRBOT_GEMINI_MODELS = ['gemini-flash-lite-latest', 'gemini-flash-latest'];
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+// API Gateway gives up after 30 seconds: each Gemini model gets a few seconds, Claude gets what is left.
+const LYRBOT_BUDGET_MS = 26_000;
+const GEMINI_TIMEOUT_MS = 8_000;
+const CLAUDE_MIN_MS = 8_000;
 const LYRBOT_MAX_TURNS = 12;
 const LYRBOT_MAX_MESSAGE_LENGTH = 1000;
 const LYRBOT_HOURLY_LIMIT = 20;
@@ -3758,6 +3768,55 @@ function cleanLyrbotMessages(messages) {
   return recent.length && recent.at(-1).role === 'user' ? recent : null;
 }
 
+// Lyrbot's Gemini key: GEMINI_API_KEY, else the shared secret; null (tried again next time) when it can't be read.
+let geminiKey;
+async function getGeminiKey() {
+  if (process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
+  if (geminiKey === undefined) {
+    try {
+      geminiKey = (await new SecretsManagerClient({}).send(new GetSecretValueCommand({
+        SecretId: process.env.GEMINI_SECRET || 'lyrsoft/gemini',
+      }))).SecretString.trim() || null;
+    } catch (err) {
+      console.error('Lyrbot Gemini secret:', err.name);
+      return null;
+    }
+  }
+  return geminiKey;
+}
+
+// The Gemini generateContent request for a conversation: Gemini calls the assistant's turns "model".
+function geminiRequest(system, conversation) {
+  return {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: conversation.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+    generationConfig: { maxOutputTokens: 2048, temperature: 0.4 },
+  };
+}
+
+// The answer text from a Gemini response, or null when it was blocked, cut off empty or missing.
+function geminiText(data) {
+  const candidate = data?.candidates?.[0];
+  if (!candidate || data.promptFeedback?.blockReason) return null;
+  if (!['STOP', 'MAX_TOKENS', undefined].includes(candidate.finishReason)) return null;
+  const text = (candidate.content?.parts || []).filter(p => !p.thought && typeof p.text === 'string').map(p => p.text).join('').trim();
+  return text || null;
+}
+
+async function askGemini(apiKey, model, conversation, timeoutMs) {
+  const res = await fetch(`${GEMINI_URL}/${model}:generateContent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify(geminiRequest(LYRBOT_SYSTEM_PROMPT, conversation)),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(`Gemini ${model} ${res.status}: ${data?.error?.message || res.statusText}`);
+  const text = geminiText(data);
+  if (!text) throw new Error(`Gemini ${model} gave no answer (${data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason || 'empty'})`);
+  return text;
+}
+
 let lyrbotIndexReady = false;
 // Bump a usage counter that MongoDB expires by TTL and return the new count.
 async function countLyrbotUse(key, windowSeconds) {
@@ -3777,7 +3836,8 @@ async function countLyrbotUse(key, windowSeconds) {
 }
 
 async function handleLyrbotChat(event) {
-  if (!process.env.ANTHROPIC_API_KEY) return json(503, { error: LYRBOT_FALLBACK_REPLY });
+  const googleKey = await getGeminiKey();
+  if (!googleKey && !process.env.ANTHROPIC_API_KEY) return json(503, { error: LYRBOT_FALLBACK_REPLY });
   const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body ?? {});
   const conversation = cleanLyrbotMessages(body.messages);
   if (!conversation) return json(422, { error: 'Type a question for Lyrbot.' });
@@ -3790,6 +3850,21 @@ async function handleLyrbotChat(event) {
     return json(429, { error: `Lyrbot is resting for today. Please reach us on WhatsApp ${WHATSAPP_NUMBER} or at ${SUPPORT_EMAIL}.` });
   }
 
+  const deadline = Date.now() + LYRBOT_BUDGET_MS;
+  if (googleKey) {
+    for (const model of LYRBOT_GEMINI_MODELS) {
+      const left = deadline - Date.now() - (process.env.ANTHROPIC_API_KEY ? CLAUDE_MIN_MS : 0);
+      if (left < 2_000) break;
+      try {
+        return json(200, { reply: await askGemini(googleKey, model, conversation, Math.min(GEMINI_TIMEOUT_MS, left)) });
+      } catch (err) {
+        // Busy (503), out of free requests (429) or slow: try the next model, then Claude.
+        console.warn('Lyrbot:', err.name === 'TimeoutError' ? `Gemini ${model} timed out` : err.message);
+      }
+    }
+  }
+  if (!process.env.ANTHROPIC_API_KEY) return json(503, { error: 'Lyrbot is busy right now. Try again in a minute.' });
+
   let message;
   try {
     message = await getAnthropicClient().beta.messages.create({
@@ -3801,7 +3876,7 @@ async function handleLyrbotChat(event) {
       // Short help-desk answers; low effort keeps replies quick for a chat window.
       output_config: { effort: 'low' },
       messages: conversation,
-    });
+    }, { timeout: Math.max(CLAUDE_MIN_MS, deadline - Date.now()) });
   } catch (err) {
     if (err instanceof Anthropic.RateLimitError) return json(503, { error: 'Lyrbot is busy right now. Try again in a minute.' });
     if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {

@@ -3,8 +3,8 @@
 #
 #   bash infra/deploy-site.sh
 #
-# Set ANTHROPIC_API_KEY in .env.local for Lyrbot, the help assistant (optional: without it Lyrbot
-# points visitors to WhatsApp and email).
+# Lyrbot, the help assistant, answers with Gemini first (the shared lyrsoft/gemini secret) and Claude
+# when Gemini can't; set ANTHROPIC_API_KEY in .env.local for the Claude part.
 # Needs DUFFEL_API_KEY in .env.local. While it is a duffel_test_ key, flight checkouts are paid
 # with the Stripe TEST key from .env.local (STRIPE_SECRET_KEY=sk_test_...) so no real card is
 # charged for a test ticket; the site's own Stripe key on the Lambda is left alone. With a
@@ -89,7 +89,8 @@ aws lambda wait function-updated-v2 --function-name $FUNCTION $R
 
 echo "4/5 admin permissions, API routes and CORS"
 # The admin console (/admin) manages accounts in the Lyrtrip user pool only; mobile sign-in also
-# creates phone accounts there and texts codes through the Twilio account Lyrshop keeps in Secrets Manager.
+# creates phone accounts there and texts codes through the Twilio account Lyrshop keeps in Secrets Manager;
+# Lyrbot reads the Gemini key the Lyr sites share (lyrsoft/gemini).
 [[ -n "${COGNITO_USER_POOL_ID:-}" ]] || { echo "Missing COGNITO_USER_POOL_ID in .env.local" >&2; exit 1; }
 POOL_ARN=$(aws cognito-idp describe-user-pool --user-pool-id "$COGNITO_USER_POOL_ID" $R --query UserPool.Arn --output text)
 ROLE_ARN=$(aws lambda get-function-configuration --function-name $FUNCTION $R --query Role --output text)
@@ -104,7 +105,8 @@ aws iam put-role-policy --role-name "${ROLE_ARN##*/}" --policy-name lyrtrip-admi
   }, {
     \"Effect\": \"Allow\",
     \"Action\": \"secretsmanager:GetSecretValue\",
-    \"Resource\": \"arn:aws:secretsmanager:us-east-1:$(aws sts get-caller-identity --query Account --output text):secret:lyrshop/twilio-*\"
+    \"Resource\": [\"arn:aws:secretsmanager:us-east-1:$(aws sts get-caller-identity --query Account --output text):secret:lyrshop/twilio-*\",
+                 \"arn:aws:secretsmanager:us-east-1:$(aws sts get-caller-identity --query Account --output text):secret:lyrsoft/gemini-*\"]
   }, {
     \"Effect\": \"Allow\",
     \"Action\": [\"logs:CreateLogGroup\", \"logs:CreateLogStream\", \"logs:PutLogEvents\"],
